@@ -119,13 +119,24 @@ def submit_order(*, user: BaseUser, total_price: int, product: List[CartItem], g
 
 def update_order(*, order_id: int, schedule: DeliveryData, discount: Discount = None) -> Order:
     order = Order.objects.get(id=order_id)
-    order.schedule = schedule
+    old_schedule = order.schedule
+    update_fields = []
+    if schedule is not None:
+        order.schedule = schedule
+        update_fields.append("schedule")
     if discount is not None:
         order.discount = discount
+        update_fields.append("discount")
         if discount.value_type == DiscountValueType.AMOUNT.value:
             order.total_price_discount = order.total_price - discount.amount
 
         elif discount.value_type == DiscountValueType.PERCENT.value:
             order.total_price_discount = order.total_price * (1 - discount.percent)
-    order.save(update_fields=["schedule", "discount", "updated_at", "total_price_discount"])
+        update_fields.append("total_price_discount")
+    if update_fields:
+        order.save(update_fields=[*update_fields, "updated_at"])
+    if schedule is not None:
+        DeliveryData.objects.filter(id=schedule.id).update(is_used=True)
+    if old_schedule is not None and old_schedule != schedule and not Order.objects.filter(schedule=old_schedule).exists():
+        DeliveryData.objects.filter(id=old_schedule.id).update(is_used=False)
     return order

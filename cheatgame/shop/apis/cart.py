@@ -298,6 +298,9 @@ class OrderDetailUserApi(ApiAuthMixin, APIView):
             coupon_code_result = check_coupon_code(total_price=order.total_price, code=discount.code)
             if dicount_code_result == False and coupon_code_result == False:
                 return Response({"error": "کد تخفیف  معتبر نیست."}, status=status.HTTP_400_BAD_REQUEST)
+        if delivery_data is not None and Order.objects.filter(schedule=delivery_data).exclude(id=id).exists():
+            return Response({"error": "این زمان قبلا برای سفارش دیگری ثبت شده است."},
+                            status=status.HTTP_400_BAD_REQUEST)
         order = update_order(order_id=id,
                              schedule=delivery_data, discount=discount)
         return Response(self.OrderDetailOutPutSerializer(order).data, status=status.HTTP_200_OK)
@@ -418,8 +421,10 @@ class IsBoughtProductAPIView(APIView):
     class IsBoughtInPutSerializer(serializers.Serializer):
         product = serializers.CharField(max_length=15 , required=False)
 
+    class IsBoughtOutPutSerializer(serializers.Serializer):
+        is_bought = serializers.CharField()
 
-    @extend_schema(request=IsBoughtInPutSerializer , responses={200: {"is_bought": "str"}})
+    @extend_schema(request=IsBoughtInPutSerializer , responses={200: IsBoughtOutPutSerializer})
     def post(self, request):
         serializer = self.IsBoughtInPutSerializer(data = request.data)
         serializer.is_valid(raise_exception=True)
@@ -433,8 +438,6 @@ class IsBoughtProductAPIView(APIView):
             return Response({"is_bought": "True"}, status=status.HTTP_200_OK)
         if is_bought== False:
             return Response({"is_bought": "False"}, status=status.HTTP_200_OK)
-
-
 
 
 

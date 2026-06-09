@@ -16,6 +16,9 @@ DEBUG = True
 
 ALLOWED_HOSTS = env.list('ALLOWED_HOSTS', default=['*'])
 
+CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOW_CREDENTIALS = True
+
 # Application definition
 LOCAL_APPS = [
     'cheatgame.core.apps.CoreConfig',

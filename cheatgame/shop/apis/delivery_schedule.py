@@ -1,6 +1,7 @@
 import datetime
 from datetime import timedelta
 
+from django.db import IntegrityError
 from django.utils import timezone
 from drf_spectacular.utils import extend_schema
 from rest_framework import serializers, status
@@ -9,7 +10,7 @@ from rest_framework.views import APIView
 
 from cheatgame.api.mixins import ApiAuthMixin
 from cheatgame.product.permissions import AdminOrManagerPermission, CustomerPermission
-from cheatgame.shop.models import DeliveryScheduleType, DeliverySchedule, DeliveryType, DeliveryData, DeliverySide
+from cheatgame.shop.models import DeliveryScheduleType, DeliverySchedule, DeliveryType, DeliveryData, DeliverySide, Order
 from cheatgame.shop.selectors.delivery_schedule import get_list_of_delivery_schedule
 from cheatgame.shop.services.delivery_schedule import create_delivery_schedule, update_delivery_schedule, \
     delete_delivery_schedule, create_schedule_data
@@ -168,6 +169,18 @@ class DeliveryDataApi(ApiAuthMixin, APIView):
                 return Response({"error": "وارد کردن آدرس ضروری است"}, status=status.HTTP_400_BAD_REQUEST)
             if address.user != request.user:
                 return Response({"error": "آدرس باید برای خود کاربر باشد."}, status=status.HTTP_400_BAD_REQUEST)
+        if address is not None:
+            existing_delivery_data = DeliveryData.objects.filter(
+                type=type_schedule,
+                schedule=schedule,
+                address=address,
+            ).first()
+            if existing_delivery_data is not None:
+                if existing_delivery_data.is_used or Order.objects.filter(schedule=existing_delivery_data).exists():
+                    return Response({"error": "این زمان برای آدرس انتخاب شده قبلا رزرو شده است."},
+                                    status=status.HTTP_400_BAD_REQUEST)
+                return Response(self.DeliveryDataOutPutSerializer(existing_delivery_data).data,
+                                status=status.HTTP_200_OK)
         if schedule.capacity <= 0:
             return Response({"error": "زمان انتخاب شده پر شده است "}, status=status.HTTP_400_BAD_REQUEST)
         if type_schedule.side != schedule.type:
@@ -177,7 +190,10 @@ class DeliveryDataApi(ApiAuthMixin, APIView):
             if schedule.start.date() < (timezone.now() + timedelta(days=4)).date():
                 return Response({"error": "زمان انتخابی برای ارسال باید حداقل سه روز بعد از زمان رزرو باشد."},
                                 status=status.HTTP_400_BAD_REQUEST)
-        delivery_data = create_schedule_data(type=type_schedule, address=address, schedule=schedule)
+        try:
+            delivery_data = create_schedule_data(type=type_schedule, address=address, schedule=schedule)
+        except IntegrityError:
+            return Response({"error": "این زمان قبلا رزرو شده است."}, status=status.HTTP_400_BAD_REQUEST)
         return Response(self.DeliveryDataOutPutSerializer(delivery_data).data, status=status.HTTP_200_OK)
         # except Exception as error:
         #     return Response({"error": "مشکلی در رزرو زمان پیش آمد است"}, status=status.HTTP_400_BAD_REQUEST)
