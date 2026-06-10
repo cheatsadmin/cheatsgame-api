@@ -8,6 +8,23 @@ FORGET_PASSWORD_PATTERN = env("FORGET_PASSWORD_PATTERN", default=None)
 PANEL_SMS_URL = env("PANEL_SMS_URL", default=None)
 PANEL_SMS_USER = env("PANEL_SMS_USER", default=None)
 PANEL_SMS_PASS = env("PANEL_SMS_PASS", default=None)
+PAYMENT_GATEWAY_PROVIDER = env("PAYMENT_GATEWAY_PROVIDER", default="fake")
+PAYMENT_SUCCESS_REDIRECT_URL = env("PAYMENT_SUCCESS_REDIRECT_URL", default="")
+PAYMENT_AMOUNT_UNIT = env("PAYMENT_AMOUNT_UNIT", default="IRT")
+ZARINPAL_MERCHANT_ID = env("ZARINPAL_MERCHANT_ID", default="")
+ZARINPAL_SANDBOX = env.bool("ZARINPAL_SANDBOX", default=True)
+ZARINPAL_REQUEST_URL = env(
+    "ZARINPAL_REQUEST_URL",
+    default="https://sandbox.zarinpal.com/pg/v4/payment/request.json",
+)
+ZARINPAL_VERIFY_URL = env(
+    "ZARINPAL_VERIFY_URL",
+    default="https://sandbox.zarinpal.com/pg/v4/payment/verify.json",
+)
+ZARINPAL_STARTPAY_URL = env(
+    "ZARINPAL_STARTPAY_URL",
+    default="https://sandbox.zarinpal.com/pg/StartPay/{authority}",
+)
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = '=ug_ucl@yi6^mrcjyz%(u0%&g2adt#bz3@yos%#@*t#t!ypx=a'
 
@@ -155,7 +172,17 @@ REST_FRAMEWORK = {
     ),
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework_simplejwt.authentication.JWTAuthentication',
-    ]
+    ],
+    'DEFAULT_THROTTLE_RATES': {
+        'login': env('DRF_THROTTLE_LOGIN', default='10/min'),
+        'register': env('DRF_THROTTLE_REGISTER', default='5/min'),
+        'otp_request': env('DRF_THROTTLE_OTP_REQUEST', default='3/min'),
+        'otp_verify': env('DRF_THROTTLE_OTP_VERIFY', default='10/min'),
+        'password_reset_request': env('DRF_THROTTLE_PASSWORD_RESET_REQUEST', default='3/min'),
+        'password_reset_confirm': env('DRF_THROTTLE_PASSWORD_RESET_CONFIRM', default='10/min'),
+        'checkout_write': env('DRF_THROTTLE_CHECKOUT_WRITE', default='60/min'),
+        'payment_write': env('DRF_THROTTLE_PAYMENT_WRITE', default='60/min'),
+    },
 }
 
 

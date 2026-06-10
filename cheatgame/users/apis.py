@@ -1,8 +1,10 @@
+from django.conf import settings
 from rest_framework import status
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework import serializers
+from rest_framework.throttling import ScopedRateThrottle
 from .services import generate_otp, confirm_email, confirm_phone, update_user, change_password, create_address, \
     update_address, delete_address, create_favorite_product, delete_favorite_product, create_contact_form, \
     update_contact_form
@@ -19,7 +21,6 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 from drf_spectacular.utils import extend_schema
 from cheatgame.utils.notification.sms import send_sms
-from config.django.base import IS_SEND_SMS, VERIFY_PATTERN, FORGET_PASSWORD_PATTERN
 from ..api.mixins import ApiAuthMixin
 from ..api.pagination import PaginatedSerializer, get_paginated_response, LimitOffsetPagination
 from ..common.utils import reformat_url
@@ -77,6 +78,9 @@ class UserApi(APIView, ApiAuthMixin):
 
 
 class RegisterApi(APIView):
+    throttle_classes = (ScopedRateThrottle,)
+    throttle_scope = "register"
+
     class InputRegisterSerializer(serializers.Serializer):
         phone_number = serializers.CharField(max_length=13, validators=[
             phone_number_validator
@@ -148,6 +152,9 @@ class RegisterApi(APIView):
 
 
 class VerifyPhoneRequestApi(APIView):
+    throttle_classes = (ScopedRateThrottle,)
+    throttle_scope = "otp_request"
+
     class InputPhoneOtpSerializer(serializers.Serializer):
         phone_number = serializers.CharField(max_length=11, required=True , validators=[phone_number_validator])
 
@@ -160,18 +167,21 @@ class VerifyPhoneRequestApi(APIView):
                 return Response({"message": "این کاربر وجود ندارد"} , status=status.HTTP_400_BAD_REQUEST)
             user = get_user(phone_number=serializer.validated_data.get('phone_number'))
             otp = generate_otp(user=user, verify_type=VerifyType.PHONENUMBER)
-            if IS_SEND_SMS:
-                send_sms(to=user.phone_number, pattern=VERIFY_PATTERN, otp=otp)
-                return Response({"message": "کد با موفقیت ارسال گردید"}, status=status.HTTP_200_OK)
-            else:
-                return Response({f"message': ' کد با موفقیت ارسال گردید{otp=}"}, status=status.HTTP_200_OK)
+            if settings.IS_SEND_SMS:
+                send_sms(to=user.phone_number, pattern=settings.VERIFY_PATTERN, otp=otp)
+            return Response({"message": "کد با موفقیت ارسال گردید"}, status=status.HTTP_200_OK)
         except Exception as ex:
             return Response({"error": "مشکلی رخ داده است"}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class ChangePasswordRequestApi(APIView):
+    throttle_classes = (ScopedRateThrottle,)
+    throttle_scope = "password_reset_request"
+
     class InputPasswordOtpSerializer(serializers.Serializer):
-        phone_number = serializers.CharField(max_length=11, required=True)
+        phone_number = serializers.CharField(max_length=11, required=True, validators=[
+            phone_number_validator
+        ])
 
     @extend_schema(request=InputPasswordOtpSerializer, responses={status.HTTP_200_OK: dict})
     def post(self, request):
@@ -182,16 +192,17 @@ class ChangePasswordRequestApi(APIView):
                 return Response({"message": "این کاربر وجود ندارد"}, status=status.HTTP_400_BAD_REQUEST)
             user = get_user(phone_number=serializer.validated_data.get('phone_number'))
             otp = generate_otp(user=user, verify_type=VerifyType.PASSWORD)
-            if IS_SEND_SMS:
-                send_sms(to=user.phone_number, pattern=FORGET_PASSWORD_PATTERN, otp=otp)
-                return Response({"message": "کد با موفقیت ارسال گردید"}, status=status.HTTP_200_OK)
-            else:
-                return Response({f"message': ' کد با موفقیت ارسال گردید{otp=}"}, status=status.HTTP_200_OK)
+            if settings.IS_SEND_SMS:
+                send_sms(to=user.phone_number, pattern=settings.FORGET_PASSWORD_PATTERN, otp=otp)
+            return Response({"message": "کد با موفقیت ارسال گردید"}, status=status.HTTP_200_OK)
         except Exception as ex:
             return Response({"error": "مشکلی رخ داده است"}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class VerifyEmailRequestApi(ApiAuthMixin, APIView):
+    throttle_classes = (ScopedRateThrottle,)
+    throttle_scope = "otp_request"
+
     class InputEmailOtpSerializer(serializers.Serializer):
         email = serializers.EmailField(required=True)
 
@@ -200,18 +211,21 @@ class VerifyEmailRequestApi(ApiAuthMixin, APIView):
         serializer = self.InputEmailOtpSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
-            otp = generate_otp(user=request.user, verify_type=VerifyType.EMAIL)
+            generate_otp(user=request.user, verify_type=VerifyType.EMAIL)
             # TODO: send otp via email
-            print(otp)
-
-            return Response({f'message': f"کد با موفقیت ارسال گردید{otp=}"}, status=status.HTTP_200_OK)
+            return Response({'message': "کد با موفقیت ارسال گردید"}, status=status.HTTP_200_OK)
         except Exception as ex:
             return Response({"error": "مشکلی رخ داده است"}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class VerfiyPhoneApi(APIView):
+    throttle_classes = (ScopedRateThrottle,)
+    throttle_scope = "otp_verify"
+
     class InputVerifyPhoneSerilazer(serializers.Serializer):
-        phone_number = serializers.CharField(max_length=11, required=True)
+        phone_number = serializers.CharField(max_length=11, required=True, validators=[
+            phone_number_validator
+        ])
         otp = serializers.CharField(required=True)
 
     @extend_schema(request=InputVerifyPhoneSerilazer, responses={status.HTTP_200_OK: dict})
@@ -230,6 +244,9 @@ class VerfiyPhoneApi(APIView):
 
 
 class ChangePasswordApi(APIView):
+    throttle_classes = (ScopedRateThrottle,)
+    throttle_scope = "password_reset_confirm"
+
     class InputChangePasswordSerializer(serializers.Serializer):
         otp = serializers.IntegerField(required=True)
         new_password = serializers.CharField(
@@ -241,7 +258,9 @@ class ChangePasswordApi(APIView):
             ]
         )
         confirm_new_password = serializers.CharField(max_length=255)
-        phone_number = serializers.CharField(max_length=100)
+        phone_number = serializers.CharField(max_length=11, validators=[
+            phone_number_validator
+        ])
 
         def validate(self, data):
             if not data.get("new_password") or not data.get("confirm_new_password"):
@@ -266,6 +285,9 @@ class ChangePasswordApi(APIView):
 
 
 class VerifyEmailApi(APIView, ApiAuthMixin):
+    throttle_classes = (ScopedRateThrottle,)
+    throttle_scope = "otp_verify"
+
     class InputVerifyEmailSerializer(serializers.Serializer):
         email = serializers.EmailField(required=True)
         otp = serializers.IntegerField(required=True)
@@ -345,7 +367,8 @@ class AddressDetailApi(ApiAuthMixin, APIView):
                 city=serializer.validated_data.get("city"),
                 postal_code=serializer.validated_data.get("postal_code"),
                 address_detail=serializer.validated_data.get("address_detail"),
-                address_id=id
+                address_id=id,
+                user=request.user,
             )
             return Response(self.AddressDetailOutPutSerializer(address).data, status=status.HTTP_200_OK)
         except Exception as error:
@@ -354,7 +377,7 @@ class AddressDetailApi(ApiAuthMixin, APIView):
     @extend_schema(responses={status.HTTP_200_OK: dict})
     def delete(self, request, id: int):
         try:
-            delete_address(address_id=id)
+            delete_address(address_id=id, user=request.user)
             return Response({"message": "آدرس با موفقیت حذف گردید"}, status=status.HTTP_200_OK)
         except Exception as error:
             return Response({"error": "مشکل در حذف آدرس پیش آمده است"}, status=status.HTTP_400_BAD_REQUEST)

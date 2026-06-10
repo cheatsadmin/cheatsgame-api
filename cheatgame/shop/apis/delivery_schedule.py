@@ -6,6 +6,7 @@ from django.utils import timezone
 from drf_spectacular.utils import extend_schema
 from rest_framework import serializers, status
 from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from cheatgame.api.mixins import ApiAuthMixin
@@ -145,6 +146,8 @@ class DeliveryScheduleList(APIView):
 
 class DeliveryDataApi(ApiAuthMixin, APIView):
     permission_classes = (CustomerPermission,)
+    throttle_classes = (ScopedRateThrottle,)
+    throttle_scope = "checkout_write"
 
     class DeliveryDataInPutSerializer(serializers.Serializer):
         type = serializers.PrimaryKeyRelatedField(queryset=DeliveryType.objects.all())
@@ -164,11 +167,11 @@ class DeliveryDataApi(ApiAuthMixin, APIView):
         address = serializer.validated_data.get("address", None)
         type_schedule = serializer.validated_data.get("type")
         schedule = serializer.validated_data.get("schedule")
+        if address is not None and address.user_id != request.user.id:
+            return Response({"error": "آدرس باید برای خود کاربر باشد."}, status=status.HTTP_400_BAD_REQUEST)
         if type_schedule.side == DeliverySide.SENDTOUSER:
             if address is None:
                 return Response({"error": "وارد کردن آدرس ضروری است"}, status=status.HTTP_400_BAD_REQUEST)
-            if address.user != request.user:
-                return Response({"error": "آدرس باید برای خود کاربر باشد."}, status=status.HTTP_400_BAD_REQUEST)
         if address is not None:
             existing_delivery_data = DeliveryData.objects.filter(
                 type=type_schedule,

@@ -1,6 +1,7 @@
 from drf_spectacular.utils import extend_schema
 from rest_framework import serializers, status
 from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from cheatgame.api.mixins import ApiAuthMixin
@@ -8,15 +9,16 @@ from cheatgame.api.utils import inline_serializer
 from cheatgame.common.utils import reformat_url
 from cheatgame.product.apis.product import ProductDetailProductSerializer
 from cheatgame.product.models import Attachment, Product, ProductType
-from cheatgame.product.permissions import CustomerPermission, CartItemIsOwnerCustomer
+from cheatgame.product.permissions import CustomerPermission, CartItemIsOwnerCustomer, AdminOrManagerPermission
 from cheatgame.product.selectors.product import suggestions_product
 from cheatgame.shop.models import CartItem, Order, Discount, DeliveryData, OrderItem, CartItemAttachment
-from cheatgame.shop.selectors.cart import cart_item_list_user, cart_item_attachment_list, order_list_user, \
-    check_order_exists, get_order, sell_report, bought_order_item
+from cheatgame.shop.payments.services import get_latest_order_transaction_summary
+from cheatgame.shop.selectors.cart import cart_item_list_user, cart_item_attachment_list, order_list_user, sell_report, bought_order_item
 from cheatgame.shop.selectors.discount import check_discount_code, check_coupon_code
 from cheatgame.shop.services.cart import check_product_limit, check_product_avaliablity, check_attachment, \
     check_cart_item_exists, add_to_cart, update_cart_item, delete_cart_item, check_attachment_order
 from cheatgame.shop.services.order import submit_order, update_order
+from cheatgame.users.models import BaseUser
 
 
 class ProductAttachmentInPutSerializer(serializers.Serializer):
@@ -51,6 +53,8 @@ class ProductDetailCartSerializer(serializers.ModelSerializer):
 
 class AddToCart(ApiAuthMixin, APIView):
     permission_classes = (CustomerPermission,)
+    throttle_classes = (ScopedRateThrottle,)
+    throttle_scope = "checkout_write"
 
     class AddToCartInPutSerializer(serializers.Serializer):
         attachment = ProductAttachmentInPutSerializer(many=True)
@@ -93,6 +97,8 @@ class AddToCart(ApiAuthMixin, APIView):
 
 class CartItemDetail(ApiAuthMixin, APIView):
     permission_classes = (CustomerPermission, CartItemIsOwnerCustomer,)
+    throttle_classes = (ScopedRateThrottle,)
+    throttle_scope = "checkout_write"
 
     class CartItemDetailInPutSerializer(serializers.Serializer):
         quantity = serializers.IntegerField()
@@ -109,7 +115,11 @@ class CartItemDetail(ApiAuthMixin, APIView):
         serializer = self.CartItemDetailInPutSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
-            cart_item = CartItem.objects.get(id=id)
+            cart_item = CartItem.objects.filter(id=id, cart__user=request.user).first()
+            if cart_item is None:
+                return Response({"error": "محصولی با این مشخصات در سبد خرید شما یافت نشد."},
+                                status=status.HTTP_400_BAD_REQUEST)
+            self.check_object_permissions(request, cart_item)
             if not check_product_limit(product=cart_item.product,
                                        quantity=serializer.validated_data.get("quantity")):
                 return Response({"error": "تعداد بیش از حد مجاز می باشد."}, status=status.HTTP_400_BAD_REQUEST)
@@ -126,13 +136,20 @@ class CartItemDetail(ApiAuthMixin, APIView):
     @extend_schema(responses={status.HTTP_200_OK: dict})
     def delete(self, request, id: int):
         try:
-            delete_cart_item(cart_item_id=id)
+            cart_item = CartItem.objects.filter(id=id, cart__user=request.user).first()
+            if cart_item is None:
+                return Response({"error": "محصولی با این مشخصات در سبد خرید شما یافت نشد."},
+                                status=status.HTTP_400_BAD_REQUEST)
+            self.check_object_permissions(request, cart_item)
+            delete_cart_item(cart_item_id=cart_item.id)
             return Response({"message": "محصول از سبد حذف شد"}, status=status.HTTP_200_OK)
         except Exception as error:
             return Response({"error": "مشکلی پیش آمد"}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class CartItemListApi(ApiAuthMixin, APIView):
+    permission_classes = (CustomerPermission,)
+
     class CartItemListOutPutSerializer(serializers.ModelSerializer):
         product = ProductDetailCartSerializer()
         attachment = serializers.SerializerMethodField()
@@ -157,6 +174,8 @@ class CartItemListApi(ApiAuthMixin, APIView):
 
 class SubmitOrderApi(ApiAuthMixin, APIView):
     permission_classes = (CustomerPermission,)
+    throttle_classes = (ScopedRateThrottle,)
+    throttle_scope = "checkout_write"
 
     class OrderOutPutSerializer(serializers.ModelSerializer):
         class Meta:
@@ -212,6 +231,17 @@ class OrderScheduleOutPutSerializer(serializers.Serializer):
     })
 
 
+class OrderUserSummarySerializer(serializers.ModelSerializer):
+    full_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = BaseUser
+        fields = ("id", "firstname", "lastname", "phone_number", "email", "full_name")
+
+    def get_full_name(self, user: BaseUser):
+        return " ".join([user.firstname, user.lastname]).strip()
+
+
 class OrderListCustomerAPIView(ApiAuthMixin, APIView):
     permission_classes = (CustomerPermission,)
 
@@ -265,6 +295,8 @@ class OrderListCustomerAPIView(ApiAuthMixin, APIView):
 
 class OrderDetailUserApi(ApiAuthMixin, APIView):
     permission_classes = [CustomerPermission, ]
+    throttle_classes = (ScopedRateThrottle,)
+    throttle_scope = "checkout_write"
 
     class OrderDetailInPutSerializer(serializers.Serializer):
         discount = serializers.PrimaryKeyRelatedField(queryset=Discount.objects.filter(is_active=True) , required=False)
@@ -288,7 +320,7 @@ class OrderDetailUserApi(ApiAuthMixin, APIView):
         delivery_data = serializer.validated_data.get("schedule")
         # TODO: check created is passed more that ten min
         discount = serializer.validated_data.get("discount", None)
-        order = Order.objects.filter(id=id).first()
+        order = Order.objects.filter(id=id, user=request.user).first()
         if order is None:
             return Response({"error": "سفارشی با این مشخصات یافت نشد."}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -298,10 +330,13 @@ class OrderDetailUserApi(ApiAuthMixin, APIView):
             coupon_code_result = check_coupon_code(total_price=order.total_price, code=discount.code)
             if dicount_code_result == False and coupon_code_result == False:
                 return Response({"error": "کد تخفیف  معتبر نیست."}, status=status.HTTP_400_BAD_REQUEST)
+        if delivery_data is not None and delivery_data.address_id is not None and delivery_data.address.user_id != request.user.id:
+            return Response({"error": "آدرس زمان ارسال باید برای خود کاربر باشد."},
+                            status=status.HTTP_400_BAD_REQUEST)
         if delivery_data is not None and Order.objects.filter(schedule=delivery_data).exclude(id=id).exists():
             return Response({"error": "این زمان قبلا برای سفارش دیگری ثبت شده است."},
                             status=status.HTTP_400_BAD_REQUEST)
-        order = update_order(order_id=id,
+        order = update_order(order_id=order.id,
                              schedule=delivery_data, discount=discount)
         return Response(self.OrderDetailOutPutSerializer(order).data, status=status.HTTP_200_OK)
         # except Exception as e:
@@ -353,6 +388,7 @@ class OrderDetailCustomerAPIView(ApiAuthMixin, APIView):
     class OrderDetailCusotmerOutPutSerializer(serializers.ModelSerializer):
         schedule = OrderScheduleOutPutSerializer(read_only=False, required=False)
         product_data = serializers.SerializerMethodField()
+        payment_transaction = serializers.SerializerMethodField()
 
         class OrderProductDetailOutPutSerializer(serializers.Serializer):
             product = inline_serializer(fields={
@@ -379,11 +415,14 @@ class OrderDetailCustomerAPIView(ApiAuthMixin, APIView):
             order_items = OrderItem.objects.filter(order=order).prefetch_related('product')
             return self.OrderProductDetailOutPutSerializer(order_items, many=True).data
 
+        def get_payment_transaction(self, order: Order):
+            return get_latest_order_transaction_summary(order=order)
+
         class Meta:
             model = Order
             fields = (
                 "id", "discount", "payment_status", "user_status", "schedule", "total_price_discount", "total_price",
-                "created_at", "product_data", "is_game")
+                "created_at", "product_data", "is_game", "payment_transaction")
 
             extra_kwargs = {
                 "total_price_discount": {"required": False},
@@ -393,15 +432,120 @@ class OrderDetailCustomerAPIView(ApiAuthMixin, APIView):
     @extend_schema(responses=OrderDetailCusotmerOutPutSerializer)
     def get(self, request, id):
         try:
-            if not check_order_exists(order_id=id):
+            order = Order.objects.filter(id=id, user=request.user).first()
+            if order is None:
                 return Response({"error": "سفارش یافت نشد."}, status=status.HTTP_400_BAD_REQUEST)
-            order = get_order(order_id=id)
             return Response(self.OrderDetailCusotmerOutPutSerializer(order).data, status=status.HTTP_200_OK)
         except Exception as e:
             return Response({"error": "مشکلی یافتن سفارش پیش آمده است."}, status=status.HTTP_400_BAD_REQUEST)
 
 
-class SellReport(APIView):
+class OrderListAdminAPIView(ApiAuthMixin, APIView):
+    permission_classes = (AdminOrManagerPermission,)
+
+    class OrderListAdminOutPutSerializer(serializers.ModelSerializer):
+        user = OrderUserSummarySerializer(read_only=True)
+        customer = OrderUserSummarySerializer(source="user", read_only=True)
+        schedule = OrderScheduleOutPutSerializer(read_only=False, required=False)
+        product_images = serializers.SerializerMethodField()
+
+        class ProductImageOutPutSerializer(serializers.Serializer):
+            product = inline_serializer(fields={
+                "id": serializers.IntegerField(),
+                "main_image": serializers.FileField()
+            })
+
+            def to_representation(self, instance):
+                representation = super().to_representation(instance)
+                products_data = representation["product"]
+                products_data["main_image"] = reformat_url(url=products_data["main_image"])
+                representation["product"] = products_data
+                return representation
+
+        def get_product_images(self, order: Order):
+            order_items = OrderItem.objects.filter(order=order).prefetch_related("product")
+            return self.ProductImageOutPutSerializer(order_items, many=True).data
+
+        class Meta:
+            model = Order
+            fields = (
+                "id", "discount", "payment_status", "user_status", "schedule", "total_price_discount", "total_price",
+                "created_at", "product_images", "is_game", "user", "customer")
+
+            extra_kwargs = {
+                "total_price_discount": {"required": False},
+                "total_price": {"required": False},
+            }
+
+    @extend_schema(responses=OrderListAdminOutPutSerializer(many=True))
+    def get(self, request):
+        orders = (
+            Order.objects.filter(is_game=False)
+            .select_related("user", "schedule__type", "schedule__schedule", "schedule__address")
+            .prefetch_related("order_items__product")
+            .order_by("-created_at")
+        )
+        return Response(self.OrderListAdminOutPutSerializer(orders, many=True).data, status=status.HTTP_200_OK)
+
+
+class OrderDetailAdminAPIView(ApiAuthMixin, APIView):
+    permission_classes = (AdminOrManagerPermission,)
+
+    class OrderDetailAdminOutPutSerializer(serializers.ModelSerializer):
+        user = OrderUserSummarySerializer(read_only=True)
+        customer = OrderUserSummarySerializer(source="user", read_only=True)
+        schedule = OrderScheduleOutPutSerializer(read_only=False, required=False)
+        product_data = serializers.SerializerMethodField()
+        payment_transaction = serializers.SerializerMethodField()
+
+        class OrderProductDetailOutPutSerializer(serializers.Serializer):
+            product = inline_serializer(fields={
+                "id": serializers.IntegerField(),
+                "main_image": serializers.FileField(),
+                "product_type": serializers.IntegerField(),
+                "title": serializers.CharField(),
+                "slug": serializers.CharField(),
+                "price": serializers.DecimalField(max_digits=25, decimal_places=0),
+                "off_price": serializers.DecimalField(max_digits=25, decimal_places=0),
+
+            })
+
+        def get_product_data(self, order: Order):
+            order_items = OrderItem.objects.filter(order=order).prefetch_related("product")
+            product_data = self.OrderProductDetailOutPutSerializer(order_items, many=True).data
+            for product in product_data:
+                product["product"]["main_image"] = reformat_url(url=product["product"]["main_image"])
+            return product_data
+
+        def get_payment_transaction(self, order: Order):
+            return get_latest_order_transaction_summary(order=order)
+
+        class Meta:
+            model = Order
+            fields = (
+                "id", "discount", "payment_status", "user_status", "schedule", "total_price_discount", "total_price",
+                "created_at", "product_data", "is_game", "payment_transaction", "user", "customer")
+
+            extra_kwargs = {
+                "total_price_discount": {"required": False},
+                "total_price": {"required": False},
+            }
+
+    @extend_schema(responses=OrderDetailAdminOutPutSerializer)
+    def get(self, request, id):
+        order = (
+            Order.objects.select_related("user", "schedule__type", "schedule__schedule", "schedule__address")
+            .prefetch_related("order_items__product")
+            .filter(id=id, is_game=False)
+            .first()
+        )
+        if order is None:
+            return Response({"error": "سفارش یافت نشد."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(self.OrderDetailAdminOutPutSerializer(order).data, status=status.HTTP_200_OK)
+
+
+class SellReport(ApiAuthMixin, APIView):
+    permission_classes = (AdminOrManagerPermission,)
 
     class OrderReportFitler(serializers.Serializer):
         updated_at__range = serializers.CharField(max_length=200 , required=False)
@@ -438,7 +582,4 @@ class IsBoughtProductAPIView(APIView):
             return Response({"is_bought": "True"}, status=status.HTTP_200_OK)
         if is_bought== False:
             return Response({"is_bought": "False"}, status=status.HTTP_200_OK)
-
-
-
 

@@ -30,7 +30,7 @@ class CustomerPermission(BasePermission):
     def has_permission(self, request, view) -> bool:
         if request.user.is_anonymous:
             raise PermissionDenied("ابتدا وارد شوید.")
-        if request.user.user_type == UserTypes.CUSTOMER:
+        if request.user.user_type == UserTypes.CUSTOMER and request.user.phone_verified:
             return True
         else:
             raise PermissionDenied("ابتدا وارد شوید.")
@@ -87,7 +87,7 @@ class CartItemIsOwnerCustomer(BasePermission):
 class IssueReportIsOwnerCustomer(BasePermission):
 
     def has_object_permission(self, request , view,obj) -> bool:
-         if request.user.id == obj.issue.user.id:
+         if request.user.id == obj.user_id:
              return True
          else:
              raise PermissionDenied("شما به این بخش دسترسی ندارید.")

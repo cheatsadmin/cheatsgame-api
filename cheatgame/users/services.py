@@ -33,8 +33,6 @@ def update_user_secret(*, user: BaseUser, secret: str, verify_type: int) -> None
 def generate_otp(*, user: BaseUser, verify_type: int) -> str:
     secret = pyotp.random_base32()
     update_user_secret(user=user, secret=secret, verify_type=verify_type)
-    print(secret)
-    print(user.secret_key)
     totp = pyotp.TOTP(s=secret, interval=120)
     return totp.now()
 
@@ -74,8 +72,9 @@ def delete_favorite_product(*, user: BaseUser, id: int) -> None:
     FavoriteProduct.objects.get(user=user, id=id).delete()
 
 
-def update_address(*, address_id: int, province: str, city: str, postal_code: str, address_detail: str) -> Address:
-    address = Address.objects.get(id=address_id)
+
+def update_address(*, user: BaseUser, address_id: int, province: str, city: str, postal_code: str, address_detail: str) -> Address:
+    address = Address.objects.get(id=address_id, user=user)
     address.province = province
     address.city = city
     address.postal_code = postal_code
@@ -84,8 +83,8 @@ def update_address(*, address_id: int, province: str, city: str, postal_code: st
     return address
 
 
-def delete_address(*, address_id: int) -> None:
-    return Address.objects.get(id=address_id).delete()
+def delete_address(*, user: BaseUser, address_id: int) -> None:
+    return Address.objects.get(id=address_id, user=user).delete()
 
 
 def create_contact_form(*, firstname: str, lastname: str, description: str, phone_number: str,

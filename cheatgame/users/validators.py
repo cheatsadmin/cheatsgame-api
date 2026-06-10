@@ -6,13 +6,12 @@ import re
 
 
 def phone_number_validator(phone_number):
-    regex = re.compile('/((0?9)|(\+?989))\d{2}\W?\d{3}\W?\d{4}/g')
+    regex = re.compile(r'^09\d{9}$')
     if not regex.fullmatch(phone_number):
         raise ValidationError(
             _("شماره تماس وارد شده معتبر نمی باشد.")
         )
 def check_phone_number(phone_number):
-    print(phone_number)
     regex = re.compile('[0-9]')
     for char in phone_number:
         if not regex.fullmatch(char):

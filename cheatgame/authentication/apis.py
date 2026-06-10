@@ -2,6 +2,7 @@ from django.contrib.auth import authenticate
 from drf_spectacular.utils import extend_schema
 from rest_framework import serializers, status
 from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 
@@ -38,7 +39,6 @@ def authenticate_user(request, user_type):
     serializer.is_valid(raise_exception=True)
     phone_number = serializer.validated_data.get('phone_number')
     password = serializer.validated_data.get('password')
-    print(check_phone_number(serializer.validated_data.get("phone_number")))
     if not check_phone_number(serializer.validated_data.get("phone_number")):
         return Response({"error": "شماره فقط با حروف انگلیسی قابل قبول است."}, status=status.HTTP_400_BAD_REQUEST)
     user = authenticate(request=request, phone_number=phone_number, password=password)
@@ -56,6 +56,8 @@ def authenticate_user(request, user_type):
 
 
 class CustomerLoginApi(APIView):
+    throttle_classes = (ScopedRateThrottle,)
+    throttle_scope = "login"
 
     @extend_schema(request=InPutLoginSerializer, responses=OutPutLoginSerializer)
     def post(self, request):
@@ -72,6 +74,8 @@ class CustomerLoginApi(APIView):
 
 
 class ManagerLoginApi(APIView):
+    throttle_classes = (ScopedRateThrottle,)
+    throttle_scope = "login"
 
     @extend_schema(request=InPutLoginSerializer, responses=OutPutLoginSerializer)
     def post(self, request):
@@ -88,6 +92,8 @@ class ManagerLoginApi(APIView):
 
 
 class AdminLoginApi(APIView):
+    throttle_classes = (ScopedRateThrottle,)
+    throttle_scope = "login"
 
     @extend_schema(request=InPutLoginSerializer, responses=OutPutLoginSerializer)
     def post(self, request):

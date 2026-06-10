@@ -23,8 +23,8 @@ def create_issue_report(*, user: BaseUser, explanation: str, issue_list: List[Is
     return issue_report
 
 
-def update_issue_report(*, issue_report_id: int, delivery_data: DeliveryData) -> IssueReport:
-    issue_report = IssueReport.objects.get(id=issue_report_id)
+def update_issue_report(*, issue_report_id: int, user: BaseUser, delivery_data: DeliveryData) -> IssueReport:
+    issue_report = IssueReport.objects.get(id=issue_report_id, user=user)
     issue_report.delivery_data = delivery_data
     issue_report.status = IssueReportStatus.DURING
     issue_report.save(update_fields=['delivery_data'  , 'status' ])

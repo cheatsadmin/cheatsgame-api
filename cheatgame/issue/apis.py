@@ -180,14 +180,23 @@ class IssueReportDetailApi(ApiAuthMixin, APIView):
         # try:
         # TODO: check if five minute pass from created_at delivery_data is not valid.
         # TODO: add bool in delivery data instance is_used for not.
+        issue_report = IssueReport.objects.filter(id=id).first()
+        if issue_report is None:
+            return Response({"error": "درخواست تعمیر یافت نشد."}, status=status.HTTP_400_BAD_REQUEST)
+        self.check_object_permissions(request, issue_report)
+        delivery_data = serializer.validated_data.get('delivery_data')
+        if delivery_data.address_id is not None and delivery_data.address.user_id != request.user.id:
+            return Response({"error": "آدرس زمان تعمیر باید برای خود کاربر باشد."}, status=status.HTTP_400_BAD_REQUEST)
         issue_report = update_issue_report(issue_report_id=id,
-                                           delivery_data=serializer.validated_data.get('delivery_data'))
+                                           user=request.user,
+                                           delivery_data=delivery_data)
         return Response(self.IssueReportDetailOutPutSerializer(issue_report).data, status=status.HTTP_200_OK)
         # except Exception as e:
         #     return Response({"error": "مشکلی در گرفتن نوبت پیش آمده است."} , status = status.HTTP_400_BAD_REQUEST)
 
 
-class GenerateHTML(APIView):
+class GenerateHTML(ApiAuthMixin, APIView):
+    permission_classes = (AdminOrManagerPermission,)
     class StringSerializer(serializers.Serializer):
         input_string = serializers.CharField(max_length=10000)
 

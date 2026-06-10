@@ -36,6 +36,9 @@ MANIFEST
 # Installer logs
 pip-log.txt
 pip-delete-this-directory.txt
+*.patch
+.DS_Store
+HANDOFF*.md
 
 # Unit tests / coverage reports
 htmlcov/

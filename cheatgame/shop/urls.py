@@ -1,12 +1,14 @@
 from django.urls import path
 
 from cheatgame.shop.apis.cart import AddToCart, CartItemDetail, CartItemListApi, SubmitOrderApi, \
-    OrderListCustomerAPIView, GameListCustomerAPIView, OrderDetailUserApi, OrderDetailCustomerAPIView, SellReport
+    OrderListCustomerAPIView, GameListCustomerAPIView, OrderDetailUserApi, OrderDetailCustomerAPIView, SellReport, \
+    OrderListAdminAPIView, OrderDetailAdminAPIView
 from cheatgame.shop.apis.delivery_schedule import DeliveryScheduleAdminApi, DeliveryScheduleDetailAdminApi, \
     DeliveryScheduleList, DeliveryDataApi
 from cheatgame.shop.apis.delivery_type import DeliveryTypeAdminApi, DeliveryTypeDetailApi, DeliveryTypeListApi
 from cheatgame.shop.apis.discount import DiscountAdminApi, DiscountDetailSerializer, DiscountListAdmin, \
     CheckUserDiscountApi, CheckCouponApi, DiscountListUser
+from cheatgame.shop.apis.payment import CreatePaymentRequestApi, PaymentTransactionDetailApi, VerifyPaymentApi
 
 urlpatterns = [
     path("create-discount-code/", DiscountAdminApi.as_view(), name="create-discount"),
@@ -27,9 +29,14 @@ urlpatterns = [
     path("book-time/" , DeliveryDataApi.as_view() , name="book-time"),
     path("submit-order/"  , SubmitOrderApi.as_view() , name= "submit-order"),
     path("order-detail/<int:id>/" , OrderDetailUserApi.as_view() , name="order-detail"),
+    path("order-list-admin/" , OrderListAdminAPIView.as_view(), name="order-list-admin"),
     path("order-list-user/" , OrderListCustomerAPIView.as_view(), name="order-list-user"),
     path("game-list-user/"  , GameListCustomerAPIView.as_view() ,name="game-list-user"),
+    path("get-order-detail-admin/<int:id>/" , OrderDetailAdminAPIView.as_view() , name="get-order-detail-admin"),
     path("get-order-detail/<int:id>/" , OrderDetailCustomerAPIView.as_view() , name="get-order-detail"),
+    path("orders/<int:order_id>/payment/request/" , CreatePaymentRequestApi.as_view() , name="create-payment-request"),
+    path("payments/<int:transaction_id>/verify/" , VerifyPaymentApi.as_view() , name="verify-payment"),
+    path("payments/<int:transaction_id>/" , PaymentTransactionDetailApi.as_view() , name="payment-detail"),
     path("sell-order-report/" ,SellReport.as_view() , name="sell-order-report")
 
 

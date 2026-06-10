@@ -1,5 +1,6 @@
-from django.db import models
 from enum import IntEnum
+
+from django.db import models
 
 from cheatgame.common.models import BaseModel
 from cheatgame.product.models import DeliveryOption
@@ -14,6 +15,14 @@ class OrderStatus(IntEnum):
     @classmethod
     def choices(cls):
         return [(key.value, key.name) for key in cls]
+
+
+class PaymentTransactionStatus(models.TextChoices):
+    CREATED = "created", "CREATED"
+    PENDING = "pending", "PENDING"
+    CALLBACK_RECEIVED = "callback_received", "CALLBACK_RECEIVED"
+    PAID = "paid", "PAID"
+    FAILED = "failed", "FAILED"
 
 
 class OrderUserStatus(IntEnum):
@@ -90,6 +99,50 @@ class Order(BaseModel):
     total_price_discount = models.DecimalField(max_digits=16, decimal_places=0)
     schedule = models.ForeignKey("DeliveryData", on_delete=models.PROTECT, null=True, blank=True)
     is_game = models.BooleanField(default=False)
+
+
+class PaymentTransaction(BaseModel):
+    order = models.ForeignKey("Order", on_delete=models.PROTECT, related_name="payment_transactions")
+    user = models.ForeignKey("users.BaseUser", on_delete=models.PROTECT, related_name="payment_transactions")
+    provider = models.CharField(max_length=50, default="fake", db_index=True)
+    amount = models.DecimalField(max_digits=16, decimal_places=0)
+    status = models.CharField(
+        max_length=32,
+        choices=PaymentTransactionStatus.choices,
+        default=PaymentTransactionStatus.CREATED,
+        db_index=True,
+    )
+    gateway_authority = models.CharField(max_length=128, null=True, blank=True)
+    gateway_ref_id = models.CharField(max_length=128, null=True, blank=True)
+    gateway_trace_no = models.CharField(max_length=128, null=True, blank=True)
+    gateway_payment_url = models.URLField(max_length=500, blank=True)
+    request_payload = models.JSONField(default=dict, blank=True)
+    callback_payload = models.JSONField(default=dict, blank=True)
+    verify_payload = models.JSONField(default=dict, blank=True)
+    error_code = models.CharField(max_length=100, blank=True)
+    error_message = models.TextField(blank=True)
+    idempotency_key = models.CharField(max_length=128, unique=True)
+    paid_at = models.DateTimeField(null=True, blank=True)
+    verified_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["order", "status"]),
+            models.Index(fields=["user", "status"]),
+            models.Index(fields=["provider", "gateway_authority"]),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["provider", "gateway_authority"],
+                condition=models.Q(gateway_authority__isnull=False),
+                name="unique_payment_provider_authority",
+            ),
+            models.UniqueConstraint(
+                fields=["provider", "gateway_ref_id"],
+                condition=models.Q(gateway_ref_id__isnull=False),
+                name="unique_payment_provider_ref_id",
+            ),
+        ]
 
 
 class OrderItem(BaseModel):
