@@ -8,7 +8,7 @@ from storages.backends.s3boto3 import S3Boto3Storage
 from cheatgame.api.mixins import ApiAuthMixin
 from cheatgame.api.pagination import LimitOffsetPagination, get_paginated_response, PaginatedSerializer
 from cheatgame.api.utils import inline_serializer
-from cheatgame.common.utils import reformat_url
+from cheatgame.common.utils import reformat_url, safe_file_url
 from cheatgame.general.models import Story, Slider, BannerLocations, Banner, Blog, BlogCategory, Message, UserMessage, \
     CommonQuestionLocation, CommonQuestion, Comment
 from cheatgame.general.selectors import get_stories, get_sliders, get_banners, blog_list, get_blog, \
@@ -293,7 +293,7 @@ class BannerListApi(APIView):
         picture = serializers.SerializerMethodField()
 
         def get_picture(self, obj):
-            return reformat_url(url = obj.picture.url)
+            return safe_file_url(file=obj.picture)
         class Meta:
             model = Banner
             fields = ("id", "picture", "link", "location")

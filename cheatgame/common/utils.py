@@ -1,9 +1,15 @@
+import logging
+from urllib.parse import urlsplit
+
 from django.conf import settings
-from django.shortcuts import get_object_or_404
-from django.http import Http404
 from django.core.exceptions import ImproperlyConfigured
+from django.http import Http404
+from django.shortcuts import get_object_or_404
 
 from rest_framework import serializers
+
+
+logger = logging.getLogger(__name__)
 
 
 def make_mock_object(**kwargs):
@@ -61,3 +67,31 @@ def assert_settings(required_settings, error_message_prefix=""):
 def reformat_url(*, url:str) -> str:
     index = url.find("?")
     return url[:index] if index != -1 else url
+
+
+def safe_file_url(*, file, fallback: str = "") -> str:
+    if not file:
+        return fallback
+
+    try:
+        return reformat_url(url=file.url)
+    except Exception:
+        name = str(getattr(file, "name", "") or "").lstrip("/")
+        logger.warning("Could not build storage URL for file %s", name, exc_info=True)
+
+    if not name:
+        return fallback
+
+    endpoint_url = getattr(settings, "AWS_S3_ENDPOINT_URL", "") or ""
+    bucket_name = getattr(settings, "AWS_STORAGE_BUCKET_NAME", "") or ""
+    parsed_endpoint = urlsplit(endpoint_url)
+    if parsed_endpoint.scheme in ("http", "https") and parsed_endpoint.netloc:
+        base_url = endpoint_url.rstrip("/")
+        bucket_path = bucket_name.strip("/")
+        return f"{base_url}/{bucket_path}/{name}" if bucket_path else f"{base_url}/{name}"
+
+    media_url = getattr(settings, "MEDIA_URL", "") or ""
+    if media_url and media_url != "/":
+        return f"{media_url.rstrip('/')}/{name}"
+
+    return name
