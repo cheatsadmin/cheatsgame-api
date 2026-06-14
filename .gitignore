@@ -123,6 +123,15 @@ venv.bak/
 # mkdocs documentation
 /site
 staticfiles/
+
+# Local preview/generated artifacts
+/content*.html
+/images/
+/product/
+/product_images/
+/seed/
+/staging-seed/
+
 # mypy
 .mypy_cache/
 .dmypy.json

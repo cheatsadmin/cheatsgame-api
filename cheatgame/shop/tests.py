@@ -9,16 +9,22 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from cheatgame.product.models import DeliveryOption
-from cheatgame.product.models import Product, ProductType
+from cheatgame.product.models import Attachment, AttachmentType, Product, ProductType
 from cheatgame.shop.models import (
     Cart,
     CartItem,
+    CartItemAttachment,
     DeliveryData,
     DeliverySchedule,
     DeliveryScheduleType,
     DeliverySide,
     DeliveryType,
+    Discount,
+    DiscountType,
+    DiscountValueType,
     Order,
+    OrderItem,
+    OrderItemAttachment,
     OrderStatus,
     PaymentTransaction,
     PaymentTransactionStatus,
@@ -73,6 +79,7 @@ class CheckoutSchedulingTests(TestCase):
 
     def create_order(self, **kwargs):
         user = kwargs.pop("user", self.user)
+        kwargs.setdefault("is_game", True)
         return Order.objects.create(
             user=user,
             total_price=Decimal("1000"),
@@ -105,14 +112,15 @@ class CheckoutSchedulingTests(TestCase):
         self.schedule.refresh_from_db()
         self.assertEqual(self.schedule.capacity, 2)
 
-    def test_book_time_rejects_existing_delivery_data_attached_to_order(self):
+    def test_book_time_creates_new_delivery_data_when_same_address_slot_has_capacity(self):
         delivery_data = DeliveryData.objects.create(
             type=self.delivery_type,
             schedule=self.schedule,
             address=self.address,
-            is_used=False,
+            is_used=True,
         )
         self.create_order(schedule=delivery_data)
+        target_order = self.create_order()
 
         response = self.client.post(
             "/api/shop/book-time/",
@@ -120,12 +128,22 @@ class CheckoutSchedulingTests(TestCase):
             format="json",
         )
 
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertEqual(DeliveryData.objects.count(), 1)
-        self.schedule.refresh_from_db()
-        self.assertEqual(self.schedule.capacity, 2)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertNotEqual(response.data["id"], delivery_data.id)
+        self.assertEqual(DeliveryData.objects.filter(schedule=self.schedule, address=self.address).count(), 2)
 
-    def test_order_detail_update_assigns_schedule_and_marks_it_used(self):
+        update_response = self.client.put(
+            f"/api/shop/order-detail/{target_order.id}/",
+            {"schedule": response.data["id"]},
+            format="json",
+        )
+
+        self.assertEqual(update_response.status_code, status.HTTP_200_OK)
+        target_order.refresh_from_db()
+        self.assertEqual(target_order.schedule_id, response.data["id"])
+        self.assertEqual(DeliveryData.objects.filter(schedule=self.schedule, is_used=True).count(), 1)
+
+    def test_order_detail_update_assigns_schedule_without_consuming_capacity(self):
         order = self.create_order()
         delivery_data = DeliveryData.objects.create(
             type=self.delivery_type,
@@ -143,7 +161,172 @@ class CheckoutSchedulingTests(TestCase):
         order.refresh_from_db()
         delivery_data.refresh_from_db()
         self.assertEqual(order.schedule_id, delivery_data.id)
-        self.assertTrue(delivery_data.is_used)
+        self.assertFalse(delivery_data.is_used)
+        self.assertEqual(DeliveryData.objects.filter(schedule=self.schedule, is_used=True).count(), 0)
+
+    def test_product_order_detail_update_stores_shipping_without_schedule(self):
+        order = self.create_order(is_game=False)
+
+        with patch("cheatgame.shop.services.order.is_delivery_schedule_full") as schedule_full:
+            response = self.client.put(
+                f"/api/shop/order-detail/{order.id}/",
+                {
+                    "shipping_address": self.address.id,
+                    "shipping_method": self.delivery_type.id,
+                },
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        schedule_full.assert_not_called()
+        order.refresh_from_db()
+        self.assertIsNone(order.schedule_id)
+        self.assertEqual(order.shipping_address_id, self.address.id)
+        self.assertEqual(order.shipping_method_id, self.delivery_type.id)
+        self.assertEqual(DeliveryData.objects.count(), 0)
+
+    def test_product_order_detail_update_rejects_delivery_schedule(self):
+        order = self.create_order(is_game=False)
+        delivery_data = DeliveryData.objects.create(
+            type=self.delivery_type,
+            schedule=self.schedule,
+            address=self.address,
+        )
+
+        response = self.client.put(
+            f"/api/shop/order-detail/{order.id}/",
+            {"schedule": delivery_data.id},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("فقط روش ارسال", response.data["error"])
+        order.refresh_from_db()
+        self.assertIsNone(order.schedule_id)
+
+    def test_order_detail_update_is_idempotent_for_same_schedule(self):
+        order = self.create_order()
+        delivery_data = DeliveryData.objects.create(
+            type=self.delivery_type,
+            schedule=self.schedule,
+            address=self.address,
+        )
+        order.schedule = delivery_data
+        order.save(update_fields=["schedule"])
+
+        response = self.client.put(
+            f"/api/shop/order-detail/{order.id}/",
+            {"schedule": delivery_data.id},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(DeliveryData.objects.filter(schedule=self.schedule, is_used=True).count(), 0)
+
+    def test_order_detail_update_rejects_second_schedule(self):
+        order = self.create_order()
+        first_delivery_data = DeliveryData.objects.create(
+            type=self.delivery_type,
+            schedule=self.schedule,
+            address=self.address,
+            is_used=True,
+        )
+        order.schedule = first_delivery_data
+        order.save(update_fields=["schedule"])
+        second_address = Address.objects.create(
+            user=self.user,
+            province="Tehran",
+            city="Tehran",
+            postal_code="4234567890",
+            address_detail="Second checkout address",
+        )
+        second_delivery_data = DeliveryData.objects.create(
+            type=self.delivery_type,
+            schedule=self.schedule,
+            address=second_address,
+        )
+
+        response = self.client.put(
+            f"/api/shop/order-detail/{order.id}/",
+            {"schedule": second_delivery_data.id},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        order.refresh_from_db()
+        second_delivery_data.refresh_from_db()
+        self.assertEqual(order.schedule_id, first_delivery_data.id)
+        self.assertFalse(second_delivery_data.is_used)
+
+    def test_delivery_schedule_list_reports_full_slots(self):
+        self.schedule.capacity = 1
+        self.schedule.save(update_fields=["capacity"])
+        DeliveryData.objects.create(
+            type=self.delivery_type,
+            schedule=self.schedule,
+            address=self.address,
+            is_used=True,
+        )
+
+        response = self.client.get(
+            "/api/shop/delivery-schedule-list/",
+            {
+                "from_date": self.schedule.start.date().isoformat(),
+                "to_date": self.schedule.start.date().isoformat(),
+                "type": DeliveryScheduleType.ORDER.value,
+            },
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data[0]["capacity"], 1)
+        self.assertEqual(response.data[0]["reserved_count"], 1)
+        self.assertEqual(response.data[0]["remaining_capacity"], 0)
+        self.assertTrue(response.data[0]["is_full"])
+
+    def test_book_time_rejects_full_schedule(self):
+        self.schedule.capacity = 1
+        self.schedule.save(update_fields=["capacity"])
+        DeliveryData.objects.create(
+            type=self.delivery_type,
+            schedule=self.schedule,
+            address=self.address,
+            is_used=True,
+        )
+        second_address = Address.objects.create(
+            user=self.user,
+            province="Tehran",
+            city="Tehran",
+            postal_code="5234567890",
+            address_detail="Second checkout address",
+        )
+
+        response = self.client.post(
+            "/api/shop/book-time/",
+            {"type": self.delivery_type.id, "schedule": self.schedule.id, "address": second_address.id},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(DeliveryData.objects.filter(address=second_address, schedule=self.schedule).exists())
+
+    def test_book_time_rejects_same_address_when_schedule_is_full(self):
+        self.schedule.capacity = 1
+        self.schedule.save(update_fields=["capacity"])
+        DeliveryData.objects.create(
+            type=self.delivery_type,
+            schedule=self.schedule,
+            address=self.address,
+            is_used=True,
+        )
+
+        response = self.client.post(
+            "/api/shop/book-time/",
+            {"type": self.delivery_type.id, "schedule": self.schedule.id, "address": self.address.id},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(DeliveryData.objects.filter(address=self.address, schedule=self.schedule).count(), 1)
 
     def test_order_detail_rejects_delivery_data_attached_to_another_order(self):
         delivery_data = DeliveryData.objects.create(
@@ -253,6 +436,31 @@ class CheckoutSchedulingTests(TestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
+    def test_customer_order_detail_returns_item_quantity_and_price(self):
+        product = Product.objects.create(
+            product_type=ProductType.PHYSCIAL,
+            title="Detail Product",
+            main_image="product/main_images/detail.jpg",
+            price=Decimal("1000"),
+            off_price=Decimal("900"),
+            quantity=5,
+            description="product/descriptions/detail.html",
+            order_limit=5,
+        )
+        order = self.create_order(is_game=False)
+        OrderItem.objects.create(
+            order=order,
+            product=product,
+            quantity=3,
+            price=Decimal("2700"),
+        )
+
+        response = self.client.get(f"/api/shop/get-order-detail/{order.id}/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["product_data"][0]["quantity"], 3)
+        self.assertEqual(response.data["product_data"][0]["price"], "2700")
+
 
 class CartItemOwnershipTests(TestCase):
     def setUp(self):
@@ -296,6 +504,585 @@ class CartItemOwnershipTests(TestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertTrue(CartItem.objects.filter(id=self.other_cart_item.id).exists())
+
+    def test_cart_item_list_returns_cart_quantity_separate_from_product_stock(self):
+        cart = Cart.objects.create(user=self.user)
+        CartItem.objects.create(
+            cart=cart,
+            product=self.product,
+            quantity=2,
+            price=Decimal("2000"),
+        )
+
+        response = self.client.get("/api/shop/cart-item-list/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data[0]["quantity"], 2)
+        self.assertEqual(response.data[0]["product"]["quantity"], 5)
+
+
+class ProductAttachmentWorkflowTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = BaseUser.objects.create_user(
+            phone_number="09124440001",
+            firstname="Attachment",
+            lastname="Customer",
+            password="StrongPass123!",
+        )
+        self.user.phone_verified = True
+        self.user.save(update_fields=["phone_verified"])
+        self.client.force_authenticate(self.user)
+        self.product = self.create_product("Attachment Test Product")
+        self.other_product = self.create_product("Other Attachment Product")
+        self.free_warranty = Attachment.objects.create(
+            product=self.product,
+            attachment_type=AttachmentType.GUARANTEE,
+            title="گارانتی رایگان",
+            price=Decimal("0"),
+            is_force_attachment=False,
+        )
+        self.paid_insurance = Attachment.objects.create(
+            product=self.product,
+            attachment_type=AttachmentType.INSURANCE,
+            title="بیمه ارسال",
+            price=Decimal("150"),
+            is_force_attachment=False,
+        )
+        self.other_attachment = Attachment.objects.create(
+            product=self.other_product,
+            attachment_type=AttachmentType.INSURANCE,
+            title="بیمه محصول دیگر",
+            price=Decimal("300"),
+            is_force_attachment=False,
+        )
+
+    def create_product(self, title):
+        return Product.objects.create(
+            product_type=ProductType.PHYSCIAL,
+            title=title,
+            main_image="product/main_images/attachment-test.jpg",
+            price=Decimal("1000"),
+            off_price=Decimal("0"),
+            quantity=10,
+            description="product/descriptions/attachment-test.html",
+            order_limit=5,
+        )
+
+    def add_to_cart(self, *, product=None, quantity=1, attachments=None):
+        return self.client.post(
+            "/api/shop/add-to-cart/",
+            {
+                "product": (product or self.product).id,
+                "quantity": quantity,
+                "attachment": [
+                    {"attachment": attachment.id} for attachment in (attachments or [])
+                ],
+            },
+            format="json",
+        )
+
+    def test_free_attachment_keeps_cart_total_at_product_price(self):
+        response = self.add_to_cart(attachments=[self.free_warranty])
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        cart_item = CartItem.objects.get(cart__user=self.user)
+        self.assertEqual(cart_item.price, Decimal("1000"))
+        self.assertEqual(
+            list(CartItemAttachment.objects.filter(cart_item=cart_item).values_list("attachment_id", flat=True)),
+            [self.free_warranty.id],
+        )
+
+    def test_paid_attachment_is_added_to_cart_total(self):
+        response = self.add_to_cart(attachments=[self.paid_insurance])
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        cart_item = CartItem.objects.get(cart__user=self.user)
+        self.assertEqual(cart_item.price, Decimal("1150"))
+
+    def test_quantity_two_paid_attachment_total_is_per_unit(self):
+        response = self.add_to_cart(quantity=2, attachments=[self.paid_insurance])
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        cart_item = CartItem.objects.get(cart__user=self.user)
+        self.assertEqual(cart_item.quantity, 2)
+        self.assertEqual(cart_item.price, Decimal("2300"))
+
+        order_response = self.client.post("/api/shop/submit-order/", {}, format="json")
+
+        self.assertEqual(order_response.status_code, status.HTTP_200_OK, order_response.data)
+        order = Order.objects.get(user=self.user)
+        order_item = OrderItem.objects.get(order=order)
+        self.assertEqual(order_item.price, Decimal("2300"))
+        self.assertEqual(order.total_price, Decimal("2300"))
+        self.assertEqual(order.total_price_discount, Decimal("2300"))
+
+    def test_invalid_attachment_from_another_product_is_rejected(self):
+        response = self.add_to_cart(attachments=[self.other_attachment])
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("معتبر نیست", response.data["error"])
+        self.assertFalse(CartItem.objects.filter(cart__user=self.user).exists())
+
+    def test_warranty_and_insurance_can_be_selected_together(self):
+        response = self.add_to_cart(attachments=[self.free_warranty, self.paid_insurance])
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        cart_item = CartItem.objects.get(cart__user=self.user)
+        self.assertEqual(cart_item.price, Decimal("1150"))
+        self.assertCountEqual(
+            CartItemAttachment.objects.filter(cart_item=cart_item).values_list("attachment_id", flat=True),
+            [self.free_warranty.id, self.paid_insurance.id],
+        )
+
+        order_response = self.client.post("/api/shop/submit-order/", {}, format="json")
+
+        self.assertEqual(order_response.status_code, status.HTTP_200_OK, order_response.data)
+        order_item = OrderItem.objects.get(order__user=self.user)
+        self.assertCountEqual(
+            OrderItemAttachment.objects.filter(order_item=order_item).values_list("attachment_id", flat=True),
+            [self.free_warranty.id, self.paid_insurance.id],
+        )
+
+
+@override_settings(PAYMENT_GATEWAY_PROVIDER="fake", PAYMENT_SUCCESS_REDIRECT_URL="http://frontend.test/PaymentSuccess")
+class ProductSalePricingTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = BaseUser.objects.create_user(
+            phone_number="09124440101",
+            firstname="Sale",
+            lastname="Customer",
+            password="StrongPass123!",
+        )
+        self.user.phone_verified = True
+        self.user.save(update_fields=["phone_verified"])
+        self.client.force_authenticate(self.user)
+        self.insurance_price = Decimal("150")
+
+    def create_product(self, *, price=Decimal("3900"), off_price=Decimal("0"), quantity=10):
+        product = Product.objects.create(
+            product_type=ProductType.PHYSCIAL,
+            title=f"Sale Test Product {Product.objects.count() + 1}",
+            main_image="product/main_images/sale-test.jpg",
+            price=price,
+            off_price=off_price,
+            quantity=quantity,
+            description="product/descriptions/sale-test.html",
+            order_limit=5,
+        )
+        product.insurance = Attachment.objects.create(
+            product=product,
+            attachment_type=AttachmentType.INSURANCE,
+            title="بیمه تست",
+            price=self.insurance_price,
+            is_force_attachment=False,
+        )
+        return product
+
+    def add_to_cart(self, *, product, quantity=1, attachments=None):
+        return self.client.post(
+            "/api/shop/add-to-cart/",
+            {
+                "product": product.id,
+                "quantity": quantity,
+                "attachment": [
+                    {"attachment": attachment.id} for attachment in (attachments or [])
+                ],
+            },
+            format="json",
+        )
+
+    def submit_order(self):
+        response = self.client.post("/api/shop/submit-order/", {}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        return Order.objects.get(user=self.user)
+
+    def attach_shipping(self, order):
+        address = Address.objects.create(
+            user=self.user,
+            province="Tehran",
+            city="Tehran",
+            postal_code=f"{Address.objects.count() + 800:010d}",
+            address_detail="Sale pricing shipping address",
+        )
+        delivery_type = DeliveryType.objects.create(
+            name="پیک اختصاصی",
+            delivery_type=DeliveryOption.MOTOR,
+            side=DeliverySide.SENDTOUSER,
+        )
+        order.shipping_address = address
+        order.shipping_method = delivery_type
+        order.save(update_fields=["shipping_address", "shipping_method", "updated_at"])
+
+    def test_no_discount_uses_price(self):
+        product = self.create_product(price=Decimal("3900"), off_price=Decimal("0"))
+
+        response = self.add_to_cart(product=product)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        cart_item = CartItem.objects.get(cart__user=self.user)
+        self.assertEqual(cart_item.price, Decimal("3900"))
+
+    def test_off_price_zero_uses_price(self):
+        product = self.create_product(price=Decimal("3900"), off_price=Decimal("0"))
+
+        self.add_to_cart(product=product)
+        order = self.submit_order()
+
+        self.assertEqual(order.total_price, Decimal("3900"))
+        self.assertEqual(order.total_price_discount, Decimal("3900"))
+        self.assertEqual(order.total_price - order.total_price_discount, Decimal("0"))
+
+    def test_discount_uses_off_price(self):
+        product = self.create_product(price=Decimal("3900"), off_price=Decimal("3600"))
+
+        response = self.add_to_cart(product=product)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        cart_item = CartItem.objects.get(cart__user=self.user)
+        self.assertEqual(cart_item.price, Decimal("3600"))
+
+        order = self.submit_order()
+        order_item = OrderItem.objects.get(order=order)
+        self.assertEqual(order_item.price, Decimal("3600"))
+        self.assertEqual(order.total_price, Decimal("3900"))
+        self.assertEqual(order.total_price_discount, Decimal("3600"))
+
+    def test_discount_plus_paid_attachment_uses_off_price_plus_attachment(self):
+        product = self.create_product(price=Decimal("3900"), off_price=Decimal("3600"))
+
+        response = self.add_to_cart(product=product, attachments=[product.insurance])
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        cart_item = CartItem.objects.get(cart__user=self.user)
+        self.assertEqual(cart_item.price, Decimal("3750"))
+
+        order = self.submit_order()
+        self.assertEqual(order.total_price, Decimal("4050"))
+        self.assertEqual(order.total_price_discount, Decimal("3750"))
+
+    def test_quantity_two_discount_attachment_total_and_savings(self):
+        product = self.create_product(price=Decimal("3900"), off_price=Decimal("3600"))
+
+        response = self.add_to_cart(product=product, quantity=2, attachments=[product.insurance])
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        cart_item = CartItem.objects.get(cart__user=self.user)
+        self.assertEqual(cart_item.price, Decimal("7500"))
+
+        order = self.submit_order()
+        order_item = OrderItem.objects.get(order=order)
+        self.assertEqual(order_item.price, Decimal("7500"))
+        self.assertEqual(order.total_price, Decimal("8100"))
+        self.assertEqual(order.total_price_discount, Decimal("7500"))
+        self.assertEqual(order.total_price - order.total_price_discount, Decimal("600"))
+
+    def test_payment_amount_equals_final_payable_total(self):
+        product = self.create_product(price=Decimal("3900"), off_price=Decimal("3600"), quantity=2)
+        response = self.add_to_cart(product=product, quantity=2, attachments=[product.insurance])
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        order = self.submit_order()
+        self.attach_shipping(order)
+
+        payment_response = self.client.post(f"/api/shop/orders/{order.id}/payment/request/", {}, format="json")
+
+        self.assertEqual(payment_response.status_code, status.HTTP_200_OK, payment_response.data)
+        transaction_obj = PaymentTransaction.objects.get(order=order)
+        self.assertEqual(transaction_obj.amount, Decimal("7500"))
+        self.assertEqual(transaction_obj.amount, order.total_price_discount)
+
+
+@override_settings(PAYMENT_GATEWAY_PROVIDER="fake", PAYMENT_SUCCESS_REDIRECT_URL="http://frontend.test/PaymentSuccess")
+class Batch3CheckoutIntegrityTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = self.create_verified_user("09121110011")
+        self.other_user = self.create_verified_user("09121110012")
+        self.product = Product.objects.create(
+            product_type=ProductType.PHYSCIAL,
+            title="Batch 3 Product",
+            main_image="product/main_images/batch3.jpg",
+            price=Decimal("1000"),
+            off_price=Decimal("900"),
+            quantity=1,
+            description="product/descriptions/batch3.html",
+            order_limit=5,
+        )
+        self.client.force_authenticate(self.user)
+
+    def create_verified_user(self, phone_number):
+        user = BaseUser.objects.create_user(
+            phone_number=phone_number,
+            firstname="Batch",
+            lastname="User",
+            password="StrongPass123!",
+        )
+        user.phone_verified = True
+        user.save(update_fields=["phone_verified"])
+        return user
+
+    def create_cart_item(self, user=None, product=None, quantity=1):
+        cart = Cart.objects.create(user=user or self.user)
+        return CartItem.objects.create(
+            cart=cart,
+            product=product or self.product,
+            quantity=quantity,
+            price=Decimal("1000"),
+        )
+
+    def create_shipping_address(self, user=None):
+        user = user or self.user
+        return Address.objects.create(
+            user=user,
+            province="Tehran",
+            city="Tehran",
+            postal_code=f"{Address.objects.count() + 100:010d}",
+            address_detail="Product checkout shipping address",
+        )
+
+    def create_shipping_method(self):
+        return DeliveryType.objects.create(
+            name="پیک اختصاصی",
+            delivery_type=DeliveryOption.MOTOR,
+            side=DeliverySide.SENDTOUSER,
+        )
+
+    def create_order_with_item(self, product=None, quantity=1, **kwargs):
+        product = product or self.product
+        with_shipping = kwargs.pop("with_shipping", True)
+        if with_shipping and not kwargs.get("is_game", False):
+            kwargs.setdefault("shipping_address", self.create_shipping_address())
+            kwargs.setdefault("shipping_method", self.create_shipping_method())
+        order = Order.objects.create(
+            user=self.user,
+            total_price=Decimal("1000") * quantity,
+            total_price_discount=Decimal("1000") * quantity,
+            **kwargs,
+        )
+        OrderItem.objects.create(
+            order=order,
+            product=product,
+            quantity=quantity,
+            price=Decimal("1000") * quantity,
+        )
+        return order
+
+    def create_coupon(self, **kwargs):
+        defaults = {
+            "name": "Batch Coupon",
+            "code": "BATCH3",
+            "type": DiscountType.COUPON.value,
+            "value_type": DiscountValueType.AMOUNT.value,
+            "valid_from": timezone.now() - timedelta(days=1),
+            "valid_until": timezone.now() + timedelta(days=1),
+            "is_active": True,
+            "min_purchase_amount": Decimal("100"),
+            "amount": Decimal("100"),
+            "percent": 0,
+            "admin_user": self.user,
+            "usage_number": 2,
+        }
+        defaults.update(kwargs)
+        return Discount.objects.create(**defaults)
+
+    def create_delivery_data(self, *, schedule=None, user=None, is_used=False, capacity=1):
+        user = user or self.user
+        address = Address.objects.create(
+            user=user,
+            province="Tehran",
+            city="Tehran",
+            postal_code=f"{Address.objects.count() + 1:010d}",
+            address_detail="Batch checkout address",
+        )
+        delivery_type = DeliveryType.objects.create(
+            name="Batch Courier",
+            delivery_type=DeliveryOption.MOTOR,
+            side=DeliverySide.SENDTOUSER,
+        )
+        if schedule is None:
+            start = timezone.now() + timedelta(days=5)
+            schedule = DeliverySchedule.objects.create(
+                type=DeliveryScheduleType.ORDER,
+                start=start,
+                end=start + timedelta(hours=2),
+                capacity=capacity,
+            )
+        return DeliveryData.objects.create(
+            type=delivery_type,
+            schedule=schedule,
+            address=address,
+            is_used=is_used,
+        )
+
+    def request_fake_payment(self, order):
+        return self.client.post(f"/api/shop/orders/{order.id}/payment/request/", {}, format="json")
+
+    def callback_fake_payment(self, transaction_obj):
+        return self.client.get(
+            "/api/payment/callback/fake/",
+            {"authority": transaction_obj.gateway_authority, "status": "OK"},
+        )
+
+    def test_submit_order_returns_public_tracking_code_without_reserving_pending_stock(self):
+        self.create_cart_item(user=self.user)
+
+        response = self.client.post("/api/shop/submit-order/", {}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        order_data = response.data[0]
+        self.assertTrue(order_data["public_tracking_code"].startswith("CH-"))
+        self.assertNotEqual(order_data["public_tracking_code"], str(order_data["id"]))
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.quantity, 1)
+
+        self.client.force_authenticate(self.other_user)
+        self.create_cart_item(user=self.other_user)
+        second_response = self.client.post("/api/shop/submit-order/", {}, format="json")
+
+        self.assertEqual(second_response.status_code, status.HTTP_200_OK)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.quantity, 1)
+        self.assertEqual(OrderItem.objects.filter(product=self.product, order__payment_status=OrderStatus.PENDDING.value).count(), 2)
+
+    def test_coupon_validation_returns_explicit_feedback(self):
+        response = self.client.post(
+            "/api/shop/check-user-discount-code/",
+            {"code": "MISSING", "total_price": "1000"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(response.data["valid"])
+        self.assertFalse(response.data["message"])
+        self.assertEqual(response.data["detail"], "کد تخفیف یافت نشد.")
+
+    def test_coupon_code_updates_order_discount_total(self):
+        order = self.create_order_with_item()
+        coupon = self.create_coupon(amount=Decimal("250"))
+
+        response = self.client.put(
+            f"/api/shop/order-detail/{order.id}/",
+            {"coupon_code": coupon.code},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        order.refresh_from_db()
+        self.assertEqual(order.discount_id, coupon.id)
+        self.assertEqual(order.total_price_discount, Decimal("750"))
+        self.assertEqual(response.data["public_tracking_code"], order.public_tracking_code)
+
+    def test_payment_request_rejects_stale_stock_change_before_gateway(self):
+        order = self.create_order_with_item()
+        Product.objects.filter(id=self.product.id).update(quantity=0)
+
+        response = self.request_fake_payment(order)
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("موجودی", response.data["error"])
+        self.assertEqual(PaymentTransaction.objects.count(), 0)
+
+    def test_payment_request_rejects_product_order_without_shipping_data(self):
+        order = self.create_order_with_item(with_shipping=False)
+
+        response = self.request_fake_payment(order)
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("آدرس ارسال", response.data["error"])
+        self.assertEqual(PaymentTransaction.objects.count(), 0)
+
+    def test_successful_product_payment_decrements_stock_without_delivery_slot(self):
+        order = self.create_order_with_item()
+        response = self.request_fake_payment(order)
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        transaction_obj = PaymentTransaction.objects.get()
+        self.callback_fake_payment(transaction_obj)
+
+        verify_response = self.client.post(f"/api/shop/payments/{transaction_obj.id}/verify/", {}, format="json")
+
+        self.assertEqual(verify_response.status_code, status.HTTP_200_OK)
+        self.product.refresh_from_db()
+        order.refresh_from_db()
+        transaction_obj.refresh_from_db()
+        self.assertEqual(self.product.quantity, 0)
+        self.assertIsNone(order.schedule_id)
+        self.assertEqual(DeliveryData.objects.count(), 0)
+        self.assertEqual(order.payment_status, OrderStatus.PAID.value)
+        self.assertEqual(transaction_obj.status, PaymentTransactionStatus.PAID)
+
+    def test_payment_request_rejects_unavailable_delivery_slot_before_gateway(self):
+        delivery_data = self.create_delivery_data(capacity=1)
+        order = self.create_order_with_item(schedule=delivery_data, is_game=True, with_shipping=False)
+        self.create_delivery_data(schedule=delivery_data.schedule, is_used=True)
+
+        response = self.request_fake_payment(order)
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("ظرفیت زمان ارسال", response.data["error"])
+        self.assertEqual(PaymentTransaction.objects.count(), 0)
+
+    def test_verify_payment_fails_if_stock_changes_after_payment_request(self):
+        order = self.create_order_with_item()
+        response = self.request_fake_payment(order)
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        transaction_obj = PaymentTransaction.objects.get()
+        Product.objects.filter(id=self.product.id).update(quantity=0)
+        self.callback_fake_payment(transaction_obj)
+
+        verify_response = self.client.post(f"/api/shop/payments/{transaction_obj.id}/verify/", {}, format="json")
+
+        self.assertEqual(verify_response.status_code, status.HTTP_200_OK)
+        transaction_obj.refresh_from_db()
+        order.refresh_from_db()
+        self.assertEqual(transaction_obj.status, PaymentTransactionStatus.FAILED)
+        self.assertEqual(transaction_obj.error_code, "checkout_integrity_failed")
+        self.assertEqual(order.payment_status, OrderStatus.FAIDED.value)
+
+    def test_verify_payment_fails_if_delivery_slot_fills_after_payment_request(self):
+        delivery_data = self.create_delivery_data(capacity=1)
+        order = self.create_order_with_item(schedule=delivery_data, is_game=True, with_shipping=False)
+        response = self.request_fake_payment(order)
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        transaction_obj = PaymentTransaction.objects.get()
+        self.create_delivery_data(schedule=delivery_data.schedule, is_used=True)
+        self.callback_fake_payment(transaction_obj)
+
+        verify_response = self.client.post(f"/api/shop/payments/{transaction_obj.id}/verify/", {}, format="json")
+
+        self.assertEqual(verify_response.status_code, status.HTTP_200_OK)
+        transaction_obj.refresh_from_db()
+        order.refresh_from_db()
+        delivery_data.refresh_from_db()
+        self.product.refresh_from_db()
+        self.assertEqual(transaction_obj.status, PaymentTransactionStatus.FAILED)
+        self.assertEqual(transaction_obj.error_code, "checkout_integrity_failed")
+        self.assertEqual(order.payment_status, OrderStatus.FAIDED.value)
+        self.assertFalse(delivery_data.is_used)
+        self.assertEqual(self.product.quantity, 1)
+
+    def test_successful_verify_decrements_stock_once_and_consumes_delivery_slot(self):
+        delivery_data = self.create_delivery_data()
+        order = self.create_order_with_item(schedule=delivery_data, is_game=True, with_shipping=False)
+        response = self.request_fake_payment(order)
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        transaction_obj = PaymentTransaction.objects.get()
+        self.callback_fake_payment(transaction_obj)
+
+        first_response = self.client.post(f"/api/shop/payments/{transaction_obj.id}/verify/", {}, format="json")
+        second_response = self.client.post(f"/api/shop/payments/{transaction_obj.id}/verify/", {}, format="json")
+
+        self.assertEqual(first_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(second_response.status_code, status.HTTP_200_OK)
+        self.product.refresh_from_db()
+        order.refresh_from_db()
+        transaction_obj.refresh_from_db()
+        delivery_data.refresh_from_db()
+        self.assertEqual(self.product.quantity, 0)
+        self.assertTrue(delivery_data.is_used)
+        self.assertEqual(order.payment_status, OrderStatus.PAID.value)
+        self.assertEqual(transaction_obj.status, PaymentTransactionStatus.PAID)
+        self.assertEqual(second_response.data["order_public_tracking_code"], order.public_tracking_code)
 
 
 class AdminOrderApiTests(TestCase):
@@ -394,9 +1181,30 @@ class FakePaymentFlowTests(TestCase):
         self.user.save(update_fields=["phone_verified"])
         self.client.force_authenticate(self.user)
 
+    def create_shipping_address(self, user):
+        return Address.objects.create(
+            user=user,
+            province="Tehran",
+            city="Tehran",
+            postal_code=f"{Address.objects.count() + 200:010d}",
+            address_detail="Fake payment shipping address",
+        )
+
+    def create_shipping_method(self):
+        return DeliveryType.objects.create(
+            name="پیک اختصاصی",
+            delivery_type=DeliveryOption.MOTOR,
+            side=DeliverySide.SENDTOUSER,
+        )
+
     def create_order(self, user=None, **kwargs):
+        user = user or self.user
+        with_shipping = kwargs.pop("with_shipping", True)
+        if with_shipping and not kwargs.get("is_game", False):
+            kwargs.setdefault("shipping_address", self.create_shipping_address(user))
+            kwargs.setdefault("shipping_method", self.create_shipping_method())
         return Order.objects.create(
-            user=user or self.user,
+            user=user,
             total_price=Decimal("1000"),
             total_price_discount=Decimal("1000"),
             **kwargs,
@@ -583,9 +1391,30 @@ class ZarinpalPaymentFlowTests(TestCase):
         self.user.save(update_fields=["phone_verified"])
         self.client.force_authenticate(self.user)
 
+    def create_shipping_address(self, user):
+        return Address.objects.create(
+            user=user,
+            province="Tehran",
+            city="Tehran",
+            postal_code=f"{Address.objects.count() + 300:010d}",
+            address_detail="Zarinpal shipping address",
+        )
+
+    def create_shipping_method(self):
+        return DeliveryType.objects.create(
+            name="پیک اختصاصی",
+            delivery_type=DeliveryOption.MOTOR,
+            side=DeliverySide.SENDTOUSER,
+        )
+
     def create_order(self, user=None, amount=Decimal("1000"), **kwargs):
+        user = user or self.user
+        with_shipping = kwargs.pop("with_shipping", True)
+        if with_shipping and not kwargs.get("is_game", False):
+            kwargs.setdefault("shipping_address", self.create_shipping_address(user))
+            kwargs.setdefault("shipping_method", self.create_shipping_method())
         return Order.objects.create(
-            user=user or self.user,
+            user=user,
             total_price=amount,
             total_price_discount=amount,
             **kwargs,

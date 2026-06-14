@@ -19,6 +19,12 @@ class ProductType(IntEnum):
         return [(key.value, key.name) for key in cls]
 
 
+class ProductStatus(models.TextChoices):
+    DRAFT = "draft", "DRAFT"
+    PUBLISHED = "published", "PUBLISHED"
+    HIDDEN = "hidden", "HIDDEN"
+
+
 class ProductOrderBy(IntEnum):
     EXPENSIVE = 1
     INEXPENSIVE = 2
@@ -97,6 +103,12 @@ class RatingChoices(IntEnum):
         return [(key.value, key.name) for key in cls]
 
 
+class ReviewStatus(models.TextChoices):
+    PENDING = "pending", "PENDING"
+    APPROVED = "approved", "APPROVED"
+    REJECTED = "rejected", "REJECTED"
+
+
 class DirectionType(IntEnum):
     SEND = 1
     RECIEVE = 2
@@ -114,7 +126,15 @@ class Product(BaseModel):
     title = models.CharField(
         max_length=100
     )
-    slug = models.SlugField(db_index=True, unique=True, allow_unicode=True)
+    slug = models.SlugField(db_index=True, unique=True, allow_unicode=True, max_length=120, blank=True)
+    status = models.CharField(
+        max_length=20,
+        choices=ProductStatus.choices,
+        default=ProductStatus.PUBLISHED,
+        db_index=True,
+    )
+    seo_title = models.CharField(max_length=120, blank=True, default="")
+    meta_description = models.CharField(max_length=300, blank=True, default="")
     main_image = models.FileField(
         upload_to="product/main_images/"
     )
@@ -147,8 +167,24 @@ class Product(BaseModel):
     def __str__(self):
         return self.title
 
+    def generate_unique_slug(self) -> str:
+        base_slug = slugify(self.title, allow_unicode=True) or "product"
+        base_slug = base_slug[:110]
+        slug = base_slug
+        counter = 2
+        queryset = self.__class__.objects.all()
+        if self.pk:
+            queryset = queryset.exclude(pk=self.pk)
+
+        while queryset.filter(slug=slug).exists():
+            suffix = f"-{counter}"
+            slug = f"{base_slug[:120 - len(suffix)]}{suffix}"
+            counter += 1
+        return slug
+
     def save(self, *args, **kwargs):
-        self.slug = slugify(self.title, allow_unicode=True)
+        if not self.slug:
+            self.slug = self.generate_unique_slug()
         super(Product, self).save(*args, **kwargs)
 
 
@@ -342,10 +378,22 @@ class Reviews(BaseModel):
     rating = models.IntegerField(
         choices=RatingChoices.choices()
     )
+    status = models.CharField(
+        max_length=20,
+        choices=ReviewStatus.choices,
+        default=ReviewStatus.PENDING,
+        db_index=True,
+    )
     accepted = models.BooleanField(default=False)
 
     class Meta:
         unique_together = ("product" , "user")
+
+    def save(self, *args, **kwargs):
+        self.accepted = self.status == ReviewStatus.APPROVED
+        if kwargs.get("update_fields") is not None:
+            kwargs["update_fields"] = set(kwargs["update_fields"]) | {"accepted"}
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return self.user.lastname

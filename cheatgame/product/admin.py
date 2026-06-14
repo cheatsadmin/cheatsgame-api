@@ -128,5 +128,7 @@ class SuggestionProductAdmin(admin.ModelAdmin):
 
 @admin.register(Reviews)
 class ReviewAdmin(admin.ModelAdmin):
-    fields = ("user" , "product" , "comment" , "rating" , "accepted")
-    list_display = ("user" , "product" , "comment" , "rating" , "accepted")
+    fields = ("user" , "product" , "comment" , "rating" , "status" , "accepted")
+    list_display = ("user" , "product" , "comment" , "rating" , "status" , "accepted")
+    list_filter = ("status" , "accepted")
+    readonly_fields = ("accepted" ,)

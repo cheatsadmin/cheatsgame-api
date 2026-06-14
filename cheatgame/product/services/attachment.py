@@ -23,7 +23,8 @@ def update_attachment(*, attachment_type: int, title: str, price: decimal, is_fo
     attachment.price = price
     attachment.is_force_attachment = is_force_attachment
     attachment.product = product
-    attachment.description = description
+    if description is not None:
+        attachment.description = description
     attachment.save()
     return attachment
 

@@ -22,7 +22,7 @@ class CategoryAdminApi(ApiAuthMixin, APIView):
     class CategoryOutPutSerializer(serializers.ModelSerializer):
         class Meta:
             model = Category
-            fields = ("id", "name", "category_type", "parent",)
+            fields = ("id", "name", "slug", "category_type", "parent",)
 
     @extend_schema(request=CategoryInPutSerializer, responses={status.HTTP_201_CREATED:CategoryOutPutSerializer})
     def post(self, request):
@@ -50,7 +50,7 @@ class CategoryDetailApi(ApiAuthMixin, APIView):
     class CategoryDetailOutPutSerializer(serializers.ModelSerializer):
         class Meta:
             model = Category
-            fields = ("id", "name", "category_type", "parent",)
+            fields = ("id", "name", "slug", "category_type", "parent",)
 
     @extend_schema(request=CategoryDetailInPutSerializer,
                    responses={status.HTTP_200_OK: CategoryDetailOutPutSerializer})
@@ -82,7 +82,7 @@ class CategoryListOutPutSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Category
-        fields = ("id", "name", "category_type", "parent", "children")
+        fields = ("id", "name", "slug", "category_type", "parent", "children")
 
     def get_children(self, obj) -> dict :
         children = Category.objects.filter(parent=obj)
@@ -118,7 +118,7 @@ class ProductCategoryAdminApi(ApiAuthMixin, APIView):
     class ProductCategoryInPutSerializer(serializers.Serializer):
         product = serializers.PrimaryKeyRelatedField(required=True, queryset=Product.objects.all())
         category = serializers.PrimaryKeyRelatedField(required=True, queryset=Category.objects.filter(
-            category_type=CategoryType.PRODUCT))
+            category_type__in=(CategoryType.PRODUCT, CategoryType.GAME, CategoryType.GIFTCART)))
 
     @extend_schema(
         request=ProductCategoryInPutSerializer(many=True),
@@ -143,7 +143,7 @@ class ProductCategoryDetailApi(ApiAuthMixin, APIView):
     class ProductCategoryDetailInPutSerializer(serializers.Serializer):
         product = serializers.PrimaryKeyRelatedField(required=True, queryset=Product.objects.all())
         category = serializers.PrimaryKeyRelatedField(required=True, queryset=Category.objects.filter(
-            category_type=CategoryType.PRODUCT))
+            category_type__in=(CategoryType.PRODUCT, CategoryType.GAME, CategoryType.GIFTCART)))
 
     class ProuductCategoryDetailOutPutSerializer(serializers.ModelSerializer):
         class Meta:

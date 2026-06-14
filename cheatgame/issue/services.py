@@ -6,6 +6,7 @@ from django.db.models import QuerySet
 from cheatgame.issue.models import IssueReport, Issue, IssueListReport, IssueCategory, Tag, IssueReportStatus, IssueTag
 from cheatgame.product.models import Category
 from cheatgame.shop.models import DeliveryData
+from cheatgame.shop.services.delivery_schedule import reserve_delivery_data
 from cheatgame.users.models import BaseUser
 
 
@@ -23,8 +24,13 @@ def create_issue_report(*, user: BaseUser, explanation: str, issue_list: List[Is
     return issue_report
 
 
+@transaction.atomic
 def update_issue_report(*, issue_report_id: int, user: BaseUser, delivery_data: DeliveryData) -> IssueReport:
-    issue_report = IssueReport.objects.get(id=issue_report_id, user=user)
+    issue_report = IssueReport.objects.select_for_update().get(id=issue_report_id, user=user)
+    if issue_report.delivery_data_id is None:
+        delivery_data = reserve_delivery_data(delivery_data=delivery_data)
+    elif issue_report.delivery_data_id != delivery_data.id:
+        raise ValueError("Issue report already has a reservation.")
     issue_report.delivery_data = delivery_data
     issue_report.status = IssueReportStatus.DURING
     issue_report.save(update_fields=['delivery_data'  , 'status' ])

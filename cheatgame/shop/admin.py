@@ -6,10 +6,11 @@ from cheatgame.shop.models import Order, OrderItem, OrderItemAttachment, Cart, C
 
 @admin.register(Order)
 class OrderAdmin(admin.ModelAdmin):
-    fields = ( "user", "discount", "payment_status", "user_status", "total_price",
-              "total_price_discount", "schedule",)
-    list_display = ("id","user", "discount", "payment_status", "user_status", "total_price",
-                    "total_price_discount", "schedule",)
+    fields = ( "user", "public_tracking_code", "discount", "payment_status", "user_status", "total_price",
+              "total_price_discount", "schedule", "shipping_address", "shipping_method",)
+    readonly_fields = ("public_tracking_code",)
+    list_display = ("id", "public_tracking_code", "user", "discount", "payment_status", "user_status", "total_price",
+                    "total_price_discount", "schedule", "shipping_address", "shipping_method",)
 
 
 @admin.register(OrderItem)

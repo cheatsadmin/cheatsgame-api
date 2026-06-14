@@ -6,6 +6,19 @@ from django.utils import timezone
 
 from cheatgame.shop.models import Order, OrderStatus, PaymentTransaction, PaymentTransactionStatus
 from cheatgame.shop.payments.providers import PaymentProvider, PaymentProviderError, get_payment_provider
+from cheatgame.shop.services.order import (
+    DeliverySlotUnavailableError,
+    DiscountUnavailableError,
+    ShippingUnavailableError,
+    StockUnavailableError,
+    commit_order_delivery_slot,
+    commit_order_discount_usage,
+    commit_order_stock,
+    ensure_order_delivery_slot_available,
+    ensure_order_discount_available,
+    ensure_order_shipping_ready,
+    ensure_order_stock_available,
+)
 
 
 class PaymentError(Exception):
@@ -30,6 +43,7 @@ def serialize_payment_transaction(transaction_obj: PaymentTransaction) -> dict:
     return {
         "id": transaction_obj.id,
         "order": transaction_obj.order_id,
+        "order_public_tracking_code": transaction_obj.order.public_tracking_code,
         "provider": transaction_obj.provider,
         "amount": transaction_obj.amount,
         "status": transaction_obj.status,
@@ -66,6 +80,19 @@ def create_payment_request(
         raise PaymentError("سفارش یافت نشد.")
     if order.payment_status == OrderStatus.PAID.value:
         raise PaymentError("این سفارش قبلا پرداخت شده است.")
+
+    try:
+        ensure_order_stock_available(order=order, lock=True)
+        ensure_order_shipping_ready(order=order, lock=True)
+        ensure_order_delivery_slot_available(order=order, lock=True)
+        ensure_order_discount_available(order=order, lock=True)
+    except (
+        StockUnavailableError,
+        ShippingUnavailableError,
+        DeliverySlotUnavailableError,
+        DiscountUnavailableError,
+    ) as error:
+        raise PaymentError(str(error)) from error
 
     amount = order.total_price_discount
     if amount is None:
@@ -161,6 +188,27 @@ def verify_payment(*, transaction_id: int, user) -> PaymentTransaction:
     order = Order.objects.select_for_update().get(id=transaction_obj.order_id)
     if transaction_obj.status == PaymentTransactionStatus.PAID:
         if order.payment_status != OrderStatus.PAID.value:
+            try:
+                ensure_order_stock_available(order=order, lock=True)
+                ensure_order_shipping_ready(order=order, lock=True)
+                ensure_order_delivery_slot_available(order=order, lock=True)
+                ensure_order_discount_available(order=order, lock=True)
+                commit_order_delivery_slot(order=order)
+                commit_order_stock(order=order)
+                commit_order_discount_usage(order=order)
+            except (
+                StockUnavailableError,
+                ShippingUnavailableError,
+                DeliverySlotUnavailableError,
+                DiscountUnavailableError,
+            ) as error:
+                transaction_obj.status = PaymentTransactionStatus.FAILED
+                transaction_obj.error_code = "checkout_integrity_failed"
+                transaction_obj.error_message = str(error)
+                transaction_obj.save(update_fields=["status", "error_code", "error_message", "updated_at"])
+                order.payment_status = OrderStatus.FAIDED.value
+                order.save(update_fields=["payment_status", "updated_at"])
+                return transaction_obj
             order.payment_status = OrderStatus.PAID.value
             order.save(update_fields=["payment_status", "updated_at"])
         return transaction_obj
@@ -180,6 +228,39 @@ def verify_payment(*, transaction_id: int, user) -> PaymentTransaction:
     transaction_obj.error_message = verify_result.error_message
 
     if verify_result.is_paid:
+        try:
+            ensure_order_stock_available(order=order, lock=True)
+            ensure_order_shipping_ready(order=order, lock=True)
+            ensure_order_delivery_slot_available(order=order, lock=True)
+            ensure_order_discount_available(order=order, lock=True)
+            commit_order_delivery_slot(order=order)
+            commit_order_stock(order=order)
+            commit_order_discount_usage(order=order)
+        except (
+            StockUnavailableError,
+            ShippingUnavailableError,
+            DeliverySlotUnavailableError,
+            DiscountUnavailableError,
+        ) as error:
+            transaction_obj.verify_payload = verify_result.payload
+            transaction_obj.verified_at = now
+            transaction_obj.error_code = "checkout_integrity_failed"
+            transaction_obj.error_message = str(error)
+            transaction_obj.status = PaymentTransactionStatus.FAILED
+            transaction_obj.save(
+                update_fields=[
+                    "verify_payload",
+                    "verified_at",
+                    "error_code",
+                    "error_message",
+                    "status",
+                    "updated_at",
+                ]
+            )
+            order.payment_status = OrderStatus.FAIDED.value
+            order.save(update_fields=["payment_status", "updated_at"])
+            return transaction_obj
+
         transaction_obj.status = PaymentTransactionStatus.PAID
         transaction_obj.gateway_ref_id = verify_result.ref_id
         transaction_obj.gateway_trace_no = verify_result.trace_no

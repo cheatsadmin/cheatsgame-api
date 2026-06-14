@@ -1,4 +1,5 @@
 from enum import IntEnum
+from secrets import token_hex
 
 from django.db import models
 
@@ -92,13 +93,44 @@ class CartItemAttachment(BaseModel):
 
 class Order(BaseModel):
     user = models.ForeignKey("users.BaseUser", on_delete=models.CASCADE)
+    public_tracking_code = models.CharField(max_length=16, unique=True, null=True, blank=True, editable=False)
     discount = models.ForeignKey("Discount", on_delete=models.SET_NULL, null=True, blank=True)
     payment_status = models.IntegerField(choices=OrderStatus.choices(), default=OrderStatus.PENDDING)
     user_status = models.IntegerField(choices=OrderUserStatus.choices(), default=OrderUserStatus.NOTCOMPLETED)
     total_price = models.DecimalField(max_digits=16, decimal_places=0)
     total_price_discount = models.DecimalField(max_digits=16, decimal_places=0)
     schedule = models.ForeignKey("DeliveryData", on_delete=models.PROTECT, null=True, blank=True)
+    shipping_address = models.ForeignKey(
+        "users.Address",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="shipping_orders",
+    )
+    shipping_method = models.ForeignKey(
+        "shop.DeliveryType",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="shipping_orders",
+    )
     is_game = models.BooleanField(default=False)
+
+    @classmethod
+    def generate_public_tracking_code(cls) -> str:
+        for _ in range(10):
+            code = f"CH-{token_hex(5).upper()}"
+            if not cls.objects.filter(public_tracking_code=code).exists():
+                return code
+        return f"CH-{token_hex(6).upper()}"
+
+    def save(self, *args, **kwargs):
+        if not self.public_tracking_code:
+            self.public_tracking_code = self.generate_public_tracking_code()
+            update_fields = kwargs.get("update_fields")
+            if update_fields is not None:
+                kwargs["update_fields"] = [*update_fields, "public_tracking_code"]
+        super().save(*args, **kwargs)
 
 
 class PaymentTransaction(BaseModel):
@@ -209,6 +241,3 @@ class DeliveryData(BaseModel):
     schedule = models.ForeignKey("DeliverySchedule", on_delete=models.PROTECT)
     address = models.ForeignKey("users.Address", on_delete=models.PROTECT, null=True, blank=True)
     is_used = models.BooleanField(default=False)
-
-    class Meta:
-        unique_together = ("address", "schedule")

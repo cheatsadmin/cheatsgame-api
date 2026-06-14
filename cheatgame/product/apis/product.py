@@ -4,29 +4,82 @@ from rest_framework import serializers, status
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from django.utils.text import slugify
 
 from cheatgame.api.mixins import ApiAuthMixin
 from cheatgame.api.pagination import LimitOffsetPagination, get_paginated_response, PaginatedSerializer
 from cheatgame.api.utils import inline_serializer
 from cheatgame.common.utils import reformat_url
-from cheatgame.product.models import ProductType, Product, ProductOrderBy, Image, Category, Feature, ValuesList, \
-    Attachment, Question, Label, ProductNote
+from cheatgame.product.models import ProductType, Product, ProductOrderBy, ProductStatus, Image, Category, CategoryType, Feature, ValuesList, \
+    Attachment, Question, Label, ProductNote, Reviews, ReviewStatus
 from cheatgame.product.permissions import AdminOrManagerPermission
 from cheatgame.product.selectors.product import product_list, product_detail
 from cheatgame.product.services.product import create_product, create_product_note, update_product_note, \
     delete_product_note, update_product, check_product_exists, delete_product
-from cheatgame.users.models import BaseUser
+from cheatgame.users.models import BaseUser, UserTypes
+
+
+SELLABLE_CATEGORY_TYPES = (
+    CategoryType.PRODUCT,
+    CategoryType.GAME,
+    CategoryType.GIFTCART,
+)
+
+
+def can_manage_products(request) -> bool:
+    return (
+        request.user
+        and request.user.is_authenticated
+        and request.user.user_type in (UserTypes.ADMIN, UserTypes.MANAGER)
+    )
+
+
+class ProductCategorySummarySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Category
+        fields = ("id", "name", "slug", "category_type", "parent")
+
+
+def get_product_categories(product: Product):
+    return [product_category.category for product_category in product.categories.all()]
+
+
+def validate_product_categories(attrs):
+    categories = attrs.get("categories") or []
+    allow_uncategorized = attrs.get("allow_uncategorized", False)
+    if not categories and not allow_uncategorized:
+        raise serializers.ValidationError({
+            "categories": "حداقل یک دسته‌بندی محصول را انتخاب کنید یا گزینه بدون دسته‌بندی را آگاهانه فعال کنید."
+        })
+    return attrs
+
+
+def validate_unique_slug(value: str, *, product_id: int = None):
+    if not value:
+        return value
+    normalized_slug = slugify(value, allow_unicode=True)
+    queryset = Product.objects.filter(slug=normalized_slug)
+    if product_id:
+        queryset = queryset.exclude(id=product_id)
+    if queryset.exists():
+        raise serializers.ValidationError("این اسلاگ قبلا برای محصول دیگری استفاده شده است.")
+    return normalized_slug
 
 
 class ProductDetailProductSerializer(serializers.ModelSerializer):
     main_image = serializers.SerializerMethodField()
+    seo_title = serializers.SerializerMethodField()
 
     def get_main_image(self, obj):
         return reformat_url(url=obj.main_image.url)
 
+    def get_seo_title(self, obj):
+        return obj.seo_title or obj.title
+
     class Meta:
         model = Product
-        fields = ("id", "product_type", "title", "slug", "main_image", "price", "off_price", "quantity", "device_model")
+        fields = ("id", "product_type", "title", "slug", "status", "seo_title", "main_image",
+                  "price", "off_price", "quantity", "device_model")
 
 
 class ProductAdminApi(ApiAuthMixin, APIView):
@@ -37,6 +90,10 @@ class ProductAdminApi(ApiAuthMixin, APIView):
     class ProductCreateInputSerializer(serializers.Serializer):
         product_type = serializers.ChoiceField(choices=ProductType.choices())
         title = serializers.CharField(max_length=100)
+        slug = serializers.CharField(max_length=120, required=False, allow_blank=True)
+        status = serializers.ChoiceField(choices=ProductStatus.choices, required=False, default=ProductStatus.PUBLISHED)
+        seo_title = serializers.CharField(max_length=120, required=False, allow_blank=True)
+        meta_description = serializers.CharField(max_length=300, required=False, allow_blank=True)
         main_image = serializers.FileField(required=True)
         price = serializers.DecimalField(max_digits=15, decimal_places=0)
         off_price = serializers.DecimalField(max_digits=15, decimal_places=0)
@@ -45,9 +102,21 @@ class ProductAdminApi(ApiAuthMixin, APIView):
         description = serializers.FileField()
         order_limit = serializers.IntegerField(required=False)
         device_model = serializers.CharField(max_length=100, required=False, allow_blank=True)
+        categories = serializers.PrimaryKeyRelatedField(
+            required=False,
+            many=True,
+            queryset=Category.objects.filter(category_type__in=SELLABLE_CATEGORY_TYPES),
+        )
+        allow_uncategorized = serializers.BooleanField(required=False, default=False, write_only=True)
         included_products = serializers.PrimaryKeyRelatedField(required=False, many=True,
                                                                queryset=Product.objects.filter(
                                                                    product_type=ProductType.GAME))
+
+        def validate_slug(self, value):
+            return validate_unique_slug(value)
+
+        def validate(self, attrs):
+            return validate_product_categories(attrs)
 
         def validate_included_products(self, included_products):
             if len(included_products) > 5:
@@ -57,6 +126,8 @@ class ProductAdminApi(ApiAuthMixin, APIView):
     class ProuductCreateOutputSerializer(serializers.ModelSerializer):
         main_image = serializers.SerializerMethodField()
         description = serializers.SerializerMethodField()
+        seo_title = serializers.SerializerMethodField()
+        categories = serializers.SerializerMethodField()
 
         def get_main_image(self, obj):
             return reformat_url(url=obj.main_image.url)
@@ -64,9 +135,15 @@ class ProductAdminApi(ApiAuthMixin, APIView):
         def get_description(self, obj):
             return reformat_url(url=obj.description.url)
 
+        def get_seo_title(self, obj):
+            return obj.seo_title or obj.title
+
+        def get_categories(self, obj):
+            return ProductCategorySummarySerializer(get_product_categories(obj), many=True).data
+
         class Meta:
             model = Product
-            fields = ("id", "product_type", "title", "slug", "main_image",
+            fields = ("id", "product_type", "title", "slug", "status", "seo_title", "meta_description", "categories", "main_image",
                       "price", "off_price", "quantity", "discount_end_time",
                       "description", "included_products", "order_limit",
                       "device_model", "created_at", "updated_at")
@@ -80,6 +157,10 @@ class ProductAdminApi(ApiAuthMixin, APIView):
             product = create_product(
                 product_type=serializer.validated_data.get("product_type"),
                 title=serializer.validated_data.get("title"),
+                slug=serializer.validated_data.get("slug", ""),
+                status=serializer.validated_data.get("status", ProductStatus.PUBLISHED),
+                seo_title=serializer.validated_data.get("seo_title", ""),
+                meta_description=serializer.validated_data.get("meta_description", ""),
                 main_image=request.FILES.get("main_image"),
                 price=serializer.validated_data.get("price"),
                 off_price=serializer.validated_data.get("off_price"),
@@ -88,7 +169,8 @@ class ProductAdminApi(ApiAuthMixin, APIView):
                 description=serializer.validated_data.get("description"),
                 included_products=serializer.validated_data.get("included_products", None),
                 order_limit=serializer.validated_data.get("order_limit", None),
-                device_model=serializer.validated_data.get("device_model", None)
+                device_model=serializer.validated_data.get("device_model", None),
+                categories=serializer.validated_data.get("categories", []),
             )
             return Response(self.ProuductCreateOutputSerializer(product).data, status=status.HTTP_201_CREATED)
         except Exception as ex:
@@ -102,18 +184,38 @@ class ProductDetailAdminApi(ApiAuthMixin, APIView):
     class ProductDetailInPutSerializer(serializers.Serializer):
         product_type = serializers.ChoiceField(choices=ProductType.choices())
         title = serializers.CharField(max_length=100)
-        main_image = serializers.FileField(required=True)
+        slug = serializers.CharField(max_length=120, required=False, allow_blank=True)
+        status = serializers.ChoiceField(choices=ProductStatus.choices, required=False)
+        seo_title = serializers.CharField(max_length=120, required=False, allow_blank=True)
+        meta_description = serializers.CharField(max_length=300, required=False, allow_blank=True)
+        main_image = serializers.FileField(required=False)
         price = serializers.DecimalField(max_digits=15, decimal_places=0)
         off_price = serializers.DecimalField(max_digits=15, decimal_places=0)
         quantity = serializers.IntegerField(required=True)
         discount_end_time = serializers.DateTimeField(required=False)
-        description = serializers.FileField()
+        description = serializers.FileField(required=False)
         order_limit = serializers.IntegerField(required=False)
         device_model = serializers.CharField(max_length=100, required=False, allow_blank=True)
+        categories = serializers.PrimaryKeyRelatedField(
+            required=False,
+            many=True,
+            queryset=Category.objects.filter(category_type__in=SELLABLE_CATEGORY_TYPES),
+        )
+        allow_uncategorized = serializers.BooleanField(required=False, default=False, write_only=True)
+
+        def validate_slug(self, value):
+            return validate_unique_slug(value, product_id=self.context.get("product_id"))
+
+        def validate(self, attrs):
+            if "categories" in self.initial_data:
+                return validate_product_categories(attrs)
+            return attrs
 
     class ProductDetailOutPutSerializer(serializers.ModelSerializer):
         main_image = serializers.SerializerMethodField()
         description = serializers.SerializerMethodField()
+        seo_title = serializers.SerializerMethodField()
+        categories = serializers.SerializerMethodField()
 
         def get_main_image(self, obj):
             return reformat_url(url=obj.main_image.url)
@@ -121,25 +223,37 @@ class ProductDetailAdminApi(ApiAuthMixin, APIView):
         def get_description(self, obj):
             return reformat_url(url=obj.description.url)
 
+        def get_seo_title(self, obj):
+            return obj.seo_title or obj.title
+
+        def get_categories(self, obj):
+            return ProductCategorySummarySerializer(get_product_categories(obj), many=True).data
+
         class Meta:
             model = Product
             fields = (
-                "id", "product_type", "title", "main_image", "price", "off_price", "quantity", "discount_end_time",
+                "id", "product_type", "title", "slug", "status", "seo_title", "meta_description", "categories",
+                "main_image", "price", "off_price", "quantity", "discount_end_time",
                 "description", "order_limit", "device_model")
 
     @extend_schema(request=ProductDetailInPutSerializer, responses={200: ProductDetailOutPutSerializer})
     def put(self, request, id):
-        serializer = self.ProductDetailInPutSerializer(data=request.data)
+        serializer = self.ProductDetailInPutSerializer(data=request.data, context={"product_id": id})
         serializer.is_valid(raise_exception=True)
         # try:
         if not check_product_exists(product_id=id):
             return Response({"error": "محصول موجود نیست"}, status=status.HTTP_400_BAD_REQUEST)
+        current_product = Product.objects.get(id=id)
         main_image = request.FILES.get("main_image", None)
         description = request.FILES.get("description", None)
         product = update_product(
             product_id=id,
             product_type=serializer.validated_data.get("product_type"),
             title=serializer.validated_data.get("title"),
+            slug=serializer.validated_data.get("slug", current_product.slug),
+            status=serializer.validated_data.get("status", current_product.status),
+            seo_title=serializer.validated_data.get("seo_title", current_product.seo_title),
+            meta_description=serializer.validated_data.get("meta_description", current_product.meta_description),
             main_image=main_image,
             price=serializer.validated_data.get("price"),
             off_price=serializer.validated_data.get("off_price"),
@@ -147,7 +261,8 @@ class ProductDetailAdminApi(ApiAuthMixin, APIView):
             discount_end_time=serializer.validated_data.get("discount_end_time"),
             description=description,
             order_limit=serializer.validated_data.get("order_limit"),
-            device_model=serializer.validated_data.get("device_model")
+            device_model=serializer.validated_data.get("device_model"),
+            categories=serializer.validated_data.get("categories") if "categories" in serializer.validated_data else None,
         )
         return Response(self.ProductDetailOutPutSerializer(product).data, status=status.HTTP_200_OK)
         # except Exception as e:
@@ -167,9 +282,17 @@ class ProductDetailAdminApi(ApiAuthMixin, APIView):
 class ProudctOutPutSerializer(serializers.ModelSerializer):
     included_products = ProductDetailProductSerializer(many=True)
     main_image = serializers.SerializerMethodField()
+    seo_title = serializers.SerializerMethodField()
+    categories = serializers.SerializerMethodField()
 
     def get_main_image(self, obj):
         return reformat_url(url=obj.main_image.url)
+
+    def get_seo_title(self, obj):
+        return obj.seo_title or obj.title
+
+    def get_categories(self, obj):
+        return ProductCategorySummarySerializer(get_product_categories(obj), many=True).data
 
     attachments = inline_serializer(many=True,
                                     fields={
@@ -179,12 +302,14 @@ class ProudctOutPutSerializer(serializers.ModelSerializer):
                                         "price": serializers.DecimalField(max_digits=15, decimal_places=0,
                                                                           required=False),
                                         "is_force_attachment": serializers.BooleanField(required=False),
-                                        "description" : serializers.CharField(required=False , max_length=250)
+                                        "description": serializers.CharField(
+                                            required=False, allow_blank=True, allow_null=True, max_length=250
+                                        )
                                     })
 
     class Meta:
         model = Product
-        fields = ("id", "product_type", "title", "slug", "main_image",
+        fields = ("id", "product_type", "title", "slug", "status", "seo_title", "meta_description", "categories", "main_image",
                   "price", "off_price", "discount_end_time",
                   "included_products", "order_limit", "device_model", "attachments" , "score"
                   )
@@ -203,6 +328,7 @@ class ProudctApi(APIView):
         categories__in = serializers.CharField(required=False, max_length=200)
         labels__in = serializers.CharField(required=False, max_length=100)
         is_exists = serializers.CharField(required=False)
+        status = serializers.ChoiceField(required=False, choices=ProductStatus.choices)
         order_by = serializers.ChoiceField(required=False, choices=ProductOrderBy.choices())
 
     class PaginatedProductSerializer(PaginatedSerializer):
@@ -218,7 +344,10 @@ class ProudctApi(APIView):
         filters_serializer = self.FilterProductSerializer(data=request.query_params)
         filters_serializer.is_valid(raise_exception=True)
         try:
-            query = product_list(filters=filters_serializer.validated_data)
+            query = product_list(
+                filters=filters_serializer.validated_data,
+                include_unpublished=can_manage_products(request),
+            )
         except Exception as error:
             return Response(
                 {"error": "مشکلی رخ داده است."}, status=status.HTTP_400_BAD_REQUEST)
@@ -234,7 +363,7 @@ class ProudctApi(APIView):
 class ProductDetailCategorySerializer(serializers.ModelSerializer):
     class Meta:
         model = Category
-        fields = ("name",)
+        fields = ("id", "name", "slug", "category_type", "parent")
 
 
 class ProductDetailFeatureSerializer(serializers.ModelSerializer):
@@ -288,7 +417,9 @@ class ProductDetailApi(APIView):
                                             "price": serializers.DecimalField(max_digits=15, decimal_places=0,
                                                                               required=False),
                                             "is_force_attachment": serializers.BooleanField(required=False),
-                                            "description": serializers.CharField(max_length=250)
+                                            "description": serializers.CharField(
+                                                required=False, allow_blank=True, allow_null=True, max_length=250
+                                            )
                                         })
         suggestions = inline_serializer(many=True, fields={
             "id": serializers.CharField(required=False),
@@ -298,11 +429,14 @@ class ProductDetailApi(APIView):
             "id": serializers.CharField(required=False),
             "label": ProductDetailLabelSerializer(required=False)
         })
+        categories = serializers.SerializerMethodField()
 
         reviews = inline_serializer(many=True, fields={
             "id": serializers.CharField(required=False),
             "user": ProductDetailUserSerializer(required=False),
             "comment": serializers.CharField(required=False),
+            "rating": serializers.IntegerField(required=False),
+            "status": serializers.CharField(required=False),
             "created_at": serializers.DateTimeField(required=False),
         })
 
@@ -320,10 +454,14 @@ class ProductDetailApi(APIView):
         product_type = serializers.IntegerField()
         title = serializers.CharField()
         slug = serializers.SlugField()
+        status = serializers.CharField()
+        seo_title = serializers.SerializerMethodField()
+        meta_description = serializers.CharField(required=False)
         main_image = serializers.SerializerMethodField()
         price = serializers.DecimalField(decimal_places=0, max_digits=15)
         off_price = serializers.DecimalField(decimal_places=0, max_digits=15)
         quantity = serializers.IntegerField()
+        order_limit = serializers.IntegerField(required=False)
         device_model = serializers.CharField()
         id = serializers.IntegerField()
         description = serializers.FileField()
@@ -348,10 +486,20 @@ class ProductDetailApi(APIView):
 
 
         def get_comments_count(self, product: Product) -> int:
-            return Question.objects.filter(accepted=True, product=product).count()
+            return Reviews.objects.filter(
+                status=ReviewStatus.APPROVED,
+                accepted=True,
+                product=product,
+            ).count()
 
         def get_main_image(self , obj):
             return reformat_url(url = obj.main_image.url)
+
+        def get_seo_title(self, obj):
+            return obj.seo_title or obj.title
+
+        def get_categories(self, obj):
+            return ProductDetailCategorySerializer(get_product_categories(obj), many=True).data
 
         def get_description(self , obj):
             return reformat_url(url = obj.description.url)
@@ -363,8 +511,11 @@ class ProductDetailApi(APIView):
     def get(self, request, slug: str):
         try:
             product = product_detail(
-                slug=slug
+                slug=slug,
+                include_unpublished=can_manage_products(request),
             )
+            if product is None:
+                return Response({"error": "محصول موجود نیست"}, status=status.HTTP_404_NOT_FOUND)
             serializer = self.ProductDetailOutPutSerializer(instance=product)
             return Response(serializer.data, status=status.HTTP_200_OK)
         except Exception as error:

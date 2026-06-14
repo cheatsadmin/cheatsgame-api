@@ -1,28 +1,36 @@
 from django.db.models import QuerySet, Prefetch
 
 from cheatgame.product.filters import ProductFilter
-from cheatgame.product.models import Product, Question, Reviews, Label, LabelType, SuggestionProduct
+from cheatgame.product.models import Product, ProductStatus, Question, Reviews, Label, LabelType, SuggestionProduct, ReviewStatus
 
 
-def product_list(*, filters=None) -> QuerySet[Product]:
+def product_list(*, filters=None, include_unpublished: bool = False) -> QuerySet[Product]:
     filters = filters or {}
     qs = Product.objects.all()
-    return ProductFilter(filters, qs).qs.prefetch_related("attachments")
+    if not include_unpublished:
+        qs = qs.filter(status=ProductStatus.PUBLISHED)
+    return ProductFilter(filters, qs).qs.prefetch_related(
+        "attachments",
+        "categories__category",
+    )
 
 
 def products_numbers() -> int:
     return Product.objects.all().count()
 
 
-def product_detail(*, slug: str) -> Product:
-    return Product.objects.filter(slug=slug).prefetch_related(
+def product_detail(*, slug: str, include_unpublished: bool = False) -> Product:
+    qs = Product.objects.filter(slug=slug)
+    if not include_unpublished:
+        qs = qs.filter(status=ProductStatus.PUBLISHED)
+    return qs.prefetch_related(
         "images",
-        "categories",
+        "categories__category",
         "valueslist",
         "attachments",
         "suggestions",
         "labels",
-        Prefetch("reviews", queryset=Reviews.objects.filter(accepted=True)),
+        Prefetch("reviews", queryset=Reviews.objects.filter(status=ReviewStatus.APPROVED, accepted=True)),
         Prefetch("questions", queryset=Question.objects.filter(accepted=True)),
         "notes"
     ).first()
@@ -42,5 +50,3 @@ def suggestions_product(*, product: Product):
     suggestion_objects = SuggestionProduct.objects.filter(product=product).select_related("suggested")
     suggested_list = [instance.suggested for instance in suggestion_objects ]
     return suggested_list
-
-

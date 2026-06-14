@@ -5,7 +5,7 @@ from django_filters import (
 )
 from django.contrib.postgres.search import SearchVector
 from django.utils import timezone
-from cheatgame.product.models import Product, ProductOrderBy, Question, Reviews
+from cheatgame.product.models import Product, ProductOrderBy, ProductStatus, Question, Reviews
 from rest_framework.exceptions import APIException
 
 
@@ -19,6 +19,7 @@ class ProductFilter(FilterSet):
     labels__in = CharFilter(method="filter_labels__in")
     is_exists = CharFilter(method="filter_is_exists")
     order_by = CharFilter(method="filter_order_by")
+    status = CharFilter(method="filter_status")
 
     def filter_product_type(self, queryset, name, value):
         return queryset.filter(product_type=int(value))
@@ -77,6 +78,12 @@ class ProductFilter(FilterSet):
             return queryset.filter(quantity__gt=0)
         return queryset.filter(quantity__lte=0)
 
+    def filter_status(self, queryset, name, value):
+        valid_statuses = {choice[0] for choice in ProductStatus.choices}
+        if value in valid_statuses:
+            return queryset.filter(status=value)
+        return queryset
+
     def filter_order_by(self, queryset, name, value):
         value = int(value)
         if value == ProductOrderBy.EXPENSIVE:
@@ -120,14 +127,20 @@ class QuestionFilter(FilterSet):
 
 class ReviewFilter(FilterSet):
     is_accepted = CharFilter(method="filter_is_accepted")
+    status = CharFilter(method="filter_status")
 
     def filter_is_accepted(self , queryset , name , value):
-        if value == "True":
+        if value in (True, "True", "true", "1"):
             return queryset.filter(accepted=True)
-        elif value == "False":
+        elif value in (False, "False", "false", "0"):
             return queryset.filter(accepted=False)
         else:
             return queryset.filter()
+
+    def filter_status(self, queryset, name, value):
+        if value:
+            return queryset.filter(status=value)
+        return queryset
 
     class Meta:
         model = Reviews
@@ -135,5 +148,6 @@ class ReviewFilter(FilterSet):
             "id",
             "user",
             "product",
-            "comment"
+            "comment",
+            "status",
         )

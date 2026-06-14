@@ -68,11 +68,14 @@ def build_payment_success_redirect_url(transaction_obj: PaymentTransaction) -> s
 
 
 class PaymentTransactionSerializer(serializers.ModelSerializer):
+    order_public_tracking_code = serializers.CharField(source="order.public_tracking_code", read_only=True)
+
     class Meta:
         model = PaymentTransaction
         fields = (
             "id",
             "order",
+            "order_public_tracking_code",
             "provider",
             "amount",
             "status",

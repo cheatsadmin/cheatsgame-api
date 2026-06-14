@@ -19,6 +19,7 @@ from cheatgame.issue.services import create_issue_report, update_issue_report, c
 from cheatgame.product.models import CategoryType, Category
 from cheatgame.product.permissions import CustomerPermission, IssueReportIsOwnerCustomer, AdminOrManagerPermission
 from cheatgame.shop.models import DeliveryData, DeliveryScheduleType
+from cheatgame.shop.services.delivery_schedule import DeliveryDataAlreadyUsedError, DeliverySlotFullError
 
 
 class IssueListOutPutSerializer(serializers.ModelSerializer):
@@ -126,6 +127,7 @@ class IssueReportCreateApi(ApiAuthMixin, APIView):
             }
         )
         explanation = serializers.CharField(required=False)
+        public_tracking_code = serializers.CharField(required=False)
 
     @extend_schema(request=IssueReportCreateInPutSerializer,
                    responses=IssueReportCreateOutPutSerializer)
@@ -163,14 +165,41 @@ class IssueReportDetailApi(ApiAuthMixin, APIView):
             }
         )
         explanation = serializers.CharField(required=False)
+        public_tracking_code = serializers.CharField(required=False)
 
         delivery_data = inline_serializer(
-            fields={"id": serializers.IntegerField(),
-                    "schedule": serializers.CharField(),
-                    "address": serializers.CharField(),
-                    "type": serializers.CharField()}
+            allow_null=True,
+            required=False,
+            fields={
+                "id": serializers.IntegerField(),
+                "type": inline_serializer(fields={
+                    "name": serializers.CharField(),
+                    "delivery_type": serializers.IntegerField(),
+                    "side": serializers.IntegerField()
+                }),
+                "schedule": inline_serializer(fields={
+                    "type": serializers.CharField(),
+                    "start": serializers.DateTimeField(),
+                    "end": serializers.DateTimeField()
+                }),
+                "address": inline_serializer(fields={
+                    "address_detail": serializers.CharField(),
+                    "postal_code": serializers.CharField(),
+                })
+            }
         )
         status = serializers.IntegerField(required=False)
+        is_paid = serializers.BooleanField(required=False)
+        created_at = serializers.DateTimeField(required=False)
+
+    @extend_schema(request=IssueReportDetailInPutSerializer,
+                   responses=IssueReportDetailOutPutSerializer)
+    def get(self, request, id):
+        issue_report = IssueReport.objects.filter(id=id).first()
+        if issue_report is None:
+            return Response({"error": "درخواست تعمیر یافت نشد."}, status=status.HTTP_400_BAD_REQUEST)
+        self.check_object_permissions(request, issue_report)
+        return Response(self.IssueReportDetailOutPutSerializer(issue_report).data, status=status.HTTP_200_OK)
 
     @extend_schema(request=IssueReportDetailInPutSerializer,
                    responses=IssueReportDetailOutPutSerializer)
@@ -185,11 +214,24 @@ class IssueReportDetailApi(ApiAuthMixin, APIView):
             return Response({"error": "درخواست تعمیر یافت نشد."}, status=status.HTTP_400_BAD_REQUEST)
         self.check_object_permissions(request, issue_report)
         delivery_data = serializer.validated_data.get('delivery_data')
+        if issue_report.delivery_data_id is not None:
+            if issue_report.delivery_data_id == delivery_data.id:
+                return Response(self.IssueReportDetailOutPutSerializer(issue_report).data, status=status.HTTP_200_OK)
+            return Response({"error": "برای این درخواست تعمیر قبلا زمان رزرو شده است."},
+                            status=status.HTTP_400_BAD_REQUEST)
         if delivery_data.address_id is not None and delivery_data.address.user_id != request.user.id:
             return Response({"error": "آدرس زمان تعمیر باید برای خود کاربر باشد."}, status=status.HTTP_400_BAD_REQUEST)
-        issue_report = update_issue_report(issue_report_id=id,
-                                           user=request.user,
-                                           delivery_data=delivery_data)
+        try:
+            issue_report = update_issue_report(issue_report_id=id,
+                                               user=request.user,
+                                               delivery_data=delivery_data)
+        except DeliverySlotFullError:
+            return Response({"error": "ظرفیت این زمان تکمیل شده است."}, status=status.HTTP_400_BAD_REQUEST)
+        except DeliveryDataAlreadyUsedError:
+            return Response({"error": "این زمان قبلا رزرو شده است."}, status=status.HTTP_400_BAD_REQUEST)
+        except ValueError:
+            return Response({"error": "برای این درخواست تعمیر قبلا زمان رزرو شده است."},
+                            status=status.HTTP_400_BAD_REQUEST)
         return Response(self.IssueReportDetailOutPutSerializer(issue_report).data, status=status.HTTP_200_OK)
         # except Exception as e:
         #     return Response({"error": "مشکلی در گرفتن نوبت پیش آمده است."} , status = status.HTTP_400_BAD_REQUEST)
@@ -233,11 +275,11 @@ class IssueReportListApi(ApiAuthMixin, APIView):
     permission_classes = (CustomerPermission,)
 
     class IssueReportListOutPutSerializer(serializers.ModelSerializer):
-        delivery_data = IssueScheduleOutPutSerializer()
+        delivery_data = IssueScheduleOutPutSerializer(allow_null=True, required=False)
 
         class Meta:
             model = IssueReport
-            fields = ("id", "user", "delivery_data", "explanation", "is_paid" , "status")
+            fields = ("id", "public_tracking_code", "user", "delivery_data", "explanation", "is_paid" , "status")
 
     @extend_schema(responses=IssueReportListOutPutSerializer(many=True))
     def get(self, request):
@@ -468,7 +510,7 @@ class IssueReportListOutPutSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = IssueReport
-        fields = ("id", "user", "delivery_data", "explanation", "is_paid" , "status")
+        fields = ("id", "public_tracking_code", "user", "delivery_data", "explanation", "is_paid" , "status")
 
 
 class IssueReportListAdminApi(ApiAuthMixin, APIView):
@@ -630,5 +672,3 @@ class TagDetailApi(ApiAuthMixin , APIView):
             return Response({"messgae" : "تگ باموفقیت حذف گردید."}, status=status.HTTP_200_OK)
         except Exception as e:
             return  Response({"error": "مشکلی در حذف پیش آمده است."}, status=status.HTTP_400_BAD_REQUEST)
-
-

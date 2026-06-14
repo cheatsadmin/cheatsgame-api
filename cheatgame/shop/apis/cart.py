@@ -11,14 +11,26 @@ from cheatgame.product.apis.product import ProductDetailProductSerializer
 from cheatgame.product.models import Attachment, Product, ProductType
 from cheatgame.product.permissions import CustomerPermission, CartItemIsOwnerCustomer, AdminOrManagerPermission
 from cheatgame.product.selectors.product import suggestions_product
-from cheatgame.shop.models import CartItem, Order, Discount, DeliveryData, OrderItem, CartItemAttachment
+from cheatgame.shop.models import (
+    CartItem,
+    DeliveryData,
+    DeliverySide,
+    DeliveryType,
+    Discount,
+    Order,
+    OrderItem,
+    CartItemAttachment,
+    OrderItemAttachment,
+)
 from cheatgame.shop.payments.services import get_latest_order_transaction_summary
 from cheatgame.shop.selectors.cart import cart_item_list_user, cart_item_attachment_list, order_list_user, sell_report, bought_order_item
-from cheatgame.shop.selectors.discount import check_discount_code, check_coupon_code
+from cheatgame.shop.selectors.discount import validate_discount_code
 from cheatgame.shop.services.cart import check_product_limit, check_product_avaliablity, check_attachment, \
-    check_cart_item_exists, add_to_cart, update_cart_item, delete_cart_item, check_attachment_order
-from cheatgame.shop.services.order import submit_order, update_order
-from cheatgame.users.models import BaseUser
+    check_cart_item_exists, add_to_cart, update_cart_item, delete_cart_item, check_attachment_order, \
+    validate_product_attachments
+from cheatgame.shop.services.delivery_schedule import DeliveryDataAlreadyUsedError, DeliverySlotFullError
+from cheatgame.shop.services.order import StockUnavailableError, order_item_payable_total, submit_order, update_order
+from cheatgame.users.models import Address, BaseUser
 
 
 class ProductAttachmentInPutSerializer(serializers.Serializer):
@@ -73,9 +85,14 @@ class AddToCart(ApiAuthMixin, APIView):
         serializer = self.AddToCartInPutSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
-
-            if not len(serializer.validated_data.get("attachment")) > 0:
-                return Response({"error": "انتخاب حداقل یک  گارانتی بیمه و یا ظرفیت اجباری است. "}, status = status.HTTP_400_BAD_REQUEST)
+            product = serializer.validated_data.get("product")
+            attachments = serializer.validated_data.get("attachment")
+            attachments_are_valid, attachment_error = validate_product_attachments(
+                product=product,
+                attachments=attachments,
+            )
+            if not attachments_are_valid:
+                return Response({"error": attachment_error}, status=status.HTTP_400_BAD_REQUEST)
             if not check_product_limit(product=serializer.validated_data.get("product"),
                                        quantity=serializer.validated_data.get("quantity")):
                 return Response({"error": "تعداد بیش از حد مجاز می باشد."}, status=status.HTTP_400_BAD_REQUEST)
@@ -92,7 +109,7 @@ class AddToCart(ApiAuthMixin, APIView):
                                     quantity=serializer.validated_data.get("quantity"))
             return Response(self.AddToCartOutPutSerializer(cart_item).data, status=status.HTTP_200_OK)
         except Exception as error:
-            return Response({"erorr": "محصول به سبد اضافه نشد"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "محصول به سبد اضافه نشد"}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class CartItemDetail(ApiAuthMixin, APIView):
@@ -161,7 +178,7 @@ class CartItemListApi(ApiAuthMixin, APIView):
 
         class Meta:
             model = CartItem
-            fields =["id" , "product" , "price" , "cart" , "attachment"]
+            fields =["id" , "product" , "price" , "quantity" , "cart" , "attachment"]
 
     @extend_schema(responses=CartItemListOutPutSerializer)
     def get(self, request):
@@ -180,7 +197,10 @@ class SubmitOrderApi(ApiAuthMixin, APIView):
     class OrderOutPutSerializer(serializers.ModelSerializer):
         class Meta:
             model = Order
-            fields = ("id", "discount", "payment_status", "total_price", "total_price_discount", "schedule", "is_game")
+            fields = (
+                "id", "public_tracking_code", "discount", "payment_status", "total_price",
+                "total_price_discount", "schedule", "is_game"
+            )
 
     @extend_schema(request=None, responses=OrderOutPutSerializer)
     def post(self, request):
@@ -196,6 +216,12 @@ class SubmitOrderApi(ApiAuthMixin, APIView):
             else:
                 product.append(cart_item)
             attachments = cart_item_attachment_list(cart_item=cart_item)
+            attachments_are_valid, attachment_error = validate_product_attachments(
+                product=cart_item.product,
+                attachments=attachments,
+            )
+            if not attachments_are_valid:
+                return Response({"error": attachment_error}, status=status.HTTP_400_BAD_REQUEST)
             if not check_product_limit(product=cart_item.product,
                                        quantity=cart_item.quantity):
                 return Response({"error": "تعداد بیش از حد مجاز می باشد."}, status=status.HTTP_400_BAD_REQUEST)
@@ -204,12 +230,15 @@ class SubmitOrderApi(ApiAuthMixin, APIView):
                 return Response({"error": "این تعداد محصول موجود نمی باشد"}, status=status.HTTP_400_BAD_REQUEST)
             if not check_attachment_order(attachments=attachments):
                 return Response({"error": "بیمه یا گارانتی یا ظرفیت تکراری است "}, status=status.HTTP_400_BAD_REQUEST)
-        orders = submit_order(user=request.user,
-                              total_price=0,
-                              product=product,
-                              game=game,
-                              cart_items=cart_item_list
-                              )
+        try:
+            orders = submit_order(user=request.user,
+                                  total_price=0,
+                                  product=product,
+                                  game=game,
+                                  cart_items=cart_item_list
+                                  )
+        except StockUnavailableError as error:
+            return Response({"error": str(error)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(self.OrderOutPutSerializer(orders, many=True).data, status=status.HTTP_200_OK)
 
 
@@ -276,8 +305,9 @@ class OrderListCustomerAPIView(ApiAuthMixin, APIView):
         class Meta:
             model = Order
             fields = (
-                "id", "discount", "payment_status", "user_status", "schedule", "total_price_discount", "total_price",
-                "created_at", "product_images", "is_game")
+                "id", "public_tracking_code", "discount", "payment_status", "user_status", "schedule",
+                "shipping_address", "shipping_method", "total_price_discount", "total_price", "created_at",
+                "product_images", "is_game")
 
             extra_kwargs = {
                 "total_price_discount": {"required": False},
@@ -300,8 +330,10 @@ class OrderDetailUserApi(ApiAuthMixin, APIView):
 
     class OrderDetailInPutSerializer(serializers.Serializer):
         discount = serializers.PrimaryKeyRelatedField(queryset=Discount.objects.filter(is_active=True) , required=False)
-        schedule = serializers.PrimaryKeyRelatedField(queryset=DeliveryData.objects.filter(is_used=False),
-                                                      required=False)
+        coupon_code = serializers.CharField(required=False, allow_blank=True)
+        schedule = serializers.PrimaryKeyRelatedField(queryset=DeliveryData.objects.all(), required=False)
+        shipping_address = serializers.PrimaryKeyRelatedField(queryset=Address.objects.all(), required=False)
+        shipping_method = serializers.PrimaryKeyRelatedField(queryset=DeliveryType.objects.all(), required=False)
 
     class OrderDetailOutPutSerializer(serializers.ModelSerializer):
         schedule = OrderScheduleOutPutSerializer(read_only=False, required=False)
@@ -309,7 +341,8 @@ class OrderDetailUserApi(ApiAuthMixin, APIView):
         class Meta:
             model = Order
             fields = (
-                "id", "discount", "payment_status", "user_status", "schedule", "total_price_discount", "total_price")
+                "id", "public_tracking_code", "discount", "payment_status", "user_status", "schedule",
+                "shipping_address", "shipping_method", "total_price_discount", "total_price")
 
     @extend_schema(request=OrderDetailInPutSerializer,
                    responses=OrderDetailOutPutSerializer)
@@ -318,26 +351,70 @@ class OrderDetailUserApi(ApiAuthMixin, APIView):
         serializer.is_valid(raise_exception=True)
         # try:
         delivery_data = serializer.validated_data.get("schedule")
+        shipping_address = serializer.validated_data.get("shipping_address")
+        shipping_method = serializer.validated_data.get("shipping_method")
         # TODO: check created is passed more that ten min
         discount = serializer.validated_data.get("discount", None)
+        coupon_code = serializer.validated_data.get("coupon_code", "").strip()
         order = Order.objects.filter(id=id, user=request.user).first()
         if order is None:
             return Response({"error": "سفارشی با این مشخصات یافت نشد."}, status=status.HTTP_400_BAD_REQUEST)
+        if not order.is_game and delivery_data is not None:
+            return Response(
+                {"error": "برای سفارش محصول زمان ارسال انتخاب نمی‌شود. فقط روش ارسال را انتخاب کنید."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if order.is_game and (shipping_address is not None or shipping_method is not None):
+            return Response(
+                {"error": "اطلاعات ارسال فقط برای سفارش محصول ثبت می‌شود."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if delivery_data is not None and order.schedule_id is not None:
+            if order.schedule_id == delivery_data.id:
+                return Response(self.OrderDetailOutPutSerializer(order).data, status=status.HTTP_200_OK)
+            return Response({"error": "برای این سفارش قبلا زمان رزرو شده است."}, status=status.HTTP_400_BAD_REQUEST)
 
-        if discount is not None:
-            dicount_code_result = check_discount_code(user=request.user, code=discount.code,
-                                                      total_price=order.total_price)
-            coupon_code_result = check_coupon_code(total_price=order.total_price, code=discount.code)
-            if dicount_code_result == False and coupon_code_result == False:
-                return Response({"error": "کد تخفیف  معتبر نیست."}, status=status.HTTP_400_BAD_REQUEST)
+        if coupon_code:
+            discount_result = validate_discount_code(
+                user=request.user,
+                code=coupon_code,
+                total_price=order_item_payable_total(order=order),
+            )
+            if not discount_result.is_valid:
+                return Response({"error": discount_result.message}, status=status.HTTP_400_BAD_REQUEST)
+            discount = discount_result.discount
+        elif discount is not None:
+            discount_result = validate_discount_code(
+                user=request.user,
+                code=discount.code,
+                total_price=order_item_payable_total(order=order),
+            )
+            if not discount_result.is_valid:
+                return Response({"error": discount_result.message}, status=status.HTTP_400_BAD_REQUEST)
         if delivery_data is not None and delivery_data.address_id is not None and delivery_data.address.user_id != request.user.id:
             return Response({"error": "آدرس زمان ارسال باید برای خود کاربر باشد."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        if shipping_address is not None and shipping_address.user_id != request.user.id:
+            return Response({"error": "آدرس ارسال باید برای خود کاربر باشد."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        if shipping_method is not None and shipping_method.side != DeliverySide.SENDTOUSER.value:
+            return Response({"error": "روش ارسال انتخاب شده برای سفارش محصول معتبر نیست."},
                             status=status.HTTP_400_BAD_REQUEST)
         if delivery_data is not None and Order.objects.filter(schedule=delivery_data).exclude(id=id).exists():
             return Response({"error": "این زمان قبلا برای سفارش دیگری ثبت شده است."},
                             status=status.HTTP_400_BAD_REQUEST)
-        order = update_order(order_id=order.id,
-                             schedule=delivery_data, discount=discount)
+        try:
+            order = update_order(order_id=order.id,
+                                 schedule=delivery_data,
+                                 discount=discount,
+                                 shipping_address=shipping_address,
+                                 shipping_method=shipping_method)
+        except DeliverySlotFullError:
+            return Response({"error": "ظرفیت این زمان تکمیل شده است."}, status=status.HTTP_400_BAD_REQUEST)
+        except DeliveryDataAlreadyUsedError:
+            return Response({"error": "این زمان قبلا رزرو شده است."}, status=status.HTTP_400_BAD_REQUEST)
+        except ValueError:
+            return Response({"error": "برای این سفارش قبلا زمان رزرو شده است."}, status=status.HTTP_400_BAD_REQUEST)
         return Response(self.OrderDetailOutPutSerializer(order).data, status=status.HTTP_200_OK)
         # except Exception as e:
         #     return Response({"error": "مشکلی پیش آمده است."}, status=status.HTTP_400_BAD_REQUEST)
@@ -370,8 +447,9 @@ class GameListCustomerAPIView(ApiAuthMixin, APIView):
         class Meta:
             model = Order
             fields = (
-                "id", "discount", "payment_status", "user_status", "schedule", "total_price_discount", "total_price",
-                "created_at", "product_images" , "is_game")
+                "id", "public_tracking_code", "discount", "payment_status", "user_status", "schedule",
+                "shipping_address", "shipping_method", "total_price_discount", "total_price", "created_at",
+                "product_images" , "is_game")
 
     @extend_schema(responses=GameListCusotmerOutPutSerializer(many=True))
     def get(self, request):
@@ -391,6 +469,7 @@ class OrderDetailCustomerAPIView(ApiAuthMixin, APIView):
         payment_transaction = serializers.SerializerMethodField()
 
         class OrderProductDetailOutPutSerializer(serializers.Serializer):
+            attachments = serializers.SerializerMethodField()
             product = inline_serializer(fields={
                 "id": serializers.IntegerField(),
                 "main_image": serializers.FileField(),
@@ -401,7 +480,15 @@ class OrderDetailCustomerAPIView(ApiAuthMixin, APIView):
                 "off_price": serializers.DecimalField(max_digits=25, decimal_places=0),
 
             })
+            quantity = serializers.IntegerField()
+            price = serializers.DecimalField(max_digits=16, decimal_places=0)
 
+            def get_attachments(self, order_item: OrderItem):
+                attachment_ids = OrderItemAttachment.objects.filter(
+                    order_item_id=order_item.id
+                ).values_list("attachment", flat=True)
+                items = Attachment.objects.filter(id__in=attachment_ids)
+                return CartItemAttachmentInPutSerializer(items, many=True).data
 
         def to_representation(self, instance):
             representation = super().to_representation(instance)
@@ -421,8 +508,10 @@ class OrderDetailCustomerAPIView(ApiAuthMixin, APIView):
         class Meta:
             model = Order
             fields = (
-                "id", "discount", "payment_status", "user_status", "schedule", "total_price_discount", "total_price",
-                "created_at", "product_data", "is_game", "payment_transaction")
+                "id", "public_tracking_code", "discount", "payment_status", "user_status", "schedule",
+                "shipping_address", "shipping_method", "total_price_discount", "total_price", "created_at",
+                "product_data", "is_game",
+                "payment_transaction")
 
             extra_kwargs = {
                 "total_price_discount": {"required": False},
@@ -469,8 +558,9 @@ class OrderListAdminAPIView(ApiAuthMixin, APIView):
         class Meta:
             model = Order
             fields = (
-                "id", "discount", "payment_status", "user_status", "schedule", "total_price_discount", "total_price",
-                "created_at", "product_images", "is_game", "user", "customer")
+                "id", "public_tracking_code", "discount", "payment_status", "user_status", "schedule",
+                "shipping_address", "shipping_method", "total_price_discount", "total_price", "created_at",
+                "product_images", "is_game", "user", "customer")
 
             extra_kwargs = {
                 "total_price_discount": {"required": False},
@@ -481,7 +571,14 @@ class OrderListAdminAPIView(ApiAuthMixin, APIView):
     def get(self, request):
         orders = (
             Order.objects.filter(is_game=False)
-            .select_related("user", "schedule__type", "schedule__schedule", "schedule__address")
+            .select_related(
+                "user",
+                "schedule__type",
+                "schedule__schedule",
+                "schedule__address",
+                "shipping_address",
+                "shipping_method",
+            )
             .prefetch_related("order_items__product")
             .order_by("-created_at")
         )
@@ -523,8 +620,9 @@ class OrderDetailAdminAPIView(ApiAuthMixin, APIView):
         class Meta:
             model = Order
             fields = (
-                "id", "discount", "payment_status", "user_status", "schedule", "total_price_discount", "total_price",
-                "created_at", "product_data", "is_game", "payment_transaction", "user", "customer")
+                "id", "public_tracking_code", "discount", "payment_status", "user_status", "schedule",
+                "shipping_address", "shipping_method", "total_price_discount", "total_price", "created_at",
+                "product_data", "is_game", "payment_transaction", "user", "customer")
 
             extra_kwargs = {
                 "total_price_discount": {"required": False},
@@ -534,7 +632,14 @@ class OrderDetailAdminAPIView(ApiAuthMixin, APIView):
     @extend_schema(responses=OrderDetailAdminOutPutSerializer)
     def get(self, request, id):
         order = (
-            Order.objects.select_related("user", "schedule__type", "schedule__schedule", "schedule__address")
+            Order.objects.select_related(
+                "user",
+                "schedule__type",
+                "schedule__schedule",
+                "schedule__address",
+                "shipping_address",
+                "shipping_method",
+            )
             .prefetch_related("order_items__product")
             .filter(id=id, is_game=False)
             .first()
@@ -582,4 +687,3 @@ class IsBoughtProductAPIView(APIView):
             return Response({"is_bought": "True"}, status=status.HTTP_200_OK)
         if is_bought== False:
             return Response({"is_bought": "False"}, status=status.HTTP_200_OK)
-

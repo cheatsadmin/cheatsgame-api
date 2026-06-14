@@ -2,6 +2,7 @@ import datetime
 from datetime import timedelta
 
 from django.db import IntegrityError
+from django.db.models import Count, Q
 from django.utils import timezone
 from drf_spectacular.utils import extend_schema
 from rest_framework import serializers, status
@@ -14,7 +15,7 @@ from cheatgame.product.permissions import AdminOrManagerPermission, CustomerPerm
 from cheatgame.shop.models import DeliveryScheduleType, DeliverySchedule, DeliveryType, DeliveryData, DeliverySide, Order
 from cheatgame.shop.selectors.delivery_schedule import get_list_of_delivery_schedule
 from cheatgame.shop.services.delivery_schedule import create_delivery_schedule, update_delivery_schedule, \
-    delete_delivery_schedule, create_schedule_data
+    delete_delivery_schedule, create_schedule_data, is_delivery_schedule_full
 from cheatgame.users.models import Address
 
 
@@ -125,9 +126,25 @@ class DeliveryScheduleList(APIView):
         type = serializers.ChoiceField(choices=DeliveryScheduleType.choices())
 
     class DeliveryScheduleListOutPutSerializer(serializers.ModelSerializer):
+        reserved_count = serializers.SerializerMethodField()
+        remaining_capacity = serializers.SerializerMethodField()
+        is_full = serializers.SerializerMethodField()
+
         class Meta:
             model = DeliverySchedule
-            fields = ("id", "type", "capacity", "start", "end")
+            fields = ("id", "type", "capacity", "reserved_count", "remaining_capacity", "is_full", "start", "end")
+
+        def get_reserved_count(self, obj):
+            reserved_count = getattr(obj, "reserved_count", None)
+            if reserved_count is not None:
+                return reserved_count
+            return DeliveryData.objects.filter(schedule=obj, is_used=True).count()
+
+        def get_remaining_capacity(self, obj):
+            return max(obj.capacity - self.get_reserved_count(obj), 0)
+
+        def get_is_full(self, obj):
+            return self.get_remaining_capacity(obj) <= 0
 
     @extend_schema(parameters=[FilterSerializer], responses=DeliveryScheduleListOutPutSerializer)
     def get(self, request):
@@ -137,7 +154,9 @@ class DeliveryScheduleList(APIView):
             from_date = serializer.validated_data.get("from_date")
             to_date = serializer.validated_data.get("to_date")
             type = serializer.validated_data.get("type")
-            schedule_delivery = get_list_of_delivery_schedule(from_date=from_date, to_date=to_date, type=type)
+            schedule_delivery = get_list_of_delivery_schedule(from_date=from_date, to_date=to_date, type=type).annotate(
+                reserved_count=Count("deliverydata", filter=Q(deliverydata__is_used=True))
+            )
             return Response(self.DeliveryScheduleListOutPutSerializer(schedule_delivery, many=True).data,
                             status=status.HTTP_200_OK)
         except Exception as error:
@@ -178,13 +197,14 @@ class DeliveryDataApi(ApiAuthMixin, APIView):
                 schedule=schedule,
                 address=address,
             ).first()
-            if existing_delivery_data is not None:
-                if existing_delivery_data.is_used or Order.objects.filter(schedule=existing_delivery_data).exists():
-                    return Response({"error": "این زمان برای آدرس انتخاب شده قبلا رزرو شده است."},
-                                    status=status.HTTP_400_BAD_REQUEST)
+            if (
+                existing_delivery_data is not None
+                and not existing_delivery_data.is_used
+                and not Order.objects.filter(schedule=existing_delivery_data).exists()
+            ):
                 return Response(self.DeliveryDataOutPutSerializer(existing_delivery_data).data,
                                 status=status.HTTP_200_OK)
-        if schedule.capacity <= 0:
+        if is_delivery_schedule_full(schedule=schedule):
             return Response({"error": "زمان انتخاب شده پر شده است "}, status=status.HTTP_400_BAD_REQUEST)
         if type_schedule.side != schedule.type:
             return Response({"error": "نوع ارسال و زمان بندی به درستی انتخاب نشده است"},

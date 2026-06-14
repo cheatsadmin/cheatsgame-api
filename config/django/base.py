@@ -182,6 +182,7 @@ REST_FRAMEWORK = {
         'password_reset_confirm': env('DRF_THROTTLE_PASSWORD_RESET_CONFIRM', default='10/min'),
         'checkout_write': env('DRF_THROTTLE_CHECKOUT_WRITE', default='60/min'),
         'payment_write': env('DRF_THROTTLE_PAYMENT_WRITE', default='60/min'),
+        'review_submit': env('DRF_THROTTLE_REVIEW_SUBMIT', default='10/min'),
     },
 }
 
