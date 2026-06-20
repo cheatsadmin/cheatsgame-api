@@ -238,6 +238,6 @@ class DeliveryType(BaseModel):
 
 class DeliveryData(BaseModel):
     type = models.ForeignKey("DeliveryType", on_delete=models.PROTECT)
-    schedule = models.ForeignKey("DeliverySchedule", on_delete=models.PROTECT)
+    schedule = models.ForeignKey("DeliverySchedule", on_delete=models.PROTECT, null=True, blank=True)
     address = models.ForeignKey("users.Address", on_delete=models.PROTECT, null=True, blank=True)
     is_used = models.BooleanField(default=False)

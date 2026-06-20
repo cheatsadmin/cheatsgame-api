@@ -25,6 +25,12 @@ ZARINPAL_STARTPAY_URL = env(
     "ZARINPAL_STARTPAY_URL",
     default="https://sandbox.zarinpal.com/pg/StartPay/{authority}",
 )
+BLOG_AI_PROVIDER = env("BLOG_AI_PROVIDER", default="openai_compatible")
+BLOG_AI_MODEL = env("BLOG_AI_MODEL", default="gpt-4o-mini")
+BLOG_AI_API_KEY = env("BLOG_AI_API_KEY", default="")
+BLOG_AI_API_URL = env("BLOG_AI_API_URL", default="https://api.openai.com/v1/chat/completions")
+BLOG_AI_MOCK_ENABLED = env.bool("BLOG_AI_MOCK_ENABLED", default=False)
+BLOG_AI_TIMEOUT_SECONDS = env.int("BLOG_AI_TIMEOUT_SECONDS", default=30)
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = '=ug_ucl@yi6^mrcjyz%(u0%&g2adt#bz3@yos%#@*t#t!ypx=a'
 

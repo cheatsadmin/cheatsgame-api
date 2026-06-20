@@ -28,6 +28,9 @@ class Story(models.Model):
     content_picture = models.FileField()
     link = models.URLField()
     title = models.CharField(max_length=50, null=True)
+    is_active = models.BooleanField(default=True, db_index=True)
+    sort_order = models.PositiveIntegerField(default=0, db_index=True)
+    alt_text = models.CharField(max_length=200, blank=True, default="")
 
 
 class Slider(models.Model):
@@ -35,19 +38,38 @@ class Slider(models.Model):
     middle_picture = models.FileField(null=True, blank=True)
     mobile_picture = models.FileField(null=True, blank=True)
     link = models.URLField()
+    is_active = models.BooleanField(default=True, db_index=True)
+    sort_order = models.PositiveIntegerField(default=0, db_index=True)
+    alt_text = models.CharField(max_length=200, blank=True, default="")
 
 
 class Banner(models.Model):
     picture = models.FileField()
     link = models.URLField()
     location = models.IntegerField(choices=BannerLocations.choices(), unique=True)
+    is_active = models.BooleanField(default=True, db_index=True)
+    sort_order = models.PositiveIntegerField(default=0, db_index=True)
+    alt_text = models.CharField(max_length=200, blank=True, default="")
+
+
+class BlogStatus(models.TextChoices):
+    DRAFT = "DRAFT", "پیش نویس"
+    PUBLISHED = "PUBLISHED", "منتشر شده"
 
 
 class Blog(BaseModel):
     title = models.CharField(max_length=200)
-    slug = models.SlugField(max_length=300)
+    slug = models.SlugField(max_length=300, unique=True, db_index=True, allow_unicode=True)
     content = models.FileField()
     picture = models.FileField()
+    status = models.CharField(
+        max_length=20,
+        choices=BlogStatus.choices,
+        default=BlogStatus.DRAFT,
+        db_index=True,
+    )
+    seo_title = models.CharField(max_length=200, blank=True, default="")
+    meta_description = models.TextField(max_length=320, blank=True, default="")
 
 
 class Comment(BaseModel):

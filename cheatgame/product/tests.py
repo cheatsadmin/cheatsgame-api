@@ -1,10 +1,12 @@
 import shutil
 import tempfile
+from datetime import timedelta
 
 from django.conf import settings
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.cache import cache
 from django.test import TestCase, override_settings
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient
 from rest_framework.throttling import ScopedRateThrottle
@@ -14,15 +16,18 @@ from cheatgame.product.models import (
     CategoryType,
     Attachment,
     AttachmentType,
+    Feature,
+    FeatureType,
     Product,
     ProductCategory,
     ProductStatus,
     ProductType,
     Reviews,
     ReviewStatus,
+    ValuesList,
 )
 from cheatgame.product.selectors.product import product_list
-from cheatgame.shop.models import Order, OrderItem, OrderStatus
+from cheatgame.shop.models import Cart, CartItem, Order, OrderItem, OrderStatus
 from cheatgame.users.models import BaseUser, UserTypes
 
 
@@ -344,18 +349,34 @@ class ProductFoundationApiTests(TestCase):
             description="product/descriptions/hidden.html",
             status=ProductStatus.HIDDEN,
         )
+        draft_product = Product.objects.create(
+            product_type=ProductType.PHYSCIAL,
+            title="Draft Foundation Product",
+            main_image="product/main_images/draft.jpg",
+            price=100000,
+            off_price=90000,
+            quantity=5,
+            description="product/descriptions/draft.html",
+            status=ProductStatus.DRAFT,
+        )
 
         public_detail = self.client.get(f"/api/product/product-detail/{hidden_product.slug}/")
         self.assertEqual(public_detail.status_code, status.HTTP_404_NOT_FOUND)
+        public_draft_detail = self.client.get(f"/api/product/product-detail/{draft_product.slug}/")
+        self.assertEqual(public_draft_detail.status_code, status.HTTP_404_NOT_FOUND)
 
         public_slugs = list(product_list().values_list("slug", flat=True))
         self.assertIn(self.product.slug, public_slugs)
         self.assertNotIn(hidden_product.slug, public_slugs)
+        self.assertNotIn(draft_product.slug, public_slugs)
 
         self.client.force_authenticate(self.admin)
         admin_detail = self.client.get(f"/api/product/product-detail/{hidden_product.slug}/")
         self.assertEqual(admin_detail.status_code, status.HTTP_200_OK)
         self.assertEqual(admin_detail.data["status"], ProductStatus.HIDDEN)
+        admin_draft_detail = self.client.get(f"/api/product/product-detail/{draft_product.slug}/")
+        self.assertEqual(admin_draft_detail.status_code, status.HTTP_200_OK)
+        self.assertEqual(admin_draft_detail.data["status"], ProductStatus.DRAFT)
 
     def test_admin_create_requires_category_unless_explicitly_uncategorized(self):
         self.client.force_authenticate(self.admin)
@@ -390,6 +411,7 @@ class ProductFoundationApiTests(TestCase):
         self.assertEqual(created.status_code, status.HTTP_201_CREATED)
         self.assertEqual(created.data["slug"], "created-foundation-product")
         self.assertEqual(created.data["categories"][0]["id"], self.category.id)
+        self.assertEqual(created.data["status"], ProductStatus.PUBLISHED)
 
         duplicate_slug = self.client.post(
             "/api/product/product/",
@@ -401,3 +423,402 @@ class ProductFoundationApiTests(TestCase):
         )
         self.assertEqual(duplicate_slug.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("slug", duplicate_slug.data["detail"])
+
+    def test_admin_create_can_save_product_as_draft(self):
+        self.client.force_authenticate(self.admin)
+
+        created = self.client.post(
+            "/api/product/product/",
+            self.product_create_payload(
+                slug="created-draft-foundation-product",
+                status=ProductStatus.DRAFT,
+                categories=[self.category.id],
+            ),
+            format="multipart",
+        )
+
+        self.assertEqual(created.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(created.data["status"], ProductStatus.DRAFT)
+
+    def test_product_search_is_safe_on_local_database(self):
+        response = self.client.get("/api/product/get-product/?search=Foundation")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_admin_product_active_visibility_excludes_hidden_but_includes_drafts(self):
+        draft_product = Product.objects.create(
+            product_type=ProductType.PHYSCIAL,
+            title="Active Draft Product",
+            main_image="product/main_images/active-draft.jpg",
+            price=100000,
+            off_price=90000,
+            quantity=5,
+            description="product/descriptions/active-draft.html",
+            status=ProductStatus.DRAFT,
+        )
+        hidden_product = Product.objects.create(
+            product_type=ProductType.PHYSCIAL,
+            title="Hidden Staging Product",
+            main_image="product/main_images/hidden-staging.jpg",
+            price=100000,
+            off_price=90000,
+            quantity=5,
+            description="product/descriptions/hidden-staging.html",
+            status=ProductStatus.HIDDEN,
+        )
+        self.client.force_authenticate(self.admin)
+
+        active_response = self.client.get("/api/product/get-product/?visibility=active")
+        hidden_response = self.client.get("/api/product/get-product/?visibility=hidden")
+
+        self.assertEqual(active_response.status_code, status.HTTP_200_OK)
+        active_slugs = {product["slug"] for product in active_response.data["results"]}
+        self.assertIn(self.product.slug, active_slugs)
+        self.assertIn(draft_product.slug, active_slugs)
+        self.assertNotIn(hidden_product.slug, active_slugs)
+
+        self.assertEqual(hidden_response.status_code, status.HTTP_200_OK)
+        hidden_slugs = {product["slug"] for product in hidden_response.data["results"]}
+        self.assertIn(hidden_product.slug, hidden_slugs)
+        self.assertNotIn(self.product.slug, hidden_slugs)
+
+    def test_category_allows_duplicate_names_under_different_parents_with_unique_slugs(self):
+        self.client.force_authenticate(self.admin)
+        playstation = Category.objects.create(
+            category_type=CategoryType.PRODUCT,
+            name="PlayStation",
+            slug="playstation",
+        )
+        xbox = Category.objects.create(
+            category_type=CategoryType.PRODUCT,
+            name="Xbox",
+            slug="xbox",
+        )
+
+        playstation_headset = self.client.post(
+            "/api/product/category/",
+            {
+                "category_type": CategoryType.PRODUCT,
+                "name": "هدست",
+                "parent": playstation.id,
+            },
+            format="json",
+        )
+        xbox_headset = self.client.post(
+            "/api/product/category/",
+            {
+                "category_type": CategoryType.PRODUCT,
+                "name": "هدست",
+                "parent": xbox.id,
+            },
+            format="json",
+        )
+
+        self.assertEqual(playstation_headset.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(xbox_headset.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(Category.objects.filter(name="هدست").count(), 2)
+        self.assertNotEqual(playstation_headset.data["slug"], xbox_headset.data["slug"])
+
+    def test_category_slug_remains_stable_when_name_changes_without_slug_input(self):
+        self.client.force_authenticate(self.admin)
+        category = Category.objects.create(
+            category_type=CategoryType.PRODUCT,
+            name="Stable Slug Category",
+            slug="stable-category",
+        )
+
+        response = self.client.put(
+            f"/api/product/category/{category.id}/",
+            {
+                "category_type": CategoryType.PRODUCT,
+                "name": "Renamed Stable Slug Category",
+                "parent": None,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        category.refresh_from_db()
+        self.assertEqual(category.slug, "stable-category")
+
+    def test_category_duplicate_slug_is_rejected(self):
+        self.client.force_authenticate(self.admin)
+        Category.objects.create(
+            category_type=CategoryType.PRODUCT,
+            name="Existing Slug Category",
+            slug="existing-category",
+        )
+
+        response = self.client.post(
+            "/api/product/category/",
+            {
+                "category_type": CategoryType.PRODUCT,
+                "name": "Another Slug Category",
+                "slug": "existing-category",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("اسلاگ", response.data["error"])
+
+    def test_parent_category_filter_includes_descendant_products(self):
+        playstation = Category.objects.create(
+            category_type=CategoryType.PRODUCT,
+            name="Parent PlayStation",
+            slug="parent-playstation",
+        )
+        headset = Category.objects.create(
+            category_type=CategoryType.PRODUCT,
+            name="Headset",
+            slug="parent-playstation-headset",
+            parent=playstation,
+        )
+        child_product = Product.objects.create(
+            product_type=ProductType.PHYSCIAL,
+            title="Child Category Product",
+            main_image="product/main_images/child-category.jpg",
+            price=100000,
+            off_price=90000,
+            quantity=5,
+            description="product/descriptions/child-category.html",
+            status=ProductStatus.PUBLISHED,
+        )
+        ProductCategory.objects.create(product=child_product, category=headset)
+
+        response = self.client.get(f"/api/product/get-product/?categories__in={playstation.id}")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        slugs = {product["slug"] for product in response.data["results"]}
+        self.assertIn(child_product.slug, slugs)
+
+    def test_category_delete_is_blocked_when_category_has_children_or_products(self):
+        self.client.force_authenticate(self.admin)
+        parent = Category.objects.create(
+            category_type=CategoryType.PRODUCT,
+            name="Delete Protected Parent",
+            slug="delete-protected-parent",
+        )
+        child = Category.objects.create(
+            category_type=CategoryType.PRODUCT,
+            name="Delete Protected Child",
+            slug="delete-protected-child",
+            parent=parent,
+        )
+        ProductCategory.objects.create(product=self.product, category=child)
+
+        parent_response = self.client.delete(f"/api/product/category/{parent.id}/")
+        child_response = self.client.delete(f"/api/product/category/{child.id}/")
+
+        self.assertEqual(parent_response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("زیرمجموعه", parent_response.data["error"])
+        self.assertEqual(child_response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("محصول", child_response.data["error"])
+
+    def test_special_offer_filter_requires_valid_sale_price_and_future_end_date(self):
+        future = timezone.now() + timedelta(days=7)
+        expired = timezone.now() - timedelta(days=1)
+        valid_offer = Product.objects.create(
+            product_type=ProductType.PHYSCIAL,
+            title="Valid Special Offer",
+            main_image="product/main_images/valid-offer.jpg",
+            price=100000,
+            off_price=80000,
+            quantity=5,
+            description="product/descriptions/valid-offer.html",
+            discount_end_time=future,
+        )
+        Product.objects.create(
+            product_type=ProductType.PHYSCIAL,
+            title="Future Date Without Sale Price",
+            main_image="product/main_images/future-no-sale.jpg",
+            price=100000,
+            off_price=0,
+            quantity=5,
+            description="product/descriptions/future-no-sale.html",
+            discount_end_time=future,
+        )
+        Product.objects.create(
+            product_type=ProductType.PHYSCIAL,
+            title="Future Date Bad Sale Price",
+            main_image="product/main_images/future-bad-sale.jpg",
+            price=100000,
+            off_price=120000,
+            quantity=5,
+            description="product/descriptions/future-bad-sale.html",
+            discount_end_time=future,
+        )
+        Product.objects.create(
+            product_type=ProductType.PHYSCIAL,
+            title="Expired Special Offer",
+            main_image="product/main_images/expired-offer.jpg",
+            price=100000,
+            off_price=80000,
+            quantity=5,
+            description="product/descriptions/expired-offer.html",
+            discount_end_time=expired,
+        )
+
+        response = self.client.get("/api/product/get-product/?has_discount=True")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        slugs = {product["slug"] for product in response.data["results"]}
+        self.assertIn(valid_offer.slug, slugs)
+        self.assertNotIn("future-date-without-sale-price", slugs)
+        self.assertNotIn("future-date-bad-sale-price", slugs)
+        self.assertNotIn("expired-special-offer", slugs)
+
+    def test_product_feature_save_updates_existing_value_without_duplicates(self):
+        self.client.force_authenticate(self.admin)
+        feature_category = Category.objects.create(
+            category_type=CategoryType.FEATURE,
+            name="Technical specs",
+        )
+        feature = Feature.objects.create(
+            name="RAM",
+            feature_type=FeatureType.STRING,
+            category=feature_category,
+        )
+
+        first_response = self.client.post(
+            "/api/product/product-feature/",
+            {
+                "product": self.product.id,
+                "feature": feature.id,
+                "value": "16GB",
+            },
+            format="json",
+        )
+        second_response = self.client.post(
+            "/api/product/product-feature/",
+            {
+                "product": self.product.id,
+                "feature": feature.id,
+                "value": "32GB",
+            },
+            format="json",
+        )
+
+        self.assertEqual(first_response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(second_response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(
+            ValuesList.objects.filter(product=self.product, feature=feature).count(),
+            1,
+        )
+        value = ValuesList.objects.get(product=self.product, feature=feature)
+        self.assertEqual(value.value, "32GB")
+
+    def test_product_feature_save_collapses_existing_duplicate_rows(self):
+        self.client.force_authenticate(self.admin)
+        feature_category = Category.objects.create(
+            category_type=CategoryType.FEATURE,
+            name="Duplicate specs",
+        )
+        feature = Feature.objects.create(
+            name="Storage",
+            feature_type=FeatureType.STRING,
+            category=feature_category,
+        )
+        ValuesList.objects.create(product=self.product, feature=feature, value="1TB")
+        ValuesList.objects.create(product=self.product, feature=feature, value="1TB")
+
+        response = self.client.post(
+            "/api/product/product-feature/",
+            {
+                "product": self.product.id,
+                "feature": feature.id,
+                "value": "2TB",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(
+            ValuesList.objects.filter(product=self.product, feature=feature).count(),
+            1,
+        )
+        self.assertEqual(
+            ValuesList.objects.get(product=self.product, feature=feature).value,
+            "2TB",
+        )
+
+    def test_product_feature_rejects_blank_value(self):
+        self.client.force_authenticate(self.admin)
+        feature_category = Category.objects.create(
+            category_type=CategoryType.FEATURE,
+            name="Blank specs",
+        )
+        feature = Feature.objects.create(
+            name="Region",
+            feature_type=FeatureType.STRING,
+            category=feature_category,
+        )
+
+        response = self.client.post(
+            "/api/product/product-feature/",
+            {
+                "product": self.product.id,
+                "feature": feature.id,
+                "value": "   ",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(ValuesList.objects.filter(product=self.product, feature=feature).exists())
+
+    def test_admin_delete_product_with_only_transient_cart_items_succeeds(self):
+        self.client.force_authenticate(self.admin)
+        customer = BaseUser.objects.create_user(
+            phone_number="09175551002",
+            firstname="Cart",
+            lastname="Customer",
+            password="StrongPass123!",
+        )
+        customer.phone_verified = True
+        customer.save(update_fields=["phone_verified"])
+        cart = Cart.objects.create(user=customer)
+        CartItem.objects.create(
+            product=self.product,
+            cart=cart,
+            quantity=1,
+            price=self.product.price,
+        )
+
+        response = self.client.delete(f"/api/product/product-deatil/{self.product.id}/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("حذف", response.data["message"])
+        self.assertFalse(Product.objects.filter(id=self.product.id).exists())
+        self.assertFalse(CartItem.objects.filter(cart=cart).exists())
+
+    def test_admin_delete_product_with_order_history_is_blocked_with_clear_reason(self):
+        self.client.force_authenticate(self.admin)
+        customer = BaseUser.objects.create_user(
+            phone_number="09175551003",
+            firstname="Order",
+            lastname="Customer",
+            password="StrongPass123!",
+        )
+        customer.phone_verified = True
+        customer.save(update_fields=["phone_verified"])
+        order = Order.objects.create(
+            user=customer,
+            payment_status=OrderStatus.PAID,
+            total_price=self.product.price,
+            total_price_discount=self.product.price,
+        )
+        OrderItem.objects.create(
+            order=order,
+            product=self.product,
+            quantity=1,
+            price=self.product.price,
+        )
+
+        response = self.client.delete(f"/api/product/product-deatil/{self.product.id}/")
+
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertIn("سفارش", response.data["error"])
+        self.assertIn("مخفی", response.data["error"])
+        self.assertTrue(response.data["can_hide"])
+        self.assertTrue(Product.objects.filter(id=self.product.id).exists())

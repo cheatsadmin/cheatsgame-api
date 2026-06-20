@@ -9,6 +9,7 @@ from cheatgame.users.models import BaseUser
 class IssueReportFilter(FilterSet):
     created_at__range = CharFilter(method="filter_created_at__range")
     user__phone_number = CharFilter(method="filter_user__phone_number")
+    status = CharFilter(method="filter_status")
 
 
 
@@ -31,6 +32,9 @@ class IssueReportFilter(FilterSet):
     def filter_user__phone_number(self, queryset, name, value):
         queryset = queryset.filter(user__phone_number=value)
         return queryset
+
+    def filter_status(self, queryset, name, value):
+        return queryset.filter(status=value)
 
 
 

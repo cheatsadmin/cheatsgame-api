@@ -1,4 +1,6 @@
 from django.http import HttpResponse
+from django.db import transaction
+from django.db.models import Q
 from drf_spectacular.utils import extend_schema
 from rest_framework import serializers, status
 from rest_framework.response import Response
@@ -7,10 +9,23 @@ from rest_framework.views import APIView
 from cheatgame.api.mixins import ApiAuthMixin
 from cheatgame.api.pagination import LimitOffsetPagination, get_paginated_response, PaginatedSerializer
 from cheatgame.api.utils import inline_serializer
-from cheatgame.common.utils import reformat_url
+from cheatgame.common.utils import reformat_url, safe_file_url
 from cheatgame.general.services import update_issue, check_issue_exists, delete_issue
 from cheatgame.issue.filter import IssueReportFilter
-from cheatgame.issue.models import Issue, Tag, IssueType, IssueReport, IssueCategory, IssueTag
+from cheatgame.issue.models import (
+    Issue,
+    Tag,
+    IssueType,
+    IssueReport,
+    IssueCategory,
+    IssueTag,
+    IssueListReport,
+    RepairItem,
+    RepairItemIssue,
+    RepairItemType,
+    IssueReportStatus,
+    RepairStatusHistory,
+)
 from cheatgame.issue.selectors import issue_list, get_tag_list, issue_report_user, issue_report_list, \
     get_tag_list_of_issue
 from cheatgame.issue.services import create_issue_report, update_issue_report, create_issue, create_issue_categories, \
@@ -22,10 +37,75 @@ from cheatgame.shop.models import DeliveryData, DeliveryScheduleType
 from cheatgame.shop.services.delivery_schedule import DeliveryDataAlreadyUsedError, DeliverySlotFullError
 
 
+ISSUE_TYPE_TO_DEVICE_TYPE = {
+    IssueType.CONTROLLER.value: RepairItemType.CONTROLLER,
+    IssueType.CONSOLE.value: RepairItemType.CONSOLE,
+}
+
+DEVICE_TYPE_TO_ISSUE_TYPE = {
+    RepairItemType.CONTROLLER: IssueType.CONTROLLER.value,
+    RepairItemType.CONSOLE: IssueType.CONSOLE.value,
+}
+
+ISSUE_TYPE_LABELS = {
+    IssueType.CONTROLLER.value: "دسته",
+    IssueType.CONSOLE.value: "کنسول",
+}
+
+DEFAULT_DEVICE_TAG_TITLES = {
+    RepairItemType.CONTROLLER: "Controller",
+    RepairItemType.CONSOLE: "Console",
+}
+
+
+def get_issue_type_value(issue: Issue):
+    issue_types = {
+        issue_tag.tag.issue_type
+        for issue_tag in issue.tags.select_related("tag").all()
+        if issue_tag.tag_id and issue_tag.tag.issue_type
+    }
+    if len(issue_types) == 1:
+        return issue_types.pop()
+    return None
+
+
+def get_issue_device_type(issue: Issue):
+    return ISSUE_TYPE_TO_DEVICE_TYPE.get(get_issue_type_value(issue))
+
+
+def set_issue_device_type(issue: Issue, device_type):
+    if not device_type:
+        return
+    issue_type = DEVICE_TYPE_TO_ISSUE_TYPE.get(device_type)
+    if issue_type is None:
+        return
+
+    IssueTag.objects.filter(issue=issue).exclude(tag__issue_type=issue_type).delete()
+    if IssueTag.objects.filter(issue=issue, tag__issue_type=issue_type).exists():
+        return
+
+    tag, _ = Tag.objects.get_or_create(
+        title=DEFAULT_DEVICE_TAG_TITLES[device_type],
+        issue_type=issue_type,
+    )
+    IssueTag.objects.create(issue=issue, tag=tag)
+
+
+def issue_is_used(issue: Issue) -> bool:
+    return (
+        RepairItemIssue.objects.filter(issue=issue).exists()
+        or IssueListReport.objects.filter(issue=issue).exists()
+    )
+
+
 class IssueListOutPutSerializer(serializers.ModelSerializer):
     picture = serializers.SerializerMethodField()
     description = serializers.SerializerMethodField()
     tags = serializers.SerializerMethodField()
+    issue_type = serializers.SerializerMethodField()
+    device_type = serializers.SerializerMethodField()
+    device_type_label = serializers.SerializerMethodField()
+    is_used = serializers.SerializerMethodField()
 
     def get_picture(self, obj):
         return reformat_url(url=obj.picture.url)
@@ -34,7 +114,28 @@ class IssueListOutPutSerializer(serializers.ModelSerializer):
         return reformat_url(url=obj.description.url)
 
     def get_tags(self, obj):
-        return obj.tags.all().values("id")
+        return [
+            {
+                "id": issue_tag.id,
+                "tag": issue_tag.tag_id,
+                "title": issue_tag.tag.title,
+                "issue_type": issue_tag.tag.issue_type,
+            }
+            for issue_tag in obj.tags.select_related("tag").all()
+            if issue_tag.tag_id
+        ]
+
+    def get_issue_type(self, obj):
+        return get_issue_type_value(obj)
+
+    def get_device_type(self, obj):
+        return get_issue_device_type(obj)
+
+    def get_device_type_label(self, obj):
+        return ISSUE_TYPE_LABELS.get(get_issue_type_value(obj), "")
+
+    def get_is_used(self, obj):
+        return issue_is_used(obj)
 
 
 
@@ -43,7 +144,101 @@ class IssueListOutPutSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Issue
-        fields = ("id", "title", "picture", "description" , "max_price" , "min_price" ,"tags")
+        fields = (
+            "id",
+            "title",
+            "picture",
+            "description",
+            "max_price",
+            "min_price",
+            "tags",
+            "issue_type",
+            "device_type",
+            "device_type_label",
+            "is_active",
+            "sort_order",
+            "is_used",
+        )
+
+
+class RepairItemIssueOutPutSerializer(serializers.ModelSerializer):
+    image = serializers.SerializerMethodField()
+
+    def get_image(self, obj):
+        return safe_file_url(file=obj.picture)
+
+    class Meta:
+        model = Issue
+        fields = ("id", "title", "image")
+
+
+class RepairItemOutPutSerializer(serializers.ModelSerializer):
+    issues = serializers.SerializerMethodField()
+
+    def get_issues(self, obj):
+        issues = [repair_item_issue.issue for repair_item_issue in obj.item_issues.all()]
+        return RepairItemIssueOutPutSerializer(issues, many=True).data
+
+    class Meta:
+        model = RepairItem
+        fields = ("id", "item_type", "model", "customer_note", "sort_order", "issues")
+
+
+class RepairItemInPutSerializer(serializers.Serializer):
+    item_type = serializers.ChoiceField(
+        choices=RepairItemType.choices,
+        required=False,
+        default=RepairItemType.UNKNOWN,
+    )
+    model = serializers.CharField(max_length=100, required=False, allow_blank=True, default="")
+    customer_note = serializers.CharField(max_length=1000, required=False, allow_blank=True, default="")
+    sort_order = serializers.IntegerField(required=False, min_value=1)
+    issue_ids = serializers.PrimaryKeyRelatedField(
+        queryset=Issue.objects.all(),
+        many=True,
+        allow_empty=True,
+    )
+
+    def validate_issue_ids(self, value):
+        if not value:
+            raise serializers.ValidationError("برای هر دستگاه حداقل یک مشکل انتخاب کنید.")
+        return value
+
+
+ISSUE_REPORT_STATUS_LABELS = {
+    IssueReportStatus.SUBMITTED.value: "ثبت شده",
+    IssueReportStatus.RECEIVED.value: "دریافت شد",
+    IssueReportStatus.INSPECTING.value: "در حال بررسی",
+    IssueReportStatus.REPAIRING.value: "در حال تعمیر",
+    IssueReportStatus.READY_FOR_DELIVERY.value: "آماده تحویل",
+    IssueReportStatus.DELIVERED.value: "تحویل شد",
+    IssueReportStatus.CANCELED.value: "لغو شد",
+}
+
+
+def get_issue_report_status_display(value):
+    try:
+        return IssueReportStatus(value).name
+    except (TypeError, ValueError):
+        return str(value) if value is not None else ""
+
+
+def get_issue_report_status_label(value):
+    try:
+        return ISSUE_REPORT_STATUS_LABELS[IssueReportStatus(value).value]
+    except (KeyError, TypeError, ValueError):
+        return str(value) if value is not None else ""
+
+
+class IssueReportStatusFieldsMixin:
+    status_display = serializers.SerializerMethodField()
+    status_label = serializers.SerializerMethodField()
+
+    def get_status_display(self, obj):
+        return get_issue_report_status_display(obj.status)
+
+    def get_status_label(self, obj):
+        return get_issue_report_status_label(obj.status)
 
 
 
@@ -56,6 +251,7 @@ class IssueListApi(APIView):
         search = serializers.CharField(required=False, max_length=100)
         created_at__range = serializers.CharField(required=False, max_length=100)
         tags__in = serializers.CharField(required=False, max_length=100)
+        is_active = serializers.CharField(required=False, max_length=10)
 
     class PaginationParameterSerializer(serializers.Serializer):
         limit = serializers.IntegerField(required=False)
@@ -107,17 +303,36 @@ class TagListApi(APIView):
 class IssueReportCreateApi(ApiAuthMixin, APIView):
     permission_classes = (CustomerPermission,)
 
-    class IssueReportCreateInPutSerializer(serializers.ModelSerializer):
-        issue_list = serializers.PrimaryKeyRelatedField(queryset=Issue.objects.all(), many=True)
+    class IssueReportCreateInPutSerializer(serializers.Serializer):
+        explanation = serializers.CharField(max_length=1000, required=False, allow_blank=True)
+        overall_explanation = serializers.CharField(max_length=1000, required=False, allow_blank=True)
+        issue_list = serializers.PrimaryKeyRelatedField(
+            queryset=Issue.objects.all(),
+            many=True,
+            required=False,
+            allow_empty=False,
+        )
+        items = RepairItemInPutSerializer(many=True, required=False, allow_empty=False)
 
-        class Meta:
-            model = IssueReport
-            fields = ("explanation", "issue_list")
+        def validate(self, attrs):
+            has_legacy_issues = "issue_list" in attrs
+            has_grouped_items = "items" in attrs
+            if not has_legacy_issues and not has_grouped_items:
+                raise serializers.ValidationError({
+                    "issue_list": "حداقل یک مشکل تعمیر باید انتخاب شود.",
+                    "items": "حداقل یک دستگاه تعمیر باید ثبت شود.",
+                })
+            if has_legacy_issues and has_grouped_items:
+                raise serializers.ValidationError({
+                    "items": "درخواست تعمیر را یا با issue_list قدیمی ارسال کنید یا با items جدید؛ هر دو همزمان مجاز نیست."
+                })
+            return attrs
 
     class IssueReportCreateOutPutSerializer(serializers.Serializer):
         issue_list_report = inline_serializer(many=True, read_only=True,
                                               fields={"id": serializers.CharField(max_length=50),
                                                       "issue": serializers.CharField(max_length=50)})
+        items = RepairItemOutPutSerializer(many=True, read_only=True)
         id = serializers.IntegerField()
         user = inline_serializer(
             fields={
@@ -138,7 +353,9 @@ class IssueReportCreateApi(ApiAuthMixin, APIView):
         issue_report = create_issue_report(
             user=request.user,
             explanation=serializer.validated_data.get("explanation"),
-            issue_list=serializer.validated_data.get("issue_list")
+            issue_list=serializer.validated_data.get("issue_list"),
+            items=serializer.validated_data.get("items"),
+            overall_explanation=serializer.validated_data.get("overall_explanation"),
         )
         return Response(self.IssueReportCreateOutPutSerializer(issue_report).data, status=status.HTTP_201_CREATED)
         # except Exception as e:
@@ -150,12 +367,15 @@ class IssueReportDetailApi(ApiAuthMixin, APIView):
 
     class IssueReportDetailInPutSerializer(serializers.Serializer):
         delivery_data = serializers.PrimaryKeyRelatedField(
-            queryset=DeliveryData.objects.filter(schedule__type=DeliveryScheduleType.ISSUE.value))
+            queryset=DeliveryData.objects.filter(
+                Q(schedule__type=DeliveryScheduleType.ISSUE.value) | Q(schedule__isnull=True)
+            ))
 
-    class IssueReportDetailOutPutSerializer(serializers.Serializer):
+    class IssueReportDetailOutPutSerializer(IssueReportStatusFieldsMixin, serializers.Serializer):
         issue_list_report = inline_serializer(many=True, read_only=True,
                                               fields={"id": serializers.CharField(max_length=50),
                                                       "issue": serializers.CharField(max_length=50)})
+        items = RepairItemOutPutSerializer(many=True, read_only=True)
         id = serializers.IntegerField()
         user = inline_serializer(
             fields={
@@ -177,7 +397,7 @@ class IssueReportDetailApi(ApiAuthMixin, APIView):
                     "delivery_type": serializers.IntegerField(),
                     "side": serializers.IntegerField()
                 }),
-                "schedule": inline_serializer(fields={
+                "schedule": inline_serializer(allow_null=True, required=False, fields={
                     "type": serializers.CharField(),
                     "start": serializers.DateTimeField(),
                     "end": serializers.DateTimeField()
@@ -189,13 +409,18 @@ class IssueReportDetailApi(ApiAuthMixin, APIView):
             }
         )
         status = serializers.IntegerField(required=False)
+        status_display = serializers.SerializerMethodField()
+        status_label = serializers.SerializerMethodField()
         is_paid = serializers.BooleanField(required=False)
         created_at = serializers.DateTimeField(required=False)
 
     @extend_schema(request=IssueReportDetailInPutSerializer,
                    responses=IssueReportDetailOutPutSerializer)
     def get(self, request, id):
-        issue_report = IssueReport.objects.filter(id=id).first()
+        issue_report = IssueReport.objects.select_related("user").prefetch_related(
+            "issue_list_report__issue",
+            "items__item_issues__issue",
+        ).filter(id=id).first()
         if issue_report is None:
             return Response({"error": "درخواست تعمیر یافت نشد."}, status=status.HTTP_400_BAD_REQUEST)
         self.check_object_permissions(request, issue_report)
@@ -260,26 +485,125 @@ class IssueScheduleOutPutSerializer(serializers.Serializer):
         "delivery_type": serializers.IntegerField(),
         "side": serializers.IntegerField()
     })
-    schedule = inline_serializer(fields={
+    schedule = inline_serializer(allow_null=True, required=False, fields={
         "type": serializers.CharField(),
         "start": serializers.DateTimeField(),
         "end": serializers.DateTimeField()
     })
     address = inline_serializer(fields={
+        "province": serializers.CharField(),
+        "city": serializers.CharField(),
         "address_detail": serializers.CharField(),
         "postal_code": serializers.CharField(),
     })
 
 
+class IssueReportCustomerOutPutSerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    first_name = serializers.CharField(source="firstname", required=False, allow_blank=True)
+    last_name = serializers.CharField(source="lastname", required=False, allow_blank=True)
+    firstname = serializers.CharField(required=False, allow_blank=True)
+    lastname = serializers.CharField(required=False, allow_blank=True)
+    phone_number = serializers.CharField(required=False, allow_blank=True)
+    email = serializers.EmailField(required=False, allow_null=True, allow_blank=True)
+
+
+class IssueReportDeliveryTypeOutPutSerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    name = serializers.CharField(required=False, allow_blank=True)
+    delivery_type = serializers.IntegerField(required=False)
+    side = serializers.IntegerField(required=False)
+
+
+class IssueReportScheduleOutPutSerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    type = serializers.IntegerField(required=False)
+    start = serializers.DateTimeField(required=False)
+    end = serializers.DateTimeField(required=False)
+    capacity = serializers.IntegerField(required=False)
+
+
+class IssueReportAddressOutPutSerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    province = serializers.CharField(required=False, allow_blank=True)
+    city = serializers.CharField(required=False, allow_blank=True)
+    address_detail = serializers.CharField(required=False, allow_blank=True)
+    postal_code = serializers.CharField(required=False, allow_blank=True)
+
+
+class IssueReportDeliveryDataOutPutSerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    type = IssueReportDeliveryTypeOutPutSerializer()
+    schedule = IssueReportScheduleOutPutSerializer(allow_null=True, required=False)
+    address = IssueReportAddressOutPutSerializer(allow_null=True, required=False)
+    is_used = serializers.BooleanField(required=False)
+
+
+class IssueReportLegacyIssueOutPutSerializer(serializers.ModelSerializer):
+    issue = RepairItemIssueOutPutSerializer()
+
+    class Meta:
+        model = IssueListReport
+        fields = ("id", "issue")
+
+class RepairStatusHistoryOutPutSerializer(serializers.ModelSerializer):
+    old_status_display = serializers.SerializerMethodField()
+    old_status_label = serializers.SerializerMethodField()
+    new_status_display = serializers.SerializerMethodField()
+    new_status_label = serializers.SerializerMethodField()
+    changed_by = IssueReportCustomerOutPutSerializer(read_only=True)
+
+    def get_old_status_display(self, obj):
+        return get_issue_report_status_display(obj.old_status)
+
+    def get_old_status_label(self, obj):
+        return get_issue_report_status_label(obj.old_status)
+
+    def get_new_status_display(self, obj):
+        return get_issue_report_status_display(obj.new_status)
+
+    def get_new_status_label(self, obj):
+        return get_issue_report_status_label(obj.new_status)
+
+    class Meta:
+        model = RepairStatusHistory
+        fields = (
+            "id",
+            "old_status",
+            "old_status_display",
+            "old_status_label",
+            "new_status",
+            "new_status_display",
+            "new_status_label",
+            "changed_by",
+            "note",
+            "created_at",
+        )
+
+
 class IssueReportListApi(ApiAuthMixin, APIView):
     permission_classes = (CustomerPermission,)
 
-    class IssueReportListOutPutSerializer(serializers.ModelSerializer):
+    class IssueReportListOutPutSerializer(IssueReportStatusFieldsMixin, serializers.ModelSerializer):
         delivery_data = IssueScheduleOutPutSerializer(allow_null=True, required=False)
+        items = RepairItemOutPutSerializer(many=True, read_only=True)
+        status_display = serializers.SerializerMethodField()
+        status_label = serializers.SerializerMethodField()
 
         class Meta:
             model = IssueReport
-            fields = ("id", "public_tracking_code", "user", "delivery_data", "explanation", "is_paid" , "status")
+            fields = (
+                "id",
+                "public_tracking_code",
+                "user",
+                "delivery_data",
+                "explanation",
+                "is_paid",
+                "status",
+                "status_display",
+                "status_label",
+                "items",
+            )
 
     @extend_schema(responses=IssueReportListOutPutSerializer(many=True))
     def get(self, request):
@@ -300,11 +624,15 @@ class IssueCreateApi(ApiAuthMixin, APIView):
         description = serializers.FileField()
         min_price = serializers.DecimalField(max_digits=15 , decimal_places=0)
         max_price = serializers.DecimalField(max_digits=15 , decimal_places=0)
+        is_active = serializers.BooleanField(required=False, default=True)
+        sort_order = serializers.IntegerField(required=False, min_value=0, default=0)
+        device_type = serializers.ChoiceField(
+            choices=((RepairItemType.CONTROLLER, "controller"), (RepairItemType.CONSOLE, "console")),
+            required=False,
+        )
 
-    class IssueCreateOutPutSerializer(serializers.ModelSerializer):
-        class Meta:
-            model = Issue
-            fields = ("id", "picture", "title", "description" , "min_price", "max_price")
+    class IssueCreateOutPutSerializer(IssueListOutPutSerializer):
+        pass
 
     @extend_schema(request=IssueCreateInPutSerializer, responses=IssueCreateOutPutSerializer)
     def post(self, request):
@@ -318,8 +646,11 @@ class IssueCreateApi(ApiAuthMixin, APIView):
                 picture=picture,
                 description=description,
                 min_price=serializer.validated_data.get("min_price"),
-                max_price=serializer.validated_data.get("max_price")
+                max_price=serializer.validated_data.get("max_price"),
+                is_active=serializer.validated_data.get("is_active", True),
+                sort_order=serializer.validated_data.get("sort_order", 0),
             )
+            set_issue_device_type(issue, serializer.validated_data.get("device_type"))
             return Response(self.IssueCreateOutPutSerializer(issue).data, status=status.HTTP_201_CREATED)
         except Exception as e:
             return Response({"error": "مشکلی در ساخت پیش آمده است."}, status=status.HTTP_400_BAD_REQUEST)
@@ -341,6 +672,9 @@ class issueDetailUserApi(APIView):
         tag_list = serializers.SerializerMethodField()
         picture = serializers.SerializerMethodField()
         description = serializers.SerializerMethodField()
+        issue_type = serializers.SerializerMethodField()
+        device_type = serializers.SerializerMethodField()
+        device_type_label = serializers.SerializerMethodField()
 
         def get_picture(self, obj):
             return reformat_url(url=obj.picture.url)
@@ -360,9 +694,32 @@ class issueDetailUserApi(APIView):
             serializer = IssueCategoryOutPutSerializer(categories, many=True)
             return serializer.data
 
+        def get_issue_type(self, issue: Issue):
+            return get_issue_type_value(issue)
+
+        def get_device_type(self, issue: Issue):
+            return get_issue_device_type(issue)
+
+        def get_device_type_label(self, issue: Issue):
+            return ISSUE_TYPE_LABELS.get(get_issue_type_value(issue), "")
+
         class Meta:
             model = Issue
-            fields = ("id" , "title", "category_list", "tag_list", "description", "picture", "max_price" , "min_price" )
+            fields = (
+                "id",
+                "title",
+                "category_list",
+                "tag_list",
+                "description",
+                "picture",
+                "max_price",
+                "min_price",
+                "issue_type",
+                "device_type",
+                "device_type_label",
+                "is_active",
+                "sort_order",
+            )
 
     @extend_schema(responses=IssueDetailUserOutPutSerializer)
     def get(self, request,id):
@@ -388,23 +745,16 @@ class IssueDetailApi(ApiAuthMixin, APIView):
         description = serializers.FileField(required=False)
         min_price = serializers.DecimalField(max_digits=15 , decimal_places=0)
         max_price = serializers.DecimalField(max_digits=15 , decimal_places=0)
+        is_active = serializers.BooleanField(required=False, default=True)
+        sort_order = serializers.IntegerField(required=False, min_value=0, default=0)
+        device_type = serializers.ChoiceField(
+            choices=((RepairItemType.CONTROLLER, "controller"), (RepairItemType.CONSOLE, "console")),
+            required=False,
+        )
 
 
-
-
-    class IssueDetailOutPutSerializer(serializers.ModelSerializer):
-        picture = serializers.SerializerMethodField()
-        description = serializers.SerializerMethodField()
-
-
-        def get_picture(self, obj):
-            return reformat_url(url=obj.picture.url)
-
-        def get_description(self, obj):
-            return reformat_url(url=obj.description.url)
-        class Meta:
-            model = Issue
-            fields = ("id", "picture", "title", "description", "max_price" , "min_price")
+    class IssueDetailOutPutSerializer(IssueListOutPutSerializer):
+        pass
 
 
     @extend_schema(request=IssueDetailInPutSerializer, responses={status.HTTP_200_OK: IssueDetailOutPutSerializer})
@@ -420,9 +770,12 @@ class IssueDetailApi(ApiAuthMixin, APIView):
                 max_price=serializer.validated_data["max_price"],
                 min_price = serializer.validated_data["min_price"],
                 description=serializer.validated_data.get("description" ,None),
-                picture = serializer.validated_data.get("picture", None)
+                picture = serializer.validated_data.get("picture", None),
+                is_active=serializer.validated_data.get("is_active", True),
+                sort_order=serializer.validated_data.get("sort_order", 0),
 
             )
+            set_issue_device_type(issue, serializer.validated_data.get("device_type"))
             return Response(self.IssueDetailOutPutSerializer(issue).data, status=status.HTTP_200_OK)
         except Exception as error:
             return Response({"error": "مشکلی در ویرایش issue رخ داده است"}, status=status.HTTP_400_BAD_REQUEST)
@@ -432,6 +785,12 @@ class IssueDetailApi(ApiAuthMixin, APIView):
         try:
             if not  check_issue_exists(issue_id=id):
                 return Response({"error": "مورد یافت نشد."},status=status.HTTP_404_NOT_FOUND)
+            issue = get_issue(issue_id=id)
+            if issue_is_used(issue):
+                return Response(
+                    {"error": "این مشکل قبلاً در درخواست تعمیر استفاده شده است. به‌جای حذف، آن را غیرفعال کنید."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
             delete_issue(issue_id=id)
             return Response({"message": "آیتم تعمیرات حذف شد."}, status=status.HTTP_200_OK)
         except Exception as error:
@@ -505,12 +864,47 @@ class IssueCategoryDetailApi(ApiAuthMixin, APIView):
             return Response({"error": "مشکلی رخ داده است."}, status=status.HTTP_400_BAD_REQUEST)
 
 
-class IssueReportListOutPutSerializer(serializers.ModelSerializer):
-    delivery_data = IssueScheduleOutPutSerializer()
+class IssueReportListOutPutSerializer(IssueReportStatusFieldsMixin, serializers.ModelSerializer):
+    customer = IssueReportCustomerOutPutSerializer(source="user", read_only=True)
+    user = IssueReportCustomerOutPutSerializer(read_only=True)
+    delivery_data = IssueReportDeliveryDataOutPutSerializer(allow_null=True, required=False)
+    items = RepairItemOutPutSerializer(many=True, read_only=True)
+    item_count = serializers.SerializerMethodField()
+    appointment_summary = serializers.SerializerMethodField()
+    status_display = serializers.SerializerMethodField()
+    status_label = serializers.SerializerMethodField()
+
+    def get_item_count(self, obj):
+        return obj.items.count()
+
+    def get_appointment_summary(self, obj):
+        schedule = getattr(getattr(obj, "delivery_data", None), "schedule", None)
+        if schedule is None:
+            return None
+        return {
+            "id": schedule.id,
+            "start": schedule.start,
+            "end": schedule.end,
+        }
 
     class Meta:
         model = IssueReport
-        fields = ("id", "public_tracking_code", "user", "delivery_data", "explanation", "is_paid" , "status")
+        fields = (
+            "id",
+            "public_tracking_code",
+            "customer",
+            "user",
+            "delivery_data",
+            "explanation",
+            "is_paid",
+            "status",
+            "status_display",
+            "status_label",
+            "created_at",
+            "item_count",
+            "appointment_summary",
+            "items",
+        )
 
 
 class IssueReportListAdminApi(ApiAuthMixin, APIView):
@@ -525,6 +919,7 @@ class IssueReportListAdminApi(ApiAuthMixin, APIView):
     class IssueReportFilter(serializers.Serializer):
         created_at__range = serializers.CharField(max_length=200, required=False)
         user__phone_number = serializers.CharField(max_length=15, required=False)
+        status = serializers.IntegerField(required=False)
 
     @extend_schema(responses=PaginatedUserListOutPutSerializer, parameters=[IssueReportFilter, ])
     def get(self, request):
@@ -541,6 +936,129 @@ class IssueReportListAdminApi(ApiAuthMixin, APIView):
             )
         except Exception as e:
             return Response({"error": "مشکلی در دریافت لیست پیش آمده است."}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class IssueReportAdminDetailApi(ApiAuthMixin, APIView):
+    permission_classes = (AdminOrManagerPermission,)
+
+    class IssueReportAdminDetailOutPutSerializer(IssueReportStatusFieldsMixin, serializers.ModelSerializer):
+        customer = IssueReportCustomerOutPutSerializer(source="user", read_only=True)
+        user = IssueReportCustomerOutPutSerializer(read_only=True)
+        delivery_data = IssueReportDeliveryDataOutPutSerializer(allow_null=True, required=False)
+        items = RepairItemOutPutSerializer(many=True, read_only=True)
+        issue_list_report = IssueReportLegacyIssueOutPutSerializer(many=True, read_only=True)
+        legacy_issue_list_report = IssueReportLegacyIssueOutPutSerializer(source="issue_list_report", many=True, read_only=True)
+        status_history = RepairStatusHistoryOutPutSerializer(many=True, read_only=True)
+        item_count = serializers.SerializerMethodField()
+        status_display = serializers.SerializerMethodField()
+        status_label = serializers.SerializerMethodField()
+
+        def get_item_count(self, obj):
+            return obj.items.count()
+
+        class Meta:
+            model = IssueReport
+            fields = (
+                "id",
+                "public_tracking_code",
+                "status",
+                "status_display",
+                "status_label",
+                "created_at",
+                "customer",
+                "user",
+                "delivery_data",
+                "items",
+                "issue_list_report",
+                "legacy_issue_list_report",
+                "status_history",
+                "item_count",
+                "explanation",
+                "is_paid",
+            )
+
+    @extend_schema(responses=IssueReportAdminDetailOutPutSerializer)
+    def get(self, request, id):
+        issue_report = IssueReport.objects.select_related(
+            "user",
+            "delivery_data__type",
+            "delivery_data__schedule",
+            "delivery_data__address",
+        ).prefetch_related(
+            "items__item_issues__issue",
+            "issue_list_report__issue",
+            "status_history__changed_by",
+        ).filter(id=id).first()
+        if issue_report is None:
+            return Response({"error": "درخواست تعمیر یافت نشد."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(self.IssueReportAdminDetailOutPutSerializer(issue_report).data, status=status.HTTP_200_OK)
+
+
+class IssueReportAdminStatusUpdateApi(ApiAuthMixin, APIView):
+    permission_classes = (AdminOrManagerPermission,)
+
+    class IssueReportStatusUpdateInPutSerializer(serializers.Serializer):
+        status = serializers.CharField()
+        note = serializers.CharField(max_length=1000, required=False, allow_blank=True)
+
+        def validate_status(self, value):
+            if isinstance(value, int):
+                status_value = value
+            else:
+                normalized = str(value).strip()
+                if normalized.isdigit():
+                    status_value = int(normalized)
+                else:
+                    status_map = {status_item.name: status_item.value for status_item in IssueReportStatus}
+                    status_value = status_map.get(normalized.upper())
+
+            allowed_values = [status_item.value for status_item in IssueReportStatus]
+            if status_value not in allowed_values:
+                raise serializers.ValidationError("وضعیت انتخاب‌شده معتبر نیست.")
+            return status_value
+
+    @extend_schema(
+        request=IssueReportStatusUpdateInPutSerializer,
+        responses=IssueReportAdminDetailApi.IssueReportAdminDetailOutPutSerializer,
+    )
+    def patch(self, request, id):
+        serializer = self.IssueReportStatusUpdateInPutSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        with transaction.atomic():
+            issue_report = IssueReport.objects.select_for_update().filter(id=id).first()
+            if issue_report is None:
+                return Response({"error": "درخواست تعمیر یافت نشد."}, status=status.HTTP_404_NOT_FOUND)
+
+            old_status = issue_report.status
+            new_status = serializer.validated_data["status"]
+            note = serializer.validated_data.get("note", "")
+
+            if old_status != new_status:
+                issue_report.status = new_status
+                issue_report.save(update_fields=["status"])
+                RepairStatusHistory.objects.create(
+                    issue_report=issue_report,
+                    old_status=old_status,
+                    new_status=new_status,
+                    changed_by=request.user,
+                    note=note,
+                )
+
+        issue_report = IssueReport.objects.select_related(
+            "user",
+            "delivery_data__type",
+            "delivery_data__schedule",
+            "delivery_data__address",
+        ).prefetch_related(
+            "items__item_issues__issue",
+            "issue_list_report__issue",
+            "status_history__changed_by",
+        ).get(id=id)
+        return Response(
+            IssueReportAdminDetailApi.IssueReportAdminDetailOutPutSerializer(issue_report).data,
+            status=status.HTTP_200_OK,
+        )
 
 
 class CreateTagApi(ApiAuthMixin , APIView):

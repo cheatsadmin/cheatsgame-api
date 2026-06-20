@@ -2,7 +2,8 @@ from django.urls import path
 
 from cheatgame.issue.apis import IssueListApi, TagListApi, GenerateHTML, IssueReportCreateApi, IssueReportDetailApi, \
     IssueReportListApi, IssueCreateApi, IssueCategoryAdminApi, IssueCategoryDetailApi, IssueReportListAdminApi, \
-    CreateTagApi, TagDetailApi, IssueDetailApi, IssueTagAdminApi, IssueTagDetailApi, issueDetailUserApi
+    IssueReportAdminDetailApi, IssueReportAdminStatusUpdateApi, CreateTagApi, TagDetailApi, IssueDetailApi, \
+    IssueTagAdminApi, IssueTagDetailApi, issueDetailUserApi
 
 urlpatterns = [
     path("issue-list/", IssueListApi.as_view(), name="issue-list"),
@@ -15,6 +16,8 @@ urlpatterns = [
     path("issue-category/"  , IssueCategoryAdminApi.as_view() , name = "issue-category-list"),
     path("issue-category/<int:id>/"  , IssueCategoryDetailApi.as_view() , name = "issue-category-detail"),
     path("issue-report-list-admin/" , IssueReportListAdminApi.as_view(), name= "issue-report-list-admin"),
+    path("admin/issue-report/<int:id>/", IssueReportAdminDetailApi.as_view(), name="issue-report-admin-detail"),
+    path("admin/issue-report/<int:id>/status/", IssueReportAdminStatusUpdateApi.as_view(), name="issue-report-admin-status"),
     path("create-tag/" , CreateTagApi.as_view() , name = "issue-tag-create"),
     path("tag/<int:id>/" , TagDetailApi.as_view() , name = "issue-tag-detail"),
     path("issue-detail/<int:id>/" , IssueDetailApi.as_view() , name="issue-detail-admin"),

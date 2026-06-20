@@ -1,7 +1,8 @@
-from datetime import timedelta
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 import json
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 from django.test import TestCase, override_settings
 from django.utils import timezone
@@ -460,6 +461,97 @@ class CheckoutSchedulingTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["product_data"][0]["quantity"], 3)
         self.assertEqual(response.data["product_data"][0]["price"], "2700")
+
+
+class RepairScheduleGeneratorTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.admin = BaseUser.objects.create_user(
+            phone_number="09127770001",
+            firstname="Schedule",
+            lastname="Admin",
+            password="StrongPass123!",
+            user_type=UserTypes.ADMIN,
+        )
+        self.client.force_authenticate(self.admin)
+
+    def post_generator(self, **payload):
+        default_payload = {
+            "from_date": "2026-06-18",
+            "to_date": "2026-06-18",
+            "start_time": "11:30",
+            "end_time": "19:00",
+            "slot_minutes": 120,
+            "capacity": 15,
+            "closed_weekdays": [4],
+        }
+        default_payload.update(payload)
+        return self.client.post(
+            "/api/shop/repair-delivery-schedule-generator/",
+            default_payload,
+            format="json",
+        )
+
+    def aware_datetime(self, target_date, target_time):
+        return timezone.make_aware(
+            datetime.combine(target_date, target_time),
+            ZoneInfo("Asia/Tehran"),
+        )
+
+    def test_generator_creates_repair_slots_and_skips_friday(self):
+        response = self.post_generator(
+            from_date="2026-06-18",
+            to_date="2026-06-19",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertEqual(response.data["created_count"], 4)
+        self.assertEqual(response.data["skipped_duplicate_count"], 0)
+        self.assertEqual(response.data["skipped_closed_day_count"], 1)
+        self.assertEqual(response.data["partial_slot_count"], 1)
+        self.assertFalse(DeliverySchedule.objects.filter(type=DeliveryScheduleType.ORDER).exists())
+        self.assertEqual(DeliverySchedule.objects.filter(type=DeliveryScheduleType.ISSUE).count(), 4)
+        self.assertEqual(set(DeliverySchedule.objects.values_list("capacity", flat=True)), {15})
+
+    def test_generator_is_idempotent_for_same_repair_slots(self):
+        first_response = self.post_generator()
+        second_response = self.post_generator()
+
+        self.assertEqual(first_response.status_code, status.HTTP_200_OK, first_response.data)
+        self.assertEqual(second_response.status_code, status.HTTP_200_OK, second_response.data)
+        self.assertEqual(first_response.data["created_count"], 4)
+        self.assertEqual(second_response.data["created_count"], 0)
+        self.assertEqual(second_response.data["skipped_duplicate_count"], 4)
+        self.assertEqual(DeliverySchedule.objects.filter(type=DeliveryScheduleType.ISSUE).count(), 4)
+
+    def test_generator_skips_overlapping_repair_slots_but_not_product_slots(self):
+        target_date = date(2026, 6, 22)
+        DeliverySchedule.objects.create(
+            type=DeliveryScheduleType.ORDER,
+            start=self.aware_datetime(target_date, time(11, 30)),
+            end=self.aware_datetime(target_date, time(13, 30)),
+            capacity=2,
+        )
+        DeliverySchedule.objects.create(
+            type=DeliveryScheduleType.ISSUE,
+            start=self.aware_datetime(target_date, time(13, 30)),
+            end=self.aware_datetime(target_date, time(14, 0)),
+            capacity=2,
+        )
+
+        response = self.post_generator(
+            from_date="2026-06-22",
+            to_date="2026-06-22",
+            start_time="11:30",
+            end_time="15:30",
+            closed_weekdays=[],
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertEqual(response.data["created_count"], 1)
+        self.assertEqual(response.data["skipped_duplicate_count"], 1)
+        self.assertEqual(DeliverySchedule.objects.filter(type=DeliveryScheduleType.ORDER).count(), 1)
+        self.assertEqual(DeliverySchedule.objects.filter(type=DeliveryScheduleType.ISSUE).count(), 2)
 
 
 class CartItemOwnershipTests(TestCase):

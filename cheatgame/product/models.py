@@ -241,7 +241,6 @@ class Category(MPTTModel):
     )
     name = models.CharField(
         max_length=50,
-        unique=True
     )
     slug = models.SlugField(
         unique=True,
@@ -259,7 +258,8 @@ class Category(MPTTModel):
         return self.name
 
     def save(self, *args, **kwargs):
-        self.slug = slugify(self.name, allow_unicode=True)
+        if not self.slug:
+            self.slug = slugify(self.name, allow_unicode=True)
         super(Category, self).save(*args, **kwargs)
 
 

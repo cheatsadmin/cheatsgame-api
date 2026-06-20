@@ -4,8 +4,10 @@ from django_filters import (
 
 )
 from django.contrib.postgres.search import SearchVector
+from django.db import connection
+from django.db.models import F
 from django.utils import timezone
-from cheatgame.product.models import Product, ProductOrderBy, ProductStatus, Question, Reviews
+from cheatgame.product.models import Category, Product, ProductOrderBy, ProductStatus, Question, Reviews
 from rest_framework.exceptions import APIException
 
 
@@ -20,19 +22,36 @@ class ProductFilter(FilterSet):
     is_exists = CharFilter(method="filter_is_exists")
     order_by = CharFilter(method="filter_order_by")
     status = CharFilter(method="filter_status")
+    visibility = CharFilter(method="filter_visibility")
 
     def filter_product_type(self, queryset, name, value):
         return queryset.filter(product_type=int(value))
 
     def filter_search(self, queryset, name, value):
+        if connection.vendor != "postgresql":
+            return queryset.filter(title__icontains=value)
         return queryset.annotate(search=SearchVector("title")).filter(search=value)
 
     def filter_categories__in(self, queryset, name, value):
         limit = 10
-        categories = value.split(",")
-        if len(categories) > limit:
-            raise APIException(f"you cannot add more than {len(categories)} categories")
-        return queryset.filter(categories__category__in=categories).distinct()
+        raw_categories = [category for category in value.split(",") if category]
+        if len(raw_categories) > limit:
+            raise APIException(f"you cannot add more than {limit} categories")
+        try:
+            category_ids = [int(category) for category in raw_categories]
+        except (TypeError, ValueError):
+            raise APIException("شناسه دسته‌بندی نامعتبر است.")
+        if not category_ids:
+            return queryset
+        selected_categories = Category.objects.filter(id__in=category_ids)
+        expanded_category_ids = set()
+        for category in selected_categories:
+            expanded_category_ids.update(
+                category.get_descendants(include_self=True).values_list("id", flat=True)
+            )
+        if not expanded_category_ids:
+            return queryset.none()
+        return queryset.filter(categories__category__in=expanded_category_ids).distinct()
 
     def filter_labels__in(self, queryset, name, value):
         limit = 10
@@ -70,7 +89,12 @@ class ProductFilter(FilterSet):
 
     def filter_has_discount(self, queryset, name, value):
         if value == "True":
-            return queryset.filter(discount_end_time__gt=timezone.now())
+            return queryset.filter(
+                price__gt=0,
+                off_price__gt=0,
+                off_price__lt=F("price"),
+                discount_end_time__gt=timezone.now(),
+            )
         return queryset.filter(discount_end_time__isnull=True)
 
     def filter_is_exists(self, queryset, name, value):
@@ -82,6 +106,13 @@ class ProductFilter(FilterSet):
         valid_statuses = {choice[0] for choice in ProductStatus.choices}
         if value in valid_statuses:
             return queryset.filter(status=value)
+        return queryset
+
+    def filter_visibility(self, queryset, name, value):
+        if value == "active":
+            return queryset.exclude(status=ProductStatus.HIDDEN)
+        if value == "hidden":
+            return queryset.filter(status=ProductStatus.HIDDEN)
         return queryset
 
     def filter_order_by(self, queryset, name, value):

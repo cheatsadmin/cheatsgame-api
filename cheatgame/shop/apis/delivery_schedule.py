@@ -15,8 +15,12 @@ from cheatgame.product.permissions import AdminOrManagerPermission, CustomerPerm
 from cheatgame.shop.models import DeliveryScheduleType, DeliverySchedule, DeliveryType, DeliveryData, DeliverySide, Order
 from cheatgame.shop.selectors.delivery_schedule import get_list_of_delivery_schedule
 from cheatgame.shop.services.delivery_schedule import create_delivery_schedule, update_delivery_schedule, \
-    delete_delivery_schedule, create_schedule_data, is_delivery_schedule_full
+    delete_delivery_schedule, create_schedule_data, is_delivery_schedule_full, generate_repair_delivery_schedules
 from cheatgame.users.models import Address
+
+
+def default_closed_weekdays():
+    return [4]
 
 
 class DeliveryScheduleAdminApi(ApiAuthMixin, APIView):
@@ -71,6 +75,50 @@ class DeliveryScheduleAdminApi(ApiAuthMixin, APIView):
                             status=status.HTTP_200_OK)
         except Exception as error:
             return Response({"error": "ساخت زمان بندی با مشکل روبه رو شد."}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class RepairDeliveryScheduleGeneratorAdminApi(ApiAuthMixin, APIView):
+    permission_classes = (AdminOrManagerPermission,)
+
+    class RepairDeliveryScheduleGeneratorInPutSerializer(serializers.Serializer):
+        from_date = serializers.DateField()
+        to_date = serializers.DateField()
+        start_time = serializers.TimeField(default=datetime.time(11, 30))
+        end_time = serializers.TimeField(default=datetime.time(19, 0))
+        slot_minutes = serializers.IntegerField(default=120, min_value=1)
+        capacity = serializers.IntegerField(default=15, min_value=1)
+        closed_weekdays = serializers.ListField(
+            child=serializers.IntegerField(min_value=0, max_value=6),
+            required=False,
+            default=default_closed_weekdays,
+        )
+
+        def validate(self, attrs):
+            if attrs["from_date"] > attrs["to_date"]:
+                raise serializers.ValidationError({"to_date": "تاریخ پایان نباید قبل از تاریخ شروع باشد."})
+            if attrs["start_time"] >= attrs["end_time"]:
+                raise serializers.ValidationError({"end_time": "ساعت پایان باید بعد از ساعت شروع باشد."})
+            attrs["closed_weekdays"] = sorted(set(attrs.get("closed_weekdays", [])))
+            return attrs
+
+    class RepairDeliveryScheduleGeneratorOutPutSerializer(serializers.Serializer):
+        created_count = serializers.IntegerField()
+        skipped_duplicate_count = serializers.IntegerField()
+        skipped_closed_day_count = serializers.IntegerField()
+        partial_slot_count = serializers.IntegerField()
+
+    @extend_schema(
+        request=RepairDeliveryScheduleGeneratorInPutSerializer,
+        responses=RepairDeliveryScheduleGeneratorOutPutSerializer,
+    )
+    def post(self, request):
+        serializer = self.RepairDeliveryScheduleGeneratorInPutSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        result = generate_repair_delivery_schedules(**serializer.validated_data)
+        return Response(
+            self.RepairDeliveryScheduleGeneratorOutPutSerializer(result).data,
+            status=status.HTTP_200_OK,
+        )
 
 
 class DeliveryScheduleDetailAdminApi(ApiAuthMixin, APIView):
@@ -170,7 +218,7 @@ class DeliveryDataApi(ApiAuthMixin, APIView):
 
     class DeliveryDataInPutSerializer(serializers.Serializer):
         type = serializers.PrimaryKeyRelatedField(queryset=DeliveryType.objects.all())
-        schedule = serializers.PrimaryKeyRelatedField(queryset=DeliverySchedule.objects.all())
+        schedule = serializers.PrimaryKeyRelatedField(queryset=DeliverySchedule.objects.all(), required=False, allow_null=True)
         address = serializers.PrimaryKeyRelatedField(queryset=Address.objects.all(), required=False)
 
     class DeliveryDataOutPutSerializer(serializers.ModelSerializer):
@@ -204,6 +252,9 @@ class DeliveryDataApi(ApiAuthMixin, APIView):
             ):
                 return Response(self.DeliveryDataOutPutSerializer(existing_delivery_data).data,
                                 status=status.HTTP_200_OK)
+        if schedule is None:
+            delivery_data = create_schedule_data(type=type_schedule, address=address, schedule=None)
+            return Response(self.DeliveryDataOutPutSerializer(delivery_data).data, status=status.HTTP_200_OK)
         if is_delivery_schedule_full(schedule=schedule):
             return Response({"error": "زمان انتخاب شده پر شده است "}, status=status.HTTP_400_BAD_REQUEST)
         if type_schedule.side != schedule.type:

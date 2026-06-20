@@ -1,7 +1,16 @@
 from django.db import transaction
+from django.db.models.deletion import ProtectedError
 from django.utils.text import slugify
 
 from cheatgame.product.models import Category, Product, ProductCategory, ProductNote, ProductStatus
+
+
+class ProductDeleteProtectedError(ValueError):
+    pass
+
+
+class ProductDeleteDependencyError(ValueError):
+    pass
 
 
 @transaction.atomic
@@ -60,8 +69,27 @@ def set_product_categories(*, product: Product, categories: list[Category]) -> N
 def check_product_exists(*, product_id: int) -> bool:
     return Product.objects.filter(id=product_id).exists()
 
+@transaction.atomic
 def delete_product(*, product_id: int) -> None:
-    Product.objects.filter(id=product_id).delete()
+    from cheatgame.shop.models import CartItem, OrderItem, OrderItemAttachment
+
+    product = Product.objects.select_for_update().get(id=product_id)
+    has_order_history = (
+        OrderItem.objects.filter(product=product).exists()
+        or OrderItemAttachment.objects.filter(attachment__product=product).exists()
+    )
+    if has_order_history:
+        raise ProductDeleteProtectedError(
+            "این محصول به سفارش‌ها متصل است و قابل حذف نیست؛ آن را مخفی کنید."
+        )
+
+    CartItem.objects.filter(product=product).delete()
+    try:
+        product.delete()
+    except ProtectedError as exc:
+        raise ProductDeleteDependencyError(
+            "ابتدا ارتباطات وابسته به این محصول باید پاک شود."
+        ) from exc
 
 @transaction.atomic
 def update_product(*, product_id: int, product_type: int, title: str, main_image: str = None, price: float = 0,

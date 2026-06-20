@@ -2,23 +2,45 @@ import decimal
 
 from django.db.models import QuerySet
 from django.utils.text import slugify
-from cheatgame.general.models import Story, Slider, Banner, Blog, BlogCategory, Message, UserMessage, CommonQuestion, \
+from cheatgame.general.models import Story, Slider, Banner, Blog, BlogCategory, BlogStatus, Message, UserMessage, CommonQuestion, \
     Comment
 from cheatgame.issue.models import Issue
 from cheatgame.product.models import Category
 from cheatgame.users.models import BaseUser
 
 
-def create_story(*, title: str, link: str, content_picture: str, picture: str) -> Story:
+def create_story(
+    *,
+    title: str,
+    link: str,
+    content_picture: str,
+    picture: str,
+    is_active: bool = True,
+    sort_order: int = 0,
+    alt_text: str = "",
+) -> Story:
     return Story.objects.create(
         title=title,
         link=link,
         content_picture=content_picture,
-        picture=picture
+        picture=picture,
+        is_active=is_active,
+        sort_order=sort_order,
+        alt_text=alt_text or "",
     )
 
 
-def update_story(*, story_id: int, title: str, link: str, content_picture: str = None, picture: str = None) -> Story:
+def update_story(
+    *,
+    story_id: int,
+    title: str,
+    link: str,
+    content_picture: str = None,
+    picture: str = None,
+    is_active: bool = True,
+    sort_order: int = 0,
+    alt_text: str = "",
+) -> Story:
     story = Story.objects.get(id=story_id)
     story.title = title
     if content_picture is not None:
@@ -26,6 +48,9 @@ def update_story(*, story_id: int, title: str, link: str, content_picture: str =
     if picture is not None:
         story.picture = picture
     story.link = link
+    story.is_active = is_active
+    story.sort_order = sort_order
+    story.alt_text = alt_text or ""
     story.save()
     return story
 
@@ -34,17 +59,30 @@ def delete_story(*, story_id: int) -> None:
     Story.objects.get(id=story_id).delete()
 
 
-def create_slider(*, link: str, laptop_picture: str, middle_picture: str, mobile_picture: str) -> Slider:
+def create_slider(
+    *,
+    link: str,
+    laptop_picture: str,
+    middle_picture: str,
+    mobile_picture: str,
+    is_active: bool = True,
+    sort_order: int = 0,
+    alt_text: str = "",
+) -> Slider:
     return Slider.objects.create(
         link=link,
         laptop_picture=laptop_picture,
         middle_picture=middle_picture,
-        mobile_picture=mobile_picture
+        mobile_picture=mobile_picture,
+        is_active=is_active,
+        sort_order=sort_order,
+        alt_text=alt_text or "",
     )
 
 
 def update_slider(*, slider_id: int, link: str, laptop_picture: str=None, middle_picture: str=None,
-                  mobile_picture: str = None) -> Slider:
+                  mobile_picture: str = None, is_active: bool = True, sort_order: int = 0,
+                  alt_text: str = "") -> Slider:
     slider = Slider.objects.get(id=slider_id)
     slider.link = link
     if laptop_picture is not None:
@@ -53,13 +91,26 @@ def update_slider(*, slider_id: int, link: str, laptop_picture: str=None, middle
         slider.middle_picture = middle_picture
     if mobile_picture is not None:
         slider.mobile_picture = mobile_picture
+    slider.is_active = is_active
+    slider.sort_order = sort_order
+    slider.alt_text = alt_text or ""
     slider.save()
     return slider
 
 
 def check_issue_exists(*  , issue_id: int) -> bool:
     return Issue.objects.filter(id=issue_id).exists()
-def update_issue(*, issue_id: int, picture: str=None, title: str, description:str=None, min_price: decimal, max_price: decimal) -> Issue:
+def update_issue(
+    *,
+    issue_id: int,
+    title: str,
+    min_price: decimal,
+    max_price: decimal,
+    picture: str = None,
+    description: str = None,
+    is_active: bool = True,
+    sort_order: int = 0,
+) -> Issue:
     issue = Issue.objects.get(id=issue_id)
     issue.title = title
     if picture is not None:
@@ -69,6 +120,8 @@ def update_issue(*, issue_id: int, picture: str=None, title: str, description:st
 
     issue.min_price = min_price
     issue.max_price = max_price
+    issue.is_active = is_active
+    issue.sort_order = sort_order
     issue.save()
     return issue
 
@@ -85,20 +138,43 @@ def check_banner_exists(*, location: int) -> bool:
     return False
 
 
-def create_banner(*, picture: str, link: str, location: int) -> Banner:
+def create_banner(
+    *,
+    picture: str,
+    link: str,
+    location: int,
+    is_active: bool = True,
+    sort_order: int = 0,
+    alt_text: str = "",
+) -> Banner:
     return Banner.objects.create(
         picture=picture,
         link=link,
-        location=location
+        location=location,
+        is_active=is_active,
+        sort_order=sort_order,
+        alt_text=alt_text or "",
     )
 
 
-def update_banner(*, banner_id: int, picture: str = None, link: str, location: int) -> Banner:
+def update_banner(
+    *,
+    banner_id: int,
+    picture: str = None,
+    link: str,
+    location: int,
+    is_active: bool = True,
+    sort_order: int = 0,
+    alt_text: str = "",
+) -> Banner:
     banner = Banner.objects.get(id=banner_id)
     if picture is not None:
         banner.picture = picture
     banner.location = location
     banner.link = link
+    banner.is_active = is_active
+    banner.sort_order = sort_order
+    banner.alt_text = alt_text or ""
     banner.save()
     return banner
 
@@ -107,23 +183,70 @@ def delete_banner(*, banner_id: int) -> None:
     Banner.objects.get(id=banner_id).delete()
 
 
-def create_blog(*, title: str, content: str, picture: str) -> Blog:
+def build_unique_blog_slug(value: str, *, exclude_blog_id: int = None) -> str:
+    base_slug = slugify(value, allow_unicode=True) or "blog"
+    base_slug = base_slug[:280]
+    slug = base_slug
+    queryset = Blog.objects.all()
+    if exclude_blog_id:
+        queryset = queryset.exclude(id=exclude_blog_id)
+    counter = 2
+    while queryset.filter(slug=slug).exists():
+        suffix = f"-{counter}"
+        slug = f"{base_slug[:300 - len(suffix)]}{suffix}"
+        counter += 1
+    return slug
+
+
+def create_blog(
+    *,
+    title: str,
+    content: str,
+    picture: str,
+    slug: str = "",
+    status: str = BlogStatus.DRAFT,
+    seo_title: str = "",
+    meta_description: str = "",
+) -> Blog:
     return Blog.objects.create(
         title=title,
-        slug=slugify(title, allow_unicode=True),
+        slug=build_unique_blog_slug(slug or title),
         content=content,
-        picture=picture
+        picture=picture,
+        status=status or BlogStatus.DRAFT,
+        seo_title=seo_title or "",
+        meta_description=meta_description or "",
     )
 
 
-def update_blog(*, blog_id: int, title: str, content: str = None, picture: str = None) -> Blog:
+def update_blog(
+    *,
+    blog_id: int,
+    title: str,
+    content: str = None,
+    picture: str = None,
+    slug: str = None,
+    status: str = None,
+    seo_title: str = None,
+    meta_description: str = None,
+) -> Blog:
     blog = Blog.objects.get(id=blog_id)
     blog.title = title
     if content is not None:
         blog.content = content
     if picture is not None:
         blog.picture = picture
-    blog.slug = slugify(title, allow_unicode=True)
+    if slug is not None:
+        blog.slug = slugify(slug, allow_unicode=True) or build_unique_blog_slug(
+            title,
+            exclude_blog_id=blog_id,
+        )
+    if status is not None:
+        blog.status = status
+    if seo_title is not None:
+        blog.seo_title = seo_title
+    if meta_description is not None:
+        blog.meta_description = meta_description
     blog.save()
     return blog
 
@@ -138,7 +261,7 @@ def create_blog_category(*, category: Category, blog: Blog) -> BlogCategory:
 
 def update_blog_category(*, blog_category_id: int, blog: Blog, category: Category) -> BlogCategory:
     blog_category = BlogCategory.objects.get(id=blog_category_id)
-    blog_category.product = blog
+    blog_category.blog = blog
     blog_category.category = category
     blog_category.save()
     return blog_category

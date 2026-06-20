@@ -15,7 +15,8 @@ from cheatgame.product.models import ProductType, Product, ProductOrderBy, Produ
 from cheatgame.product.permissions import AdminOrManagerPermission
 from cheatgame.product.selectors.product import product_list, product_detail
 from cheatgame.product.services.product import create_product, create_product_note, update_product_note, \
-    delete_product_note, update_product, check_product_exists, delete_product
+    delete_product_note, update_product, check_product_exists, delete_product, ProductDeleteProtectedError, \
+    ProductDeleteDependencyError
 from cheatgame.users.models import BaseUser, UserTypes
 
 
@@ -274,8 +275,12 @@ class ProductDetailAdminApi(ApiAuthMixin, APIView):
             if not check_product_exists(product_id=id):
                 return Response({"error": "محصول موجود نیست"}, status=status.HTTP_400_BAD_REQUEST)
             delete_product(product_id=id)
-            return Response({"message": "محصول مورد نظر حذف گردید."}, status=status.HTTP_204_NO_CONTENT)
-        except Exception as e:
+            return Response({"message": "حذف محصول تستی انجام شد."}, status=status.HTTP_200_OK)
+        except ProductDeleteProtectedError as error:
+            return Response({"error": str(error), "can_hide": True}, status=status.HTTP_409_CONFLICT)
+        except ProductDeleteDependencyError as error:
+            return Response({"error": str(error)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception:
             return Response({"error": "مشکلی در حذف محصول به وجود آمده است."}, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -329,6 +334,10 @@ class ProudctApi(APIView):
         labels__in = serializers.CharField(required=False, max_length=100)
         is_exists = serializers.CharField(required=False)
         status = serializers.ChoiceField(required=False, choices=ProductStatus.choices)
+        visibility = serializers.ChoiceField(
+            required=False,
+            choices=(("active", "active"), ("hidden", "hidden"), ("all", "all")),
+        )
         order_by = serializers.ChoiceField(required=False, choices=ProductOrderBy.choices())
 
     class PaginatedProductSerializer(PaginatedSerializer):
