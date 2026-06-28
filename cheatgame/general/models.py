@@ -41,6 +41,15 @@ class Slider(models.Model):
     is_active = models.BooleanField(default=True, db_index=True)
     sort_order = models.PositiveIntegerField(default=0, db_index=True)
     alt_text = models.CharField(max_length=200, blank=True, default="")
+    hero_eyebrow = models.CharField(max_length=120, null=True, blank=True)
+    hero_headline = models.CharField(max_length=220, null=True, blank=True)
+    hero_highlight = models.CharField(max_length=120, null=True, blank=True)
+    hero_subtitle = models.TextField(null=True, blank=True)
+    hero_primary_label = models.CharField(max_length=120, null=True, blank=True)
+    hero_primary_link = models.CharField(max_length=300, null=True, blank=True)
+    hero_secondary_label = models.CharField(max_length=120, null=True, blank=True)
+    hero_secondary_link = models.CharField(max_length=300, null=True, blank=True)
+    hero_artwork_image = models.FileField(null=True, blank=True)
 
 
 class Banner(models.Model):

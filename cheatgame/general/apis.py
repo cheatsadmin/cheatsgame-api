@@ -177,18 +177,28 @@ class SliderAdminApi(ApiAuthMixin, APIView):
     permission_classes = (AdminOrManagerPermission,)
 
     class SliderInPutSerializer(serializers.Serializer):
-        laptop_picture = serializers.FileField()
+        laptop_picture = serializers.FileField(required=False, allow_null=True)
         middle_picture = serializers.FileField(required=False)
         mobile_picture = serializers.FileField(required=False)
-        link = serializers.URLField()
+        link = serializers.CharField(max_length=300, required=False, allow_blank=True, default="")
         is_active = serializers.BooleanField(required=False, default=True)
         sort_order = serializers.IntegerField(required=False, min_value=0, default=0)
         alt_text = serializers.CharField(max_length=200, required=False, allow_blank=True, default="")
+        hero_eyebrow = serializers.CharField(max_length=120, required=False, allow_blank=True, allow_null=True)
+        hero_headline = serializers.CharField(max_length=220, required=False, allow_blank=True, allow_null=True)
+        hero_highlight = serializers.CharField(max_length=120, required=False, allow_blank=True, allow_null=True)
+        hero_subtitle = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+        hero_primary_label = serializers.CharField(max_length=120, required=False, allow_blank=True, allow_null=True)
+        hero_primary_link = serializers.CharField(max_length=300, required=False, allow_blank=True, allow_null=True)
+        hero_secondary_label = serializers.CharField(max_length=120, required=False, allow_blank=True, allow_null=True)
+        hero_secondary_link = serializers.CharField(max_length=300, required=False, allow_blank=True, allow_null=True)
+        hero_artwork_image = serializers.FileField(required=False, allow_null=True)
 
     class SliderOutPutSerializer(serializers.ModelSerializer):
         laptop_picture = serializers.SerializerMethodField()
         middle_picture = serializers.SerializerMethodField()
         mobile_picture = serializers.SerializerMethodField()
+        hero_artwork_image = serializers.SerializerMethodField()
 
         def get_laptop_picture(self, obj):
             return safe_file_url(file=obj.laptop_picture)
@@ -198,9 +208,17 @@ class SliderAdminApi(ApiAuthMixin, APIView):
 
         def get_mobile_picture(self, obj):
             return safe_file_url(file=obj.mobile_picture)
+        
+        def get_hero_artwork_image(self, obj):
+            return safe_file_url(file=obj.hero_artwork_image)
         class Meta:
             model = Slider
-            fields = ("id", "laptop_picture", "link", "mobile_picture", "middle_picture", "is_active", "sort_order", "alt_text")
+            fields = (
+                "id", "laptop_picture", "link", "mobile_picture", "middle_picture",
+                "is_active", "sort_order", "alt_text", "hero_eyebrow", "hero_headline",
+                "hero_highlight", "hero_subtitle", "hero_primary_label", "hero_primary_link",
+                "hero_secondary_label", "hero_secondary_link", "hero_artwork_image",
+            )
 
     @extend_schema(request=SliderInPutSerializer, responses=SliderOutPutSerializer)
     def post(self, request):
@@ -215,6 +233,15 @@ class SliderAdminApi(ApiAuthMixin, APIView):
                 is_active=serializer.validated_data.get("is_active", True),
                 sort_order=serializer.validated_data.get("sort_order", 0),
                 alt_text=serializer.validated_data.get("alt_text", ""),
+                hero_eyebrow=serializer.validated_data.get("hero_eyebrow"),
+                hero_headline=serializer.validated_data.get("hero_headline"),
+                hero_highlight=serializer.validated_data.get("hero_highlight"),
+                hero_subtitle=serializer.validated_data.get("hero_subtitle"),
+                hero_primary_label=serializer.validated_data.get("hero_primary_label"),
+                hero_primary_link=serializer.validated_data.get("hero_primary_link"),
+                hero_secondary_label=serializer.validated_data.get("hero_secondary_label"),
+                hero_secondary_link=serializer.validated_data.get("hero_secondary_link"),
+                hero_artwork_image=request.FILES.get("hero_artwork_image"),
             )
             return Response(self.SliderOutPutSerializer(slider).data, status=status.HTTP_201_CREATED)
         except Exception as error:
@@ -226,6 +253,7 @@ class SliderListApi(APIView):
         laptop_picture = serializers.SerializerMethodField()
         middle_picture = serializers.SerializerMethodField()
         mobile_picture = serializers.SerializerMethodField()
+        hero_artwork_image = serializers.SerializerMethodField()
 
 
         def get_laptop_picture(self, obj):
@@ -236,10 +264,18 @@ class SliderListApi(APIView):
 
         def get_mobile_picture(self, obj):
             return safe_file_url(file=obj.mobile_picture)
+        
+        def get_hero_artwork_image(self, obj):
+            return safe_file_url(file=obj.hero_artwork_image)
 
         class Meta:
             model = Slider
-            fields = ("id", "laptop_picture", "link", "middle_picture", "mobile_picture", "is_active", "sort_order", "alt_text")
+            fields = (
+                "id", "laptop_picture", "link", "middle_picture", "mobile_picture",
+                "is_active", "sort_order", "alt_text", "hero_eyebrow", "hero_headline",
+                "hero_highlight", "hero_subtitle", "hero_primary_label", "hero_primary_link",
+                "hero_secondary_label", "hero_secondary_link", "hero_artwork_image",
+            )
 
     @extend_schema(responses=SliderListOutPutSerializer)
     def get(self, request):
@@ -257,15 +293,25 @@ class SliderDetailApi(ApiAuthMixin, APIView):
         laptop_picture = serializers.FileField(required=False)
         middle_picture = serializers.FileField(required=False)
         mobile_picture = serializers.FileField(required=False)
-        link = serializers.URLField()
+        link = serializers.CharField(max_length=300, required=False, allow_blank=True, default="")
         is_active = serializers.BooleanField(required=False, default=True)
         sort_order = serializers.IntegerField(required=False, min_value=0, default=0)
         alt_text = serializers.CharField(max_length=200, required=False, allow_blank=True, default="")
+        hero_eyebrow = serializers.CharField(max_length=120, required=False, allow_blank=True, allow_null=True)
+        hero_headline = serializers.CharField(max_length=220, required=False, allow_blank=True, allow_null=True)
+        hero_highlight = serializers.CharField(max_length=120, required=False, allow_blank=True, allow_null=True)
+        hero_subtitle = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+        hero_primary_label = serializers.CharField(max_length=120, required=False, allow_blank=True, allow_null=True)
+        hero_primary_link = serializers.CharField(max_length=300, required=False, allow_blank=True, allow_null=True)
+        hero_secondary_label = serializers.CharField(max_length=120, required=False, allow_blank=True, allow_null=True)
+        hero_secondary_link = serializers.CharField(max_length=300, required=False, allow_blank=True, allow_null=True)
+        hero_artwork_image = serializers.FileField(required=False, allow_null=True)
 
     class SliderDetailOutPutSerializer(serializers.ModelSerializer):
         laptop_picture = serializers.SerializerMethodField()
         middle_picture = serializers.SerializerMethodField()
         mobile_picture = serializers.SerializerMethodField()
+        hero_artwork_image = serializers.SerializerMethodField()
 
         def get_laptop_picture(self, obj):
             return safe_file_url(file=obj.laptop_picture)
@@ -275,9 +321,17 @@ class SliderDetailApi(ApiAuthMixin, APIView):
 
         def get_mobile_picture(self, obj):
             return safe_file_url(file=obj.mobile_picture)
+        
+        def get_hero_artwork_image(self, obj):
+            return safe_file_url(file=obj.hero_artwork_image)
         class Meta:
             model = Slider
-            fields = ("id", "laptop_picture", "link", "middle_picture", "mobile_picture", "is_active", "sort_order", "alt_text")
+            fields = (
+                "id", "laptop_picture", "link", "middle_picture", "mobile_picture",
+                "is_active", "sort_order", "alt_text", "hero_eyebrow", "hero_headline",
+                "hero_highlight", "hero_subtitle", "hero_primary_label", "hero_primary_link",
+                "hero_secondary_label", "hero_secondary_link", "hero_artwork_image",
+            )
 
     @extend_schema(request=SliderDetailInPutSerializer, responses={status.HTTP_200_OK: SliderDetailOutPutSerializer})
     def put(self, request, id):
@@ -293,6 +347,15 @@ class SliderDetailApi(ApiAuthMixin, APIView):
                 is_active=serializer.validated_data.get("is_active", True),
                 sort_order=serializer.validated_data.get("sort_order", 0),
                 alt_text=serializer.validated_data.get("alt_text", ""),
+                hero_eyebrow=serializer.validated_data.get("hero_eyebrow"),
+                hero_headline=serializer.validated_data.get("hero_headline"),
+                hero_highlight=serializer.validated_data.get("hero_highlight"),
+                hero_subtitle=serializer.validated_data.get("hero_subtitle"),
+                hero_primary_label=serializer.validated_data.get("hero_primary_label"),
+                hero_primary_link=serializer.validated_data.get("hero_primary_link"),
+                hero_secondary_label=serializer.validated_data.get("hero_secondary_label"),
+                hero_secondary_link=serializer.validated_data.get("hero_secondary_link"),
+                hero_artwork_image=request.FILES.get("hero_artwork_image"),
             )
             return Response(self.SliderDetailOutPutSerializer(slider).data, status=status.HTTP_200_OK)
         except Exception as error:

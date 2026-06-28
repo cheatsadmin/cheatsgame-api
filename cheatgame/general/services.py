@@ -68,6 +68,15 @@ def create_slider(
     is_active: bool = True,
     sort_order: int = 0,
     alt_text: str = "",
+    hero_eyebrow: str = None,
+    hero_headline: str = None,
+    hero_highlight: str = None,
+    hero_subtitle: str = None,
+    hero_primary_label: str = None,
+    hero_primary_link: str = None,
+    hero_secondary_label: str = None,
+    hero_secondary_link: str = None,
+    hero_artwork_image: str = None,
 ) -> Slider:
     return Slider.objects.create(
         link=link,
@@ -77,12 +86,24 @@ def create_slider(
         is_active=is_active,
         sort_order=sort_order,
         alt_text=alt_text or "",
+        hero_eyebrow=hero_eyebrow,
+        hero_headline=hero_headline,
+        hero_highlight=hero_highlight,
+        hero_subtitle=hero_subtitle,
+        hero_primary_label=hero_primary_label,
+        hero_primary_link=hero_primary_link,
+        hero_secondary_label=hero_secondary_label,
+        hero_secondary_link=hero_secondary_link,
+        hero_artwork_image=hero_artwork_image,
     )
 
 
 def update_slider(*, slider_id: int, link: str, laptop_picture: str=None, middle_picture: str=None,
                   mobile_picture: str = None, is_active: bool = True, sort_order: int = 0,
-                  alt_text: str = "") -> Slider:
+                  alt_text: str = "", hero_eyebrow: str = None, hero_headline: str = None,
+                  hero_highlight: str = None, hero_subtitle: str = None, hero_primary_label: str = None,
+                  hero_primary_link: str = None, hero_secondary_label: str = None,
+                  hero_secondary_link: str = None, hero_artwork_image: str = None) -> Slider:
     slider = Slider.objects.get(id=slider_id)
     slider.link = link
     if laptop_picture is not None:
@@ -94,6 +115,16 @@ def update_slider(*, slider_id: int, link: str, laptop_picture: str=None, middle
     slider.is_active = is_active
     slider.sort_order = sort_order
     slider.alt_text = alt_text or ""
+    slider.hero_eyebrow = hero_eyebrow
+    slider.hero_headline = hero_headline
+    slider.hero_highlight = hero_highlight
+    slider.hero_subtitle = hero_subtitle
+    slider.hero_primary_label = hero_primary_label
+    slider.hero_primary_link = hero_primary_link
+    slider.hero_secondary_label = hero_secondary_label
+    slider.hero_secondary_link = hero_secondary_link
+    if hero_artwork_image is not None:
+        slider.hero_artwork_image = hero_artwork_image
     slider.save()
     return slider
 

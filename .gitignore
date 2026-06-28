@@ -132,6 +132,19 @@ staticfiles/
 /seed/
 /staging-seed/
 
+# Root-level local audit/media artifacts
+/*.html
+/*.png
+/*.PNG
+/*.jpg
+/*.JPG
+/*.jpeg
+/*.JPEG
+/*.svg
+/*.SVG
+/*.webp
+/*.WEBP
+
 # mypy
 .mypy_cache/
 .dmypy.json
