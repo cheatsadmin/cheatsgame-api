@@ -20,7 +20,7 @@ from cheatgame.users.services import create_user
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from drf_spectacular.utils import extend_schema
-from cheatgame.utils.notification.sms import send_sms
+from cheatgame.utils.notification.sms import SmsSendError, send_sms
 from ..api.mixins import ApiAuthMixin
 from ..api.pagination import PaginatedSerializer, get_paginated_response, LimitOffsetPagination
 from ..common.utils import reformat_url
@@ -168,7 +168,13 @@ class VerifyPhoneRequestApi(APIView):
             user = get_user(phone_number=serializer.validated_data.get('phone_number'))
             otp = generate_otp(user=user, verify_type=VerifyType.PHONENUMBER)
             if settings.IS_SEND_SMS:
-                send_sms(to=user.phone_number, pattern=settings.VERIFY_PATTERN, otp=otp)
+                try:
+                    send_sms(to=user.phone_number, pattern=settings.VERIFY_PATTERN, otp=otp)
+                except SmsSendError:
+                    return Response(
+                        {"error": "ارسال پیامک با خطا مواجه شد. لطفا کمی بعد دوباره تلاش کنید."},
+                        status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    )
             return Response({"message": "کد با موفقیت ارسال گردید"}, status=status.HTTP_200_OK)
         except Exception as ex:
             return Response({"error": "مشکلی رخ داده است"}, status=status.HTTP_400_BAD_REQUEST)
@@ -193,7 +199,13 @@ class ChangePasswordRequestApi(APIView):
             user = get_user(phone_number=serializer.validated_data.get('phone_number'))
             otp = generate_otp(user=user, verify_type=VerifyType.PASSWORD)
             if settings.IS_SEND_SMS:
-                send_sms(to=user.phone_number, pattern=settings.FORGET_PASSWORD_PATTERN, otp=otp)
+                try:
+                    send_sms(to=user.phone_number, pattern=settings.FORGET_PASSWORD_PATTERN, otp=otp)
+                except SmsSendError:
+                    return Response(
+                        {"error": "ارسال پیامک با خطا مواجه شد. لطفا کمی بعد دوباره تلاش کنید."},
+                        status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    )
             return Response({"message": "کد با موفقیت ارسال گردید"}, status=status.HTTP_200_OK)
         except Exception as ex:
             return Response({"error": "مشکلی رخ داده است"}, status=status.HTTP_400_BAD_REQUEST)
@@ -604,7 +616,6 @@ class UserRegisterReport(ApiAuthMixin , APIView):
             return Response({"user_register_number":user_numbers})
         except Exception as e:
             return Response({"error": "مشکلی در این ای پی آی وجود دارید."}, status=status.HTTP_400_BAD_REQUEST)
-
 
 
 
