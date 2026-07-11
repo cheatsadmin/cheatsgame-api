@@ -1,4 +1,11 @@
 {
   "app": "backend-cheatsgame-staging",
-  "port": 7000
+  "platform": "django",
+  "port": 7000,
+  "build": {
+    "location": "germany"
+  },
+  "django": {
+    "pythonVersion": "3.9"
+  }
 }
