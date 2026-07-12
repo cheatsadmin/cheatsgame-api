@@ -122,7 +122,9 @@ def ensure_order_delivery_slot_available(*, order: Order, lock: bool = False) ->
     delivery_data_queryset = DeliveryData.objects.select_related("schedule", "address", "type")
     if lock:
         schedule_queryset = schedule_queryset.select_for_update()
-        delivery_data_queryset = delivery_data_queryset.select_for_update()
+        # Nullable select_related joins cannot be locked by PostgreSQL. The
+        # DeliveryData row is the lock owner; its schedule is locked above.
+        delivery_data_queryset = delivery_data_queryset.select_for_update(of=("self",))
 
     schedule = schedule_queryset.get(id=delivery_data_ref.schedule_id)
     delivery_data = delivery_data_queryset.get(id=delivery_data_ref.id)
