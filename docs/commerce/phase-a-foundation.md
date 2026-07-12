@@ -60,6 +60,7 @@ python manage.py audit_checkout_integrity
 - Existing Orders are not backfilled into Checkout snapshots.
 - Conditional uniqueness constraints require PostgreSQL in staging/production; Django's SQLite test backend supports the model tests used here but is not the deployment target.
 - Rollout rollback must disable new behavior rather than reverse the migration.
+- Future deployments gate migrations with the advisory-locked Liara pre-start mechanism documented in `docs/deployment/database-migrations.md`.
 
 ## Tests
 

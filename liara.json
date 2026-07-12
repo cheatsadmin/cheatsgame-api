@@ -7,5 +7,12 @@
   },
   "django": {
     "pythonVersion": "3.9"
+  },
+  "healthCheck": {
+    "command": "CMD curl --fail --header=X-Forwarded-Proto:https http://localhost:7000/health/ready/ || exit 1",
+    "interval": 30000,
+    "timeout": 10000,
+    "retries": 3,
+    "startPeriod": 15000
   }
 }
