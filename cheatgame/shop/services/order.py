@@ -21,7 +21,7 @@ from cheatgame.shop.models import (
 )
 from cheatgame.shop.selectors.cart import cart_item_attachment_list
 from cheatgame.shop.selectors.discount import calculate_discounted_total, validate_discount_code
-from cheatgame.shop.services.cart import calculate_attchment_price_order
+from cheatgame.shop.services.cart import calculate_attchment_price_order, lock_and_assert_user_cart_mutable
 from cheatgame.shop.services.delivery_schedule import (
     DeliveryDataAlreadyUsedError,
     DeliverySlotFullError,
@@ -218,12 +218,14 @@ def create_order_item(*, cart_item: CartItem, order: Order) -> OrderItem:
 
 
 def remove_user_cart_items(*, user: BaseUser) -> None:
+    lock_and_assert_user_cart_mutable(user=user)
     CartItem.objects.filter(cart__user=user).delete()
 
 
 @transaction.atomic
 def submit_order(*, user: BaseUser, total_price: int, product: List[CartItem], game: List[CartItem],
                  cart_items: QuerySet[CartItem]):
+    lock_and_assert_user_cart_mutable(user=user)
     cart_items = list(cart_items)
     product = list(product)
     game = list(game)

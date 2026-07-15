@@ -1,4 +1,5 @@
 from drf_spectacular.utils import extend_schema
+from django.conf import settings
 from rest_framework import serializers, status
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
@@ -12,6 +13,7 @@ from cheatgame.product.models import Attachment, Product, ProductType
 from cheatgame.product.permissions import CustomerPermission, CartItemIsOwnerCustomer, AdminOrManagerPermission
 from cheatgame.product.selectors.product import suggestions_product
 from cheatgame.shop.models import (
+    Cart,
     CartItem,
     DeliveryData,
     DeliverySide,
@@ -25,12 +27,27 @@ from cheatgame.shop.models import (
 from cheatgame.shop.payments.services import get_latest_order_transaction_summary
 from cheatgame.shop.selectors.cart import cart_item_list_user, cart_item_attachment_list, order_list_user, sell_report, bought_order_item
 from cheatgame.shop.selectors.discount import validate_discount_code
-from cheatgame.shop.services.cart import check_product_limit, check_product_avaliablity, check_attachment, \
+from cheatgame.shop.services.cart import CartMutationLocked, check_product_limit, check_product_avaliablity, check_attachment, \
     check_cart_item_exists, add_to_cart, update_cart_item, delete_cart_item, check_attachment_order, \
     validate_product_attachments
 from cheatgame.shop.services.delivery_schedule import DeliveryDataAlreadyUsedError, DeliverySlotFullError
 from cheatgame.shop.services.order import StockUnavailableError, order_item_payable_total, submit_order, update_order
 from cheatgame.users.models import Address, BaseUser
+
+
+def cart_locked_response(cart):
+    checkout = cart.active_checkout
+    details = {}
+    if checkout is not None:
+        details = {
+            "public_id": str(checkout.public_id),
+            "status": checkout.status,
+            "resume_route": f"/checkout/{checkout.public_id}",
+        }
+    return Response(
+        {"code": "CART_LOCKED", "message": "سبد خرید در یک فرایند پرداخت فعال است.", "details": details},
+        status=status.HTTP_409_CONFLICT,
+    )
 
 
 class ProductAttachmentInPutSerializer(serializers.Serializer):
@@ -108,6 +125,8 @@ class AddToCart(ApiAuthMixin, APIView):
                                     user=request.user,
                                     quantity=serializer.validated_data.get("quantity"))
             return Response(self.AddToCartOutPutSerializer(cart_item).data, status=status.HTTP_200_OK)
+        except CartMutationLocked as error:
+            return cart_locked_response(error.cart)
         except Exception as error:
             return Response({"error": "محصول به سبد اضافه نشد"}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -147,6 +166,8 @@ class CartItemDetail(ApiAuthMixin, APIView):
             cart_item = update_cart_item(quantity=serializer.validated_data.get("quantity"),
                                          cart_item=cart_item)
             return Response(self.CartItemDetailOutPutSerializer(cart_item).data, status=status.HTTP_200_OK)
+        except CartMutationLocked as error:
+            return cart_locked_response(error.cart)
         except Exception as error:
             return Response({"error": "خطایی رخ داده است"}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -160,6 +181,8 @@ class CartItemDetail(ApiAuthMixin, APIView):
             self.check_object_permissions(request, cart_item)
             delete_cart_item(cart_item_id=cart_item.id)
             return Response({"message": "محصول از سبد حذف شد"}, status=status.HTTP_200_OK)
+        except CartMutationLocked as error:
+            return cart_locked_response(error.cart)
         except Exception as error:
             return Response({"error": "مشکلی پیش آمد"}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -207,6 +230,9 @@ class SubmitOrderApi(ApiAuthMixin, APIView):
         product = []
         game = []
         cart_item_list = cart_item_list_user(user=request.user)
+        cart = Cart.objects.filter(user=request.user).select_related("active_checkout").first()
+        if settings.COMMERCE_CHECKOUT_V2_ENABLED and cart is not None and cart.state == "locked":
+            return cart_locked_response(cart)
         type(cart_item_list)
         if len(cart_item_list) <= 0:
             return Response({"error": "کاربر سبد محصولات شما خالی است."}, status=status.HTTP_400_BAD_REQUEST)

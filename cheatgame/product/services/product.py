@@ -1,4 +1,5 @@
 from django.db import transaction
+from django.conf import settings
 from django.db.models.deletion import ProtectedError
 from django.utils.text import slugify
 
@@ -71,7 +72,7 @@ def check_product_exists(*, product_id: int) -> bool:
 
 @transaction.atomic
 def delete_product(*, product_id: int) -> None:
-    from cheatgame.shop.models import CartItem, OrderItem, OrderItemAttachment
+    from cheatgame.shop.models import Cart, CartItem, CartState, OrderItem, OrderItemAttachment
 
     product = Product.objects.select_for_update().get(id=product_id)
     has_order_history = (
@@ -82,6 +83,18 @@ def delete_product(*, product_id: int) -> None:
         raise ProductDeleteProtectedError(
             "این محصول به سفارش‌ها متصل است و قابل حذف نیست؛ آن را مخفی کنید."
         )
+
+    if settings.COMMERCE_CHECKOUT_V2_ENABLED:
+        locked_carts = list(
+            Cart.objects.select_for_update().filter(
+                cartitem__product=product,
+                state=CartState.LOCKED,
+            )
+        )
+        if locked_carts:
+            raise ProductDeleteProtectedError(
+                "این محصول در یک فرایند خرید فعال است؛ آن را مخفی کنید."
+            )
 
     CartItem.objects.filter(product=product).delete()
     try:

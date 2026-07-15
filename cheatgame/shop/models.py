@@ -463,6 +463,7 @@ class CheckoutShippingSnapshot(BaseModel):
     delivery_method_id = models.PositiveBigIntegerField(null=True, blank=True)
     delivery_method_name = models.CharField(max_length=200, blank=True)
     delivery_cost = models.DecimalField(max_digits=16, decimal_places=0, default=0)
+    is_pricing_finalized = models.BooleanField(default=False)
     schedule_id = models.PositiveBigIntegerField(null=True, blank=True)
     schedule_start = models.DateTimeField(null=True, blank=True)
     schedule_end = models.DateTimeField(null=True, blank=True)

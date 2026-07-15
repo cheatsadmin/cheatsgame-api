@@ -9,8 +9,24 @@ from cheatgame.shop.apis.delivery_type import DeliveryTypeAdminApi, DeliveryType
 from cheatgame.shop.apis.discount import DiscountAdminApi, DiscountDetailSerializer, DiscountListAdmin, \
     CheckUserDiscountApi, CheckCouponApi, DiscountListUser
 from cheatgame.shop.apis.payment import CreatePaymentRequestApi, PaymentTransactionDetailApi, VerifyPaymentApi
+from cheatgame.shop.apis.checkout import (
+    ActiveCheckoutApi,
+    CheckoutAddressApi,
+    CheckoutCancelApi,
+    CheckoutCreateApi,
+    CheckoutDetailApi,
+    CheckoutScheduleApi,
+    CheckoutShippingApi,
+)
 
 urlpatterns = [
+    path("checkouts/", CheckoutCreateApi.as_view(), name="checkout-v2-create"),
+    path("checkout/active/", ActiveCheckoutApi.as_view(), name="checkout-v2-active"),
+    path("checkouts/<uuid:public_id>/", CheckoutDetailApi.as_view(), name="checkout-v2-detail"),
+    path("checkouts/<uuid:public_id>/address/", CheckoutAddressApi.as_view(), name="checkout-v2-address"),
+    path("checkouts/<uuid:public_id>/shipping/", CheckoutShippingApi.as_view(), name="checkout-v2-shipping"),
+    path("checkouts/<uuid:public_id>/schedule/", CheckoutScheduleApi.as_view(), name="checkout-v2-schedule"),
+    path("checkouts/<uuid:public_id>/cancel/", CheckoutCancelApi.as_view(), name="checkout-v2-cancel"),
     path("create-discount-code/", DiscountAdminApi.as_view(), name="create-discount"),
     path("discount-detail/<int:id>/", DiscountDetailSerializer.as_view(), name="discount-detail-manager"),
     path("discount-list-manager/", DiscountListAdmin.as_view(), name="discount-list-manager"),

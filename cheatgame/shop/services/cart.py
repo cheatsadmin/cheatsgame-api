@@ -2,11 +2,33 @@ from _decimal import Decimal
 from typing import List
 
 from django.db import transaction
+from django.conf import settings
 
 from cheatgame.product.models import Product, Attachment, ProductType, AttachmentType
 from cheatgame.shop.models import Cart, CartItemAttachment, CartItem, OrderItemAttachment, OrderItem
 from cheatgame.shop.services.pricing import product_line_payable_total, selected_attachment_unit_total
 from cheatgame.users.models import BaseUser
+
+
+class CartMutationLocked(Exception):
+    def __init__(self, cart):
+        self.cart = cart
+        super().__init__("Cart is locked by an active checkout.")
+
+
+def assert_cart_mutable(*, cart):
+    if settings.COMMERCE_CHECKOUT_V2_ENABLED and cart.state == "locked":
+        raise CartMutationLocked(cart)
+
+
+@transaction.atomic
+def lock_and_assert_user_cart_mutable(*, user):
+    if not settings.COMMERCE_CHECKOUT_V2_ENABLED:
+        return Cart.objects.filter(user=user).first()
+    cart = Cart.objects.select_for_update().filter(user=user).first()
+    if cart is not None:
+        assert_cart_mutable(cart=cart)
+    return cart
 
 
 def check_product_limit(*, product: Product, quantity: int) -> bool:
@@ -112,6 +134,9 @@ def check_cart_item_exists(*, product: Product, user: BaseUser) -> bool:
 @transaction.atomic
 def add_to_cart(*, attachment: List[Attachment], quantity: int, product: Product, user: BaseUser) -> CartItem:
     cart = get_cart_or_create(user=user)
+    if settings.COMMERCE_CHECKOUT_V2_ENABLED:
+        cart = Cart.objects.select_for_update().get(id=cart.id)
+        assert_cart_mutable(cart=cart)
     cart_item = CartItem.objects.create(cart=cart, price=0, product=product)
     total_attachment_price = calculate_attchment_price_cart(attachments=attachment, cart_item=cart_item,
                                                             product=product)
@@ -134,6 +159,11 @@ def cartitem_attachment_total_price(*, cart_item: CartItem) -> Decimal:
 
 @transaction.atomic
 def update_cart_item(*, cart_item: CartItem, quantity: int = None):
+    if settings.COMMERCE_CHECKOUT_V2_ENABLED:
+        cart_item_identity = CartItem.objects.filter(id=cart_item.id).values("cart_id").get()
+        locked_cart = Cart.objects.select_for_update().get(id=cart_item_identity["cart_id"])
+        assert_cart_mutable(cart=locked_cart)
+        cart_item = CartItem.objects.select_for_update().select_related("cart", "product").get(id=cart_item.id)
     attachment_price = cartitem_attachment_total_price(cart_item=cart_item)
     cart_item.price = product_line_payable_total(
         product=cart_item.product,
@@ -145,5 +175,11 @@ def update_cart_item(*, cart_item: CartItem, quantity: int = None):
     return cart_item
 
 
+@transaction.atomic
 def delete_cart_item(*, cart_item_id: int) -> None:
-    CartItem.objects.get(id=cart_item_id).delete()
+    if settings.COMMERCE_CHECKOUT_V2_ENABLED:
+        cart_item_identity = CartItem.objects.filter(id=cart_item_id).values("cart_id").get()
+        locked_cart = Cart.objects.select_for_update().get(id=cart_item_identity["cart_id"])
+        assert_cart_mutable(cart=locked_cart)
+    cart_item = CartItem.objects.select_related("cart").get(id=cart_item_id)
+    cart_item.delete()

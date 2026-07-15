@@ -1,5 +1,8 @@
 # Commerce Phase A Foundation
 
+Phase B1 builds on these dormant models behind a default-off feature flag. See
+`docs/commerce/phase-b1-checkout-foundation.md`.
+
 ## Purpose
 
 Phase A introduces dormant, backward-compatible commerce primitives. It does not switch the live Cart, Order, payment request, callback, result page, or shipping flow.

@@ -3,6 +3,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from cheatgame.shop.models import (
+    Cart,
     CartState,
     Checkout,
     CheckoutStatus,
@@ -51,6 +52,12 @@ class Command(BaseCommand):
         expired_ids = []
         for checkout_id in checkout_ids:
             with transaction.atomic():
+                identity = Checkout.objects.filter(id=checkout_id).values("cart_id").first()
+                if identity is None:
+                    continue
+                cart = None
+                if identity["cart_id"] is not None:
+                    cart = Cart.objects.select_for_update().get(id=identity["cart_id"])
                 checkout = Checkout.objects.select_for_update().filter(id=checkout_id).first()
                 if checkout is None or checkout.status not in (
                     CheckoutStatus.CHECKOUT_DRAFT,
@@ -71,8 +78,17 @@ class Command(BaseCommand):
                     state=StockReservationState.ACTIVE,
                 ).update(state=StockReservationState.RELEASED, updated_at=now)
 
-                if checkout.cart_id:
-                    cart = checkout.cart.__class__.objects.select_for_update().get(id=checkout.cart_id)
+                append_commerce_event(
+                    checkout=checkout,
+                    event_type=CommerceEventType.CHECKOUT_EXPIRED,
+                    metadata={
+                        "previous_status": previous_status,
+                        "new_status": CheckoutStatus.EXPIRED,
+                        "expires_at": checkout.expires_at.isoformat(),
+                    },
+                )
+
+                if cart is not None:
                     if cart.active_checkout_id == checkout.id:
                         cart.state = CartState.OPEN
                         cart.lock_reason = None
@@ -89,16 +105,12 @@ class Command(BaseCommand):
                                 "updated_at",
                             ]
                         )
+                        append_commerce_event(
+                            checkout=checkout,
+                            event_type=CommerceEventType.CART_UNLOCKED,
+                            metadata={"reason_code": "checkout_expired"},
+                        )
 
-                append_commerce_event(
-                    checkout=checkout,
-                    event_type=CommerceEventType.CHECKOUT_EXPIRED,
-                    metadata={
-                        "previous_status": previous_status,
-                        "new_status": CheckoutStatus.EXPIRED,
-                        "expires_at": checkout.expires_at.isoformat(),
-                    },
-                )
                 expired_ids.append(checkout.id)
 
         self.stdout.write(f"expired_count={len(expired_ids)} checkout_ids={expired_ids}")
