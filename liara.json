@@ -7,19 +7,5 @@
   },
   "django": {
     "pythonVersion": "3.9"
-  },
-  "healthCheck": {
-    "command": [
-      "CMD",
-      "curl",
-      "--fail",
-      "--silent",
-      "--show-error",
-      "http://127.0.0.1:8000/health/ready/"
-    ],
-    "interval": 30000,
-    "timeout": 10000,
-    "retries": 3,
-    "startPeriod": 3000
   }
 }
