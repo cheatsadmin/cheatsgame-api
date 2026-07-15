@@ -13,8 +13,13 @@
       "CMD",
       "curl",
       "--fail",
-      "--header=X-Forwarded-Proto:https",
-      "http://localhost:7000/health/ready/"
+      "--silent",
+      "--show-error",
+      "--header",
+      "X-Forwarded-Proto: https",
+      "--header",
+      "Host: backend-cheatsgame-staging.liara.run",
+      "http://localhost:80/health/ready/"
     ],
     "interval": 30000,
     "timeout": 10000,
