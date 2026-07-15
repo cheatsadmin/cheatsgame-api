@@ -11,6 +11,12 @@ SECRET_KEY = env('SECRET_KEY')
 ALLOWED_HOSTS = env.list('ALLOWED_HOSTS')
 if not ALLOWED_HOSTS or "*" in ALLOWED_HOSTS:
     raise ImproperlyConfigured("ALLOWED_HOSTS must be explicitly set in production.")
+ALLOWED_HOSTS = list(dict.fromkeys([
+    *ALLOWED_HOSTS,
+    "127.0.0.1",
+    "localhost",
+    "[::1]",
+]))
 
 CORS_ALLOW_ALL_ORIGINS = False
 CORS_ALLOWED_ORIGINS = env.list(
@@ -31,6 +37,11 @@ CSRF_COOKIE_SAMESITE = env('CSRF_COOKIE_SAMESITE', default='Lax')
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 # https://docs.djangoproject.com/en/dev/ref/settings/#secure-ssl-redirect
 SECURE_SSL_REDIRECT = env.bool("SECURE_SSL_REDIRECT", default=True)
+SECURE_REDIRECT_EXEMPT = list(dict.fromkeys([
+    *globals().get("SECURE_REDIRECT_EXEMPT", []),
+    r"^health/live/$",
+    r"^health/ready/$",
+]))
 SECURE_HSTS_SECONDS = env.int("SECURE_HSTS_SECONDS", default=31536000)
 SECURE_HSTS_INCLUDE_SUBDOMAINS = env.bool("SECURE_HSTS_INCLUDE_SUBDOMAINS", default=True)
 SECURE_HSTS_PRELOAD = env.bool("SECURE_HSTS_PRELOAD", default=True)

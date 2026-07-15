@@ -15,10 +15,6 @@
       "--fail",
       "--silent",
       "--show-error",
-      "--header",
-      "X-Forwarded-Proto:https",
-      "--header",
-      "Host:backend-cheatsgame-staging.liara.run",
       "http://127.0.0.1:8000/health/ready/"
     ],
     "interval": 30000,

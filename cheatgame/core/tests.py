@@ -3,6 +3,7 @@ import os
 import sys
 from unittest.mock import patch
 
+from config.django import base as base_settings
 from django.core.exceptions import ImproperlyConfigured
 from django.test import SimpleTestCase
 
@@ -33,7 +34,10 @@ class ProductionSettingsTests(SimpleTestCase):
 
         self.assertFalse(module.DEBUG)
         self.assertFalse(module.CORS_ALLOW_ALL_ORIGINS)
-        self.assertEqual(module.ALLOWED_HOSTS, ["api.example.com"])
+        self.assertEqual(
+            module.ALLOWED_HOSTS,
+            ["api.example.com", "127.0.0.1", "localhost", "[::1]"],
+        )
         self.assertEqual(
             module.CORS_ALLOWED_ORIGINS,
             ["https://www.example.com", "https://admin.example.com"],
@@ -47,6 +51,10 @@ class ProductionSettingsTests(SimpleTestCase):
         self.assertEqual(module.CSRF_COOKIE_SAMESITE, "Lax")
         self.assertTrue(module.SECURE_SSL_REDIRECT)
         self.assertEqual(module.SECURE_PROXY_SSL_HEADER, ("HTTP_X_FORWARDED_PROTO", "https"))
+        self.assertEqual(
+            module.SECURE_REDIRECT_EXEMPT,
+            [r"^health/live/$", r"^health/ready/$"],
+        )
         self.assertTrue(module.SECURE_CONTENT_TYPE_NOSNIFF)
         self.assertGreater(module.SECURE_HSTS_SECONDS, 0)
         self.assertTrue(module.SECURE_HSTS_INCLUDE_SUBDOMAINS)
@@ -71,6 +79,33 @@ class ProductionSettingsTests(SimpleTestCase):
 
         with self.assertRaises(ImproperlyConfigured):
             self.import_production_settings(env)
+
+    def test_production_settings_preserve_and_deduplicate_loopback_hosts(self):
+        env = {
+            **PRODUCTION_ENV,
+            "ALLOWED_HOSTS": "api.example.com,localhost,127.0.0.1,[::1]",
+        }
+
+        module = self.import_production_settings(env)
+
+        self.assertEqual(
+            module.ALLOWED_HOSTS,
+            ["api.example.com", "localhost", "127.0.0.1", "[::1]"],
+        )
+
+    def test_production_settings_preserve_existing_redirect_exemptions(self):
+        with patch.object(
+            base_settings,
+            "SECURE_REDIRECT_EXEMPT",
+            [r"^existing/internal/$"],
+            create=True,
+        ):
+            module = self.import_production_settings(PRODUCTION_ENV)
+
+        self.assertEqual(
+            module.SECURE_REDIRECT_EXEMPT,
+            [r"^existing/internal/$", r"^health/live/$", r"^health/ready/$"],
+        )
 
     def test_production_settings_require_explicit_cors_origins(self):
         env = {**PRODUCTION_ENV, "CORS_ALLOWED_ORIGINS": ""}

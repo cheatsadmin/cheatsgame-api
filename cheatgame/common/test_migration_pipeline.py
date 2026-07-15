@@ -7,7 +7,7 @@ from unittest import mock, skipUnless
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.db import close_old_connections, connection
-from django.test import Client, SimpleTestCase, TransactionTestCase
+from django.test import Client, SimpleTestCase, TransactionTestCase, override_settings
 
 from cheatgame.common.migration_lock import (
     AdvisoryLockedMigrationRunner,
@@ -19,20 +19,61 @@ from cheatgame.common.migration_lock import (
 IS_POSTGRESQL = connection.vendor == "postgresql"
 
 
+@override_settings(
+    ALLOWED_HOSTS=[
+        "backend-cheatsgame-staging.liara.run",
+        "127.0.0.1",
+        "localhost",
+        "[::1]",
+    ],
+    SECURE_SSL_REDIRECT=True,
+    SECURE_REDIRECT_EXEMPT=[r"^health/live/$", r"^health/ready/$"],
+)
 class MigrationReadinessTests(SimpleTestCase):
     databases = {"default"}
 
-    def test_liveness_is_independent_of_database(self):
-        response = Client().get("/health/live/", secure=True)
+    @mock.patch(
+        "cheatgame.core.health.connection.cursor",
+        side_effect=RuntimeError("database unavailable"),
+    )
+    def test_liveness_is_independent_of_database(self, _cursor):
+        response = Client().get("/health/live/", HTTP_HOST="127.0.0.1")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"status": "alive"})
+
+    def test_loopback_health_routes_are_exempt_from_https_redirect(self):
+        live = Client().get("/health/live/", HTTP_HOST="localhost")
+        ready = Client().get("/health/ready/", HTTP_HOST="127.0.0.1")
+
+        self.assertEqual(live.status_code, 200)
+        self.assertEqual(ready.status_code, 200)
+
+    def test_unrelated_loopback_route_still_redirects_to_https(self):
+        response = Client().get("/", HTTP_HOST="127.0.0.1")
+
+        self.assertEqual(response.status_code, 301)
+        self.assertEqual(response["Location"], "https://127.0.0.1/")
+
+    def test_unknown_host_is_rejected(self):
+        response = Client().get("/health/live/", HTTP_HOST="unknown.example")
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_configured_public_host_remains_accepted(self):
+        response = Client().get(
+            "/health/live/",
+            secure=True,
+            HTTP_HOST="backend-cheatsgame-staging.liara.run",
+        )
+
+        self.assertEqual(response.status_code, 200)
 
     @mock.patch("cheatgame.core.health.MigrationExecutor")
     def test_readiness_returns_503_when_migrations_are_pending(self, executor_class):
         executor = executor_class.return_value
         executor.loader.graph.leaf_nodes.return_value = [("shop", "9999_test")]
         executor.migration_plan.return_value = [object()]
-        response = Client().get("/health/ready/", secure=True)
+        response = Client().get("/health/ready/", HTTP_HOST="127.0.0.1")
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.json(), {"status": "not_ready", "reason": "schema_not_ready"})
 
@@ -41,12 +82,13 @@ class MigrationReadinessTests(SimpleTestCase):
         executor = executor_class.return_value
         executor.loader.graph.leaf_nodes.return_value = []
         executor.migration_plan.return_value = []
-        response = Client().get("/health/ready/", secure=True)
+        response = Client().get("/health/ready/", HTTP_HOST="127.0.0.1")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"status": "ready"})
+        executor.migrate.assert_not_called()
 
     def test_readiness_returns_200_for_applied_test_schema(self):
-        response = Client().get("/health/ready/", secure=True)
+        response = Client().get("/health/ready/", HTTP_HOST="127.0.0.1")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"status": "ready"})
 
