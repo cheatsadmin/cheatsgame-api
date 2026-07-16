@@ -56,6 +56,7 @@ LOCAL_APPS = [
     'cheatgame.product.apps.ProductConfig',
     "cheatgame.general.apps.GeneralConfig",
     "cheatgame.shop.apps.ShopConfig",
+    "cheatgame.digital_products.apps.DigitalProductsConfig",
     "cheatgame.issue.apps.IssueConfig",
 ]
 
