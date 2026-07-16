@@ -63,6 +63,7 @@ PAYMENT_ATTEMPT_TRANSITIONS = {
         PaymentAttemptStatus.REVIEW,
     },
     PaymentAttemptStatus.PROCESSING: {
+        PaymentAttemptStatus.REQUIRES_CUSTOMER_ACTION,
         PaymentAttemptStatus.SUCCEEDED,
         PaymentAttemptStatus.DEFINITIVE_FAILED,
         PaymentAttemptStatus.OUTCOME_UNKNOWN,
@@ -91,6 +92,7 @@ PAYMENT_TRANSACTION_TRANSITIONS = {
         PaymentTransactionStatus.CANCELED,
     },
     PaymentTransactionStatus.REQUESTING: {
+        PaymentTransactionStatus.CREATED,
         PaymentTransactionStatus.PENDING_CUSTOMER,
         PaymentTransactionStatus.PENDING_PROVIDER,
         PaymentTransactionStatus.SUCCEEDED,

@@ -80,6 +80,8 @@ class FulfillmentStatus(models.TextChoices):
 
 class StockReservationState(models.TextChoices):
     ACTIVE = "active", "ACTIVE"
+    PAYMENT_HOLD = "payment_hold", "PAYMENT_HOLD"
+    REVIEW_HOLD = "review_hold", "REVIEW_HOLD"
     CONSUMED = "consumed", "CONSUMED"
     RELEASED = "released", "RELEASED"
 
@@ -115,6 +117,8 @@ class CommerceEventType(models.TextChoices):
     MANUAL_REVIEW_REQUIRED = "manual_review_required", "MANUAL_REVIEW_REQUIRED"
     CHECKOUT_EXPIRED = "checkout_expired", "CHECKOUT_EXPIRED"
     CHECKOUT_CANCELED = "checkout_canceled", "CHECKOUT_CANCELED"
+    ORDER_PLACED = "order_placed", "ORDER_PLACED"
+    PAYMENT_OBLIGATION_CREATED = "payment_obligation_created", "PAYMENT_OBLIGATION_CREATED"
 
 
 class OrderUserStatus(IntEnum):
@@ -319,6 +323,15 @@ class Order(BaseModel):
         default=FulfillmentStatus.NOT_STARTED,
         db_index=True,
     )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("checkout",),
+                condition=Q(checkout__isnull=False),
+                name="uniq_order_per_checkout",
+            ),
+        ]
 
     @classmethod
     def generate_public_tracking_code(cls) -> str:
@@ -529,6 +542,13 @@ class CheckoutShippingSnapshot(BaseModel):
 class StockReservation(BaseModel):
     checkout = models.ForeignKey("Checkout", on_delete=models.CASCADE, related_name="stock_reservations")
     product = models.ForeignKey("product.Product", on_delete=models.PROTECT, related_name="stock_reservations")
+    order = models.ForeignKey(
+        "Order",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="stock_reservations",
+    )
     quantity = models.PositiveIntegerField()
     expires_at = models.DateTimeField()
     state = models.CharField(

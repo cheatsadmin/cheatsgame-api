@@ -66,6 +66,7 @@ class CapacityDisclosure(models.TextChoices):
 
 class DigitalInventoryReservationState(models.TextChoices):
     ACTIVE = "active", "ACTIVE"
+    PAYMENT_HOLD = "payment_hold", "PAYMENT_HOLD"
     HELD_FOR_REVIEW = "held_for_review", "HELD_FOR_REVIEW"
     CONSUMED = "consumed", "CONSUMED"
     RELEASED = "released", "RELEASED"
@@ -369,6 +370,13 @@ class DigitalInventoryReservation(BaseModel):
         "shop.CheckoutLine",
         on_delete=models.PROTECT,
         related_name="digital_inventory_reservation",
+    )
+    order = models.ForeignKey(
+        "shop.Order",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="digital_inventory_reservations",
     )
     inventory_pool = models.ForeignKey(
         InventoryPool,

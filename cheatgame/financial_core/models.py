@@ -12,6 +12,42 @@ from cheatgame.common.models import BaseModel
 CANONICAL_CURRENCY = "IRR"
 
 
+class MoneyUnit(models.TextChoices):
+    IRR = "IRR", "IRR"
+    IRT = "IRT", "IRT"
+
+
+class PaymentObligationSourceKind(models.TextChoices):
+    CHECKOUT_PLACEMENT = "checkout_placement", "CHECKOUT_PLACEMENT"
+    LEGACY_ORDER_ADOPTION = "legacy_order_adoption", "LEGACY_ORDER_ADOPTION"
+
+
+class CallbackAuthenticationStrength(models.TextChoices):
+    NONE = "none", "NONE"
+    SHARED_SECRET = "shared_secret", "SHARED_SECRET"
+    ASYMMETRIC_SIGNATURE = "asymmetric_signature", "ASYMMETRIC_SIGNATURE"
+    MTLS = "mtls", "MTLS"
+
+
+class ProviderVerificationSemantics(models.TextChoices):
+    REQUIRED = "required", "REQUIRED"
+    REQUEST_RESPONSE_FINAL = "request_response_final", "REQUEST_RESPONSE_FINAL"
+
+
+class ProviderRequestOutcome(models.TextChoices):
+    CUSTOMER_ACTION_REQUIRED = "customer_action_required", "CUSTOMER_ACTION_REQUIRED"
+    ACCEPTED_PENDING = "accepted_pending", "ACCEPTED_PENDING"
+    CONFIRMED_SUCCESS = "confirmed_success", "CONFIRMED_SUCCESS"
+    CONFIRMED_DECLINE = "confirmed_decline", "CONFIRMED_DECLINE"
+    CONFIRMED_CANCELED = "confirmed_canceled", "CONFIRMED_CANCELED"
+    CONFIRMED_EXPIRED = "confirmed_expired", "CONFIRMED_EXPIRED"
+    NO_EFFECT_RETRYABLE = "no_effect_retryable", "NO_EFFECT_RETRYABLE"
+    OUTCOME_UNKNOWN = "outcome_unknown", "OUTCOME_UNKNOWN"
+    SECURITY_FAILURE = "security_failure", "SECURITY_FAILURE"
+    CONFIGURATION_FAILURE = "configuration_failure", "CONFIGURATION_FAILURE"
+    PROTOCOL_FAILURE = "protocol_failure", "PROTOCOL_FAILURE"
+
+
 class PaymentCollectionStatus(models.TextChoices):
     OPEN = "open", "OPEN"
     PROCESSING = "processing", "PROCESSING"
@@ -170,6 +206,158 @@ class AppendOnlyModel(models.Model):
         raise ValidationError("Append-only financial records cannot be deleted.")
 
 
+class ProviderDefinition(BaseModel):
+    IMMUTABLE_FIELDS = ("key", "display_name")
+
+    key = models.CharField(max_length=64, unique=True)
+    display_name = models.CharField(max_length=128)
+    is_enabled = models.BooleanField(default=False)
+    new_requests_enabled = models.BooleanField(default=False)
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            original = type(self).objects.filter(pk=self.pk).values(*self.IMMUTABLE_FIELDS).first()
+            if original and any(original[field] != getattr(self, field) for field in self.IMMUTABLE_FIELDS):
+                raise ValidationError("Provider identity is immutable.")
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+
+class ProviderCapabilityVersion(BaseModel):
+    IMMUTABLE_FIELDS = (
+        "provider_id",
+        "version",
+        "adapter_key",
+        "adapter_contract_version",
+        "provider_unit",
+        "conversion_policy_version",
+        "supported_operations",
+        "supports_request_idempotency",
+        "supports_lookup",
+        "callback_authentication",
+        "verification_semantics",
+        "finality_window_seconds",
+        "authority_expiry_seconds",
+        "supports_refund",
+        "supports_void",
+    )
+
+    provider = models.ForeignKey(ProviderDefinition, on_delete=models.PROTECT, related_name="capability_versions")
+    version = models.PositiveIntegerField()
+    adapter_key = models.CharField(max_length=64)
+    adapter_contract_version = models.CharField(max_length=32)
+    provider_unit = models.CharField(max_length=16, choices=MoneyUnit.choices)
+    conversion_policy_version = models.CharField(max_length=64)
+    supported_operations = models.JSONField(default=list)
+    supports_request_idempotency = models.BooleanField(default=False)
+    supports_lookup = models.BooleanField(default=False)
+    callback_authentication = models.CharField(
+        max_length=32,
+        choices=CallbackAuthenticationStrength.choices,
+        default=CallbackAuthenticationStrength.NONE,
+    )
+    verification_semantics = models.CharField(
+        max_length=32,
+        choices=ProviderVerificationSemantics.choices,
+        default=ProviderVerificationSemantics.REQUIRED,
+    )
+    finality_window_seconds = models.PositiveIntegerField()
+    authority_expiry_seconds = models.PositiveIntegerField()
+    supports_refund = models.BooleanField(default=False)
+    supports_void = models.BooleanField(default=False)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=("provider", "version"), name="fin_provider_capability_version_uniq"),
+            models.CheckConstraint(check=Q(version__gt=0), name="fin_provider_capability_version_gt_zero"),
+            models.CheckConstraint(check=Q(provider_unit__in=MoneyUnit.values), name="fin_provider_unit_valid"),
+            models.CheckConstraint(check=~Q(adapter_key=""), name="fin_provider_adapter_key_nonempty"),
+            models.CheckConstraint(
+                check=~Q(adapter_contract_version=""), name="fin_provider_adapter_version_nonempty"
+            ),
+            models.CheckConstraint(
+                check=~Q(conversion_policy_version=""), name="fin_provider_conversion_version_nonempty"
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        if not isinstance(self.supported_operations, list) or not self.supported_operations:
+            raise ValidationError({"supported_operations": "At least one supported operation is required."})
+        unsupported = set(self.supported_operations) - set(PaymentTransactionOperation.values)
+        if unsupported:
+            raise ValidationError({"supported_operations": "Unsupported provider operation declaration."})
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            original = type(self).objects.filter(pk=self.pk).values(*self.IMMUTABLE_FIELDS).first()
+            if original and any(original[field] != getattr(self, field) for field in self.IMMUTABLE_FIELDS):
+                raise ValidationError("Provider capability versions are immutable.")
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("Provider capability versions cannot be deleted.")
+
+
+class MerchantAccountVersion(BaseModel):
+    IMMUTABLE_FIELDS = (
+        "provider_id",
+        "capability_version_id",
+        "account_key",
+        "version",
+        "owner_key",
+        "credential_reference",
+    )
+
+    provider = models.ForeignKey(ProviderDefinition, on_delete=models.PROTECT, related_name="merchant_accounts")
+    capability_version = models.ForeignKey(
+        ProviderCapabilityVersion,
+        on_delete=models.PROTECT,
+        related_name="merchant_accounts",
+    )
+    account_key = models.CharField(max_length=128)
+    version = models.PositiveIntegerField()
+    owner_key = models.CharField(max_length=128)
+    credential_reference = models.CharField(max_length=255)
+    is_enabled = models.BooleanField(default=False)
+    new_requests_enabled = models.BooleanField(default=False)
+    recovery_enabled = models.BooleanField(default=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("provider", "account_key", "version"),
+                name="fin_merchant_account_version_uniq",
+            ),
+            models.CheckConstraint(check=Q(version__gt=0), name="fin_merchant_account_version_gt_zero"),
+            models.CheckConstraint(check=~Q(account_key=""), name="fin_merchant_account_key_nonempty"),
+            models.CheckConstraint(check=~Q(owner_key=""), name="fin_merchant_owner_key_nonempty"),
+            models.CheckConstraint(
+                check=~Q(credential_reference=""), name="fin_merchant_credential_ref_nonempty"
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.capability_version_id and self.provider_id != self.capability_version.provider_id:
+            raise ValidationError({"capability_version": "Capability version must belong to the provider."})
+        lowered = self.credential_reference.lower()
+        if any(fragment in lowered for fragment in ("password=", "secret=", "token=", "api_key=")):
+            raise ValidationError({"credential_reference": "Credential values must not be stored in the database."})
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            original = type(self).objects.filter(pk=self.pk).values(*self.IMMUTABLE_FIELDS).first()
+            if original and any(original[field] != getattr(self, field) for field in self.IMMUTABLE_FIELDS):
+                raise ValidationError("Merchant-account versions are immutable.")
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("Merchant-account versions cannot be deleted.")
+
+
 class Payment(BaseModel):
     IMMUTABLE_FIELDS = ("public_id", "order_id", "amount_due", "currency")
 
@@ -246,6 +434,57 @@ class Payment(BaseModel):
         return super().save(*args, **kwargs)
 
 
+class PaymentObligationSource(AppendOnlyModel):
+    payment = models.OneToOneField(Payment, on_delete=models.PROTECT, related_name="obligation_source")
+    source_kind = models.CharField(max_length=32, choices=PaymentObligationSourceKind.choices)
+    source_model = models.CharField(max_length=100)
+    source_object_id = models.CharField(max_length=128)
+    source_field = models.CharField(max_length=100)
+    source_amount = models.DecimalField(max_digits=20, decimal_places=0)
+    source_unit = models.CharField(max_length=16, choices=MoneyUnit.choices)
+    canonical_amount = models.DecimalField(max_digits=20, decimal_places=0)
+    canonical_currency = models.CharField(max_length=3, default=CANONICAL_CURRENCY)
+    bridge_version = models.CharField(max_length=64)
+    evidence_fingerprint = models.CharField(max_length=64, unique=True)
+    commercial_snapshot_hash = models.CharField(max_length=64)
+    commerce_authority = models.CharField(max_length=30)
+    idempotency_key = models.UUIDField(unique=True, editable=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("source_model", "source_object_id", "source_field"),
+                name="fin_obligation_source_identity_uniq",
+            ),
+            models.CheckConstraint(check=Q(source_amount__gt=0), name="fin_obligation_source_amount_gt_zero"),
+            models.CheckConstraint(
+                check=Q(canonical_amount__gt=0), name="fin_obligation_canonical_amount_gt_zero"
+            ),
+            models.CheckConstraint(
+                check=Q(canonical_currency=CANONICAL_CURRENCY), name="fin_obligation_currency_irr"
+            ),
+            models.CheckConstraint(check=Q(source_unit__in=MoneyUnit.values), name="fin_obligation_unit_valid"),
+            models.CheckConstraint(check=~Q(bridge_version=""), name="fin_obligation_bridge_nonempty"),
+            models.CheckConstraint(check=~Q(commercial_snapshot_hash=""), name="fin_obligation_snapshot_nonempty"),
+            models.CheckConstraint(
+                check=(
+                    Q(source_unit=MoneyUnit.IRR, canonical_amount=F("source_amount"))
+                    | Q(source_unit=MoneyUnit.IRT, canonical_amount=F("source_amount") * 10)
+                ),
+                name="fin_obligation_conversion_exact",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.payment_id:
+            if self.canonical_amount != self.payment.amount_due:
+                raise ValidationError({"canonical_amount": "Canonical amount must equal the Payment obligation."})
+            if self.canonical_currency != self.payment.currency:
+                raise ValidationError({"canonical_currency": "Canonical currency must equal Payment currency."})
+
+
 class PaymentAttempt(BaseModel):
     IMMUTABLE_FIELDS = (
         "public_id",
@@ -256,6 +495,8 @@ class PaymentAttempt(BaseModel):
         "tender_type",
         "provider",
         "merchant_account_ref",
+        "capability_version_id",
+        "merchant_account_version_id",
         "idempotency_key",
         "request_hash",
     )
@@ -268,6 +509,20 @@ class PaymentAttempt(BaseModel):
     tender_type = models.CharField(max_length=32, choices=PaymentTenderType.choices)
     provider = models.CharField(max_length=64, blank=True)
     merchant_account_ref = models.CharField(max_length=128, blank=True)
+    capability_version = models.ForeignKey(
+        ProviderCapabilityVersion,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="payment_attempts",
+    )
+    merchant_account_version = models.ForeignKey(
+        MerchantAccountVersion,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="payment_attempts",
+    )
     status = models.CharField(
         max_length=32,
         choices=PaymentAttemptStatus.choices,
@@ -283,10 +538,31 @@ class PaymentAttempt(BaseModel):
     class Meta:
         constraints = [
             models.UniqueConstraint(fields=("payment", "sequence"), name="fin_attempt_payment_sequence_uniq"),
+            models.UniqueConstraint(
+                fields=("payment",),
+                condition=Q(
+                    status__in=(
+                        PaymentAttemptStatus.CREATED,
+                        PaymentAttemptStatus.REQUIRES_CUSTOMER_ACTION,
+                        PaymentAttemptStatus.PROCESSING,
+                        PaymentAttemptStatus.SUCCEEDED,
+                        PaymentAttemptStatus.OUTCOME_UNKNOWN,
+                        PaymentAttemptStatus.REVIEW,
+                    )
+                ),
+                name="fin_one_blocking_attempt_per_payment",
+            ),
             models.CheckConstraint(check=Q(sequence__gt=0), name="fin_attempt_sequence_gt_zero"),
             models.CheckConstraint(check=Q(requested_amount__gt=0), name="fin_attempt_amount_gt_zero"),
             models.CheckConstraint(check=Q(currency=CANONICAL_CURRENCY), name="fin_attempt_currency_irr"),
             models.CheckConstraint(check=~Q(request_hash=""), name="fin_attempt_hash_nonempty"),
+            models.CheckConstraint(
+                check=(
+                    Q(capability_version__isnull=True, merchant_account_version__isnull=True)
+                    | Q(capability_version__isnull=False, merchant_account_version__isnull=False)
+                ),
+                name="fin_attempt_provider_versions_together",
+            ),
             models.CheckConstraint(
                 check=Q(tender_type__in=PaymentTenderType.values), name="fin_attempt_tender_valid"
             ),
@@ -307,6 +583,15 @@ class PaymentAttempt(BaseModel):
         if self.tender_type in (PaymentTenderType.EXTERNAL_PROVIDER, PaymentTenderType.INSTALLMENT):
             if not self.provider or not self.merchant_account_ref:
                 raise ValidationError("External and installment attempts require provider and merchant account.")
+            if bool(self.capability_version_id) != bool(self.merchant_account_version_id):
+                raise ValidationError("Provider capability and merchant-account versions must be recorded together.")
+            if self.merchant_account_version_id:
+                if self.provider != self.merchant_account_version.provider.key:
+                    raise ValidationError({"provider": "Attempt provider must match the merchant account."})
+                if self.merchant_account_ref != self.merchant_account_version.account_key:
+                    raise ValidationError({"merchant_account_ref": "Attempt account key must match its version."})
+                if self.capability_version_id != self.merchant_account_version.capability_version_id:
+                    raise ValidationError({"capability_version": "Attempt capability version is inconsistent."})
 
     def save(self, *args, **kwargs):
         if self.pk:
@@ -326,11 +611,19 @@ class PaymentTransaction(BaseModel):
         "parent_id",
         "provider",
         "merchant_account_ref",
+        "capability_version_id",
+        "merchant_account_version_id",
+        "adapter_contract_version",
         "merchant_reference",
         "amount",
         "currency",
         "provider_amount",
         "provider_unit",
+        "provider_conversion_policy_version",
+        "provider_idempotency_reference",
+        "request_fingerprint",
+        "correlation_id",
+        "causation_id",
         "idempotency_key",
     )
 
@@ -347,11 +640,31 @@ class PaymentTransaction(BaseModel):
     )
     provider = models.CharField(max_length=64)
     merchant_account_ref = models.CharField(max_length=128)
+    capability_version = models.ForeignKey(
+        ProviderCapabilityVersion,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="payment_transactions",
+    )
+    merchant_account_version = models.ForeignKey(
+        MerchantAccountVersion,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="payment_transactions",
+    )
+    adapter_contract_version = models.CharField(max_length=32, blank=True)
     merchant_reference = models.CharField(max_length=128)
     amount = models.DecimalField(max_digits=20, decimal_places=0)
     currency = models.CharField(max_length=3, default=CANONICAL_CURRENCY)
     provider_amount = models.DecimalField(max_digits=20, decimal_places=0)
     provider_unit = models.CharField(max_length=16)
+    provider_conversion_policy_version = models.CharField(max_length=64, blank=True)
+    provider_idempotency_reference = models.CharField(max_length=128, null=True, blank=True)
+    request_fingerprint = models.CharField(max_length=64, blank=True)
+    correlation_id = models.UUIDField(default=uuid4, db_index=True)
+    causation_id = models.UUIDField(null=True, blank=True, db_index=True)
     status = models.CharField(
         max_length=32,
         choices=PaymentTransactionStatus.choices,
@@ -364,6 +677,7 @@ class PaymentTransaction(BaseModel):
     idempotency_key = models.UUIDField(unique=True, editable=False)
     claim_token = models.UUIDField(null=True, blank=True)
     claimed_at = models.DateTimeField(null=True, blank=True)
+    claim_expires_at = models.DateTimeField(null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
     version = models.PositiveIntegerField(default=1)
 
@@ -373,6 +687,11 @@ class PaymentTransaction(BaseModel):
             models.UniqueConstraint(
                 fields=("provider", "merchant_account_ref", "merchant_reference"),
                 name="fin_tx_merchant_reference_uniq",
+            ),
+            models.UniqueConstraint(
+                fields=("merchant_account_version", "merchant_reference"),
+                condition=Q(merchant_account_version__isnull=False),
+                name="fin_tx_account_version_merchant_ref_uniq",
             ),
             models.UniqueConstraint(
                 fields=("provider", "merchant_account_ref", "provider_authority"),
@@ -388,9 +707,43 @@ class PaymentTransaction(BaseModel):
             models.CheckConstraint(check=Q(amount__gt=0), name="fin_tx_amount_gt_zero"),
             models.CheckConstraint(check=Q(provider_amount__gt=0), name="fin_tx_provider_amount_gt_zero"),
             models.CheckConstraint(check=Q(currency=CANONICAL_CURRENCY), name="fin_tx_currency_irr"),
-            models.CheckConstraint(check=Q(provider_unit=CANONICAL_CURRENCY), name="fin_tx_provider_unit_irr"),
+            models.CheckConstraint(check=Q(provider_unit__in=MoneyUnit.values), name="fin_tx_provider_unit_valid"),
             models.CheckConstraint(check=~Q(provider=""), name="fin_tx_provider_nonempty"),
             models.CheckConstraint(check=~Q(merchant_reference=""), name="fin_tx_merchant_ref_nonempty"),
+            models.CheckConstraint(
+                check=(
+                    Q(provider_unit=MoneyUnit.IRR, provider_amount=F("amount"))
+                    | Q(provider_unit=MoneyUnit.IRT, amount=F("provider_amount") * 10)
+                ),
+                name="fin_tx_provider_amount_exact",
+            ),
+            models.CheckConstraint(
+                check=(
+                    Q(capability_version__isnull=True, merchant_account_version__isnull=True)
+                    | Q(
+                        capability_version__isnull=False,
+                        merchant_account_version__isnull=False,
+                    )
+                    & ~Q(request_fingerprint="")
+                    & ~Q(adapter_contract_version="")
+                    & ~Q(provider_conversion_policy_version="")
+                ),
+                name="fin_tx_provider_versions_consistent",
+            ),
+            models.CheckConstraint(
+                check=(
+                    Q(capability_version__isnull=True)
+                    |
+                    Q(
+                        status=PaymentTransactionStatus.REQUESTING,
+                        claim_token__isnull=False,
+                        claimed_at__isnull=False,
+                        claim_expires_at__isnull=False,
+                    )
+                    | ~Q(status=PaymentTransactionStatus.REQUESTING)
+                ),
+                name="fin_tx_request_claim_present",
+            ),
             models.CheckConstraint(
                 check=Q(operation_type__in=PaymentTransactionOperation.values), name="fin_tx_operation_valid"
             ),
@@ -437,6 +790,10 @@ class PaymentTransaction(BaseModel):
                 raise ValidationError({"provider": "Transaction provider must match PaymentAttempt."})
             if self.merchant_account_ref != self.attempt.merchant_account_ref:
                 raise ValidationError({"merchant_account_ref": "Merchant account must match PaymentAttempt."})
+            if self.capability_version_id != self.attempt.capability_version_id:
+                raise ValidationError({"capability_version": "Transaction capability must match PaymentAttempt."})
+            if self.merchant_account_version_id != self.attempt.merchant_account_version_id:
+                raise ValidationError({"merchant_account_version": "Transaction account must match PaymentAttempt."})
             if self.currency != self.attempt.currency:
                 raise ValidationError({"currency": "Transaction currency must match PaymentAttempt."})
             if self.amount > self.attempt.requested_amount:
@@ -446,6 +803,26 @@ class PaymentTransaction(BaseModel):
                 raise ValidationError({"parent": "Transaction cannot parent itself."})
             if self.parent.attempt_id != self.attempt_id:
                 raise ValidationError({"parent": "Parent transaction must belong to the same attempt."})
+        if bool(self.capability_version_id) != bool(self.merchant_account_version_id):
+            raise ValidationError("Provider capability and merchant-account versions must be recorded together.")
+        if self.capability_version_id:
+            if self.adapter_contract_version != self.capability_version.adapter_contract_version:
+                raise ValidationError({"adapter_contract_version": "Adapter contract version is inconsistent."})
+            if self.provider_unit != self.capability_version.provider_unit:
+                raise ValidationError({"provider_unit": "Provider unit is inconsistent with capability version."})
+            if self.provider_conversion_policy_version != self.capability_version.conversion_policy_version:
+                raise ValidationError(
+                    {"provider_conversion_policy_version": "Provider conversion policy version is inconsistent."}
+                )
+            if not self.request_fingerprint:
+                raise ValidationError({"request_fingerprint": "Versioned provider transactions require a fingerprint."})
+            if (
+                self.capability_version.supports_request_idempotency
+                and not self.provider_idempotency_reference
+            ):
+                raise ValidationError(
+                    {"provider_idempotency_reference": "Provider idempotency reference is required."}
+                )
 
     def save(self, *args, **kwargs):
         if self.pk:
@@ -467,6 +844,87 @@ class PaymentTransaction(BaseModel):
                     raise ValidationError({field: "Provider evidence fields are write-once."})
         self.full_clean()
         return super().save(*args, **kwargs)
+
+
+class ProviderRequestResult(AppendOnlyModel):
+    transaction = models.ForeignKey(
+        PaymentTransaction,
+        on_delete=models.PROTECT,
+        related_name="request_results",
+    )
+    outcome = models.CharField(max_length=32, choices=ProviderRequestOutcome.choices)
+    claim_token = models.UUIDField()
+    request_fingerprint = models.CharField(max_length=64)
+    evidence_hash = models.CharField(max_length=64)
+    reason_code = models.CharField(max_length=100, blank=True)
+    safe_metadata = models.JSONField(default=dict, blank=True)
+    idempotency_key = models.UUIDField(unique=True, editable=False)
+    correlation_id = models.UUIDField(db_index=True)
+    causation_id = models.UUIDField(null=True, blank=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                check=Q(outcome__in=ProviderRequestOutcome.values), name="fin_request_result_outcome_valid"
+            ),
+            models.CheckConstraint(
+                check=~Q(outcome=ProviderRequestOutcome.CONFIRMED_SUCCESS),
+                name="fin_c2a_request_result_no_success",
+            ),
+            models.CheckConstraint(check=~Q(request_fingerprint=""), name="fin_request_result_fingerprint_nonempty"),
+            models.CheckConstraint(check=~Q(evidence_hash=""), name="fin_request_result_evidence_nonempty"),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.transaction_id and self.request_fingerprint != self.transaction.request_fingerprint:
+            raise ValidationError({"request_fingerprint": "Result fingerprint must match the transaction."})
+
+
+class ProviderRequestClaim(AppendOnlyModel):
+    transaction = models.ForeignKey(
+        PaymentTransaction,
+        on_delete=models.PROTECT,
+        related_name="request_claims",
+    )
+    sequence = models.PositiveIntegerField()
+    claim_token = models.UUIDField(unique=True, editable=False)
+    claimed_at = models.DateTimeField()
+    expires_at = models.DateTimeField()
+    idempotency_key = models.UUIDField(unique=True, editable=False)
+    correlation_id = models.UUIDField(db_index=True)
+    causation_id = models.UUIDField(null=True, blank=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("transaction", "sequence"), name="fin_request_claim_sequence_uniq"
+            ),
+            models.CheckConstraint(check=Q(sequence__gt=0), name="fin_request_claim_sequence_gt_zero"),
+            models.CheckConstraint(check=Q(expires_at__gt=F("claimed_at")), name="fin_request_claim_window_valid"),
+        ]
+
+
+class FinancialOutboxMessage(AppendOnlyModel):
+    public_id = models.UUIDField(default=uuid4, unique=True, editable=False)
+    topic = models.CharField(max_length=100, db_index=True)
+    aggregate_type = models.CharField(max_length=64)
+    aggregate_id = models.CharField(max_length=128)
+    idempotency_key = models.CharField(max_length=200, unique=True)
+    correlation_id = models.UUIDField(db_index=True)
+    causation_id = models.UUIDField(null=True, blank=True, db_index=True)
+    available_at = models.DateTimeField(default=timezone.now, db_index=True)
+    safe_payload = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(check=~Q(topic=""), name="fin_outbox_topic_nonempty"),
+            models.CheckConstraint(check=~Q(aggregate_type=""), name="fin_outbox_aggregate_nonempty"),
+            models.CheckConstraint(check=~Q(aggregate_id=""), name="fin_outbox_aggregate_id_nonempty"),
+        ]
 
 
 class FinancialAccount(BaseModel):

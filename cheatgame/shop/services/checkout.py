@@ -446,6 +446,11 @@ def cancel_checkout(*, user, public_id):
         return checkout
     if checkout.status in (CheckoutStatus.PAID, CheckoutStatus.REQUIRES_MANUAL_REVIEW, CheckoutStatus.EXPIRED):
         raise CheckoutServiceError("CHECKOUT_NOT_CANCELABLE", "این فرایند خرید قابل لغو نیست.")
+    if checkout.orders.filter(financial_payment__isnull=False).exists():
+        raise CheckoutServiceError(
+            "CHECKOUT_NOT_CANCELABLE",
+            "سفارش ثبت شده است و لغو باید از مرز کنترل‌شده سفارش انجام شود.",
+        )
     if checkout.payment_transactions.filter(status__in=UNSAFE_PAYMENT_STATUSES).exists():
         raise CheckoutServiceError("CHECKOUT_NOT_CANCELABLE", "وضعیت پرداخت نیازمند بررسی است.")
     line_authorities = set(checkout.lines.values_list("commerce_authority", flat=True))

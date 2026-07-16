@@ -78,6 +78,8 @@ def create_payment_request(
     order = Order.objects.select_for_update().filter(id=order_id, user=user).first()
     if order is None:
         raise PaymentError("سفارش یافت نشد.")
+    if hasattr(order, "financial_payment"):
+        raise PaymentError("این سفارش تحت مالکیت Financial Core است.")
     if order.payment_status == OrderStatus.PAID.value:
         raise PaymentError("این سفارش قبلا پرداخت شده است.")
 

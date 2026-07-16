@@ -40,6 +40,7 @@ class Command(BaseCommand):
                 status__in=(CheckoutStatus.CHECKOUT_DRAFT, CheckoutStatus.PENDING_PAYMENT),
                 expires_at__lte=now,
             )
+            .exclude(orders__financial_payment__isnull=False)
             .exclude(payment_transactions__status__in=PROTECTED_PAYMENT_STATUSES)
             .order_by("expires_at")
             .values_list("id", flat=True)
@@ -66,6 +67,8 @@ class Command(BaseCommand):
                 ):
                     continue
                 if checkout.payment_transactions.filter(status__in=PROTECTED_PAYMENT_STATUSES).exists():
+                    continue
+                if checkout.orders.filter(financial_payment__isnull=False).exists():
                     continue
 
                 line_authorities = set(checkout.lines.values_list("commerce_authority", flat=True))
