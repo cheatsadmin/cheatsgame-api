@@ -48,6 +48,104 @@ class ProviderRequestOutcome(models.TextChoices):
     PROTOCOL_FAILURE = "protocol_failure", "PROTOCOL_FAILURE"
 
 
+class CallbackAuthenticationStatus(models.TextChoices):
+    AUTHENTICATED = "authenticated", "AUTHENTICATED"
+    UNAUTHENTICATED_HINT = "unauthenticated_hint", "UNAUTHENTICATED_HINT"
+    INVALID = "invalid", "INVALID"
+
+
+class CallbackReplayWindowStatus(models.TextChoices):
+    VALID = "valid", "VALID"
+    EXPIRED = "expired", "EXPIRED"
+    NOT_SUPPORTED = "not_supported", "NOT_SUPPORTED"
+
+
+class CallbackProcessingStatus(models.TextChoices):
+    NORMALIZED = "normalized", "NORMALIZED"
+    DUPLICATE = "duplicate", "DUPLICATE"
+    QUARANTINED = "quarantined", "QUARANTINED"
+    SECURITY_REJECTED = "security_rejected", "SECURITY_REJECTED"
+
+
+class ProviderEventResolutionStatus(models.TextChoices):
+    VERIFICATION_REQUIRED = "verification_required", "VERIFICATION_REQUIRED"
+    QUARANTINED = "quarantined", "QUARANTINED"
+    CONTRADICTORY = "contradictory", "CONTRADICTORY"
+
+
+class VerificationTriggerSource(models.TextChoices):
+    CALLBACK = "callback", "CALLBACK"
+    BROWSER_HINT = "browser_hint", "BROWSER_HINT"
+    REQUEST_RESULT = "request_result", "REQUEST_RESULT"
+    POLL = "poll", "POLL"
+    UNKNOWN_OUTCOME = "unknown_outcome", "UNKNOWN_OUTCOME"
+    RECONCILIATION = "reconciliation", "RECONCILIATION"
+    ADMIN_RETRY = "admin_retry", "ADMIN_RETRY"
+
+
+class VerificationOutcome(models.TextChoices):
+    CONFIRMED_SUCCESS = "confirmed_success", "CONFIRMED_SUCCESS"
+    CONFIRMED_DECLINE = "confirmed_decline", "CONFIRMED_DECLINE"
+    CONFIRMED_CANCELED = "confirmed_canceled", "CONFIRMED_CANCELED"
+    CONFIRMED_EXPIRED = "confirmed_expired", "CONFIRMED_EXPIRED"
+    PENDING = "pending", "PENDING"
+    NO_EFFECT_RETRYABLE = "no_effect_retryable", "NO_EFFECT_RETRYABLE"
+    OUTCOME_UNKNOWN = "outcome_unknown", "OUTCOME_UNKNOWN"
+    MISMATCH = "mismatch", "MISMATCH"
+    CONTRADICTORY_EVIDENCE = "contradictory_evidence", "CONTRADICTORY_EVIDENCE"
+    SECURITY_FAILURE = "security_failure", "SECURITY_FAILURE"
+    CONFIGURATION_FAILURE = "configuration_failure", "CONFIGURATION_FAILURE"
+    PROTOCOL_FAILURE = "protocol_failure", "PROTOCOL_FAILURE"
+    NOT_FOUND_FINAL = "not_found_final", "NOT_FOUND_FINAL"
+
+
+class VerificationFinancialEffect(models.TextChoices):
+    PAID = "paid", "PAID"
+    UNPAID = "unpaid", "UNPAID"
+    NONE = "none", "NONE"
+    UNKNOWN = "unknown", "UNKNOWN"
+
+
+class VerificationFinality(models.TextChoices):
+    FINAL = "final", "FINAL"
+    NON_FINAL = "non_final", "NON_FINAL"
+    UNKNOWN = "unknown", "UNKNOWN"
+
+
+class VerificationTransportClassification(models.TextChoices):
+    SUCCESS = "success", "SUCCESS"
+    TIMEOUT = "timeout", "TIMEOUT"
+    NETWORK_FAILURE = "network_failure", "NETWORK_FAILURE"
+    PROTOCOL_FAILURE = "protocol_failure", "PROTOCOL_FAILURE"
+    NOT_EXECUTED = "not_executed", "NOT_EXECUTED"
+
+
+class VerificationApplicationState(models.TextChoices):
+    UNAPPLIED = "unapplied", "UNAPPLIED"
+    APPLIED_UNPAID = "applied_unpaid", "APPLIED_UNPAID"
+    APPLIED_BLOCKING_SUCCESS = "applied_blocking_success", "APPLIED_BLOCKING_SUCCESS"
+    REVIEW_REQUIRED = "review_required", "REVIEW_REQUIRED"
+    SUPERSEDED = "superseded", "SUPERSEDED"
+
+
+class VerificationWorkType(models.TextChoices):
+    VERIFY_AFTER_CALLBACK = "verify_after_callback", "VERIFY_AFTER_CALLBACK"
+    VERIFY_AFTER_BROWSER_HINT = "verify_after_browser_hint", "VERIFY_AFTER_BROWSER_HINT"
+    POLL_PENDING_OPERATION = "poll_pending_operation", "POLL_PENDING_OPERATION"
+    VERIFY_UNKNOWN_OUTCOME = "verify_unknown_outcome", "VERIFY_UNKNOWN_OUTCOME"
+    RETRY_PROVIDER_QUERY = "retry_provider_query", "RETRY_PROVIDER_QUERY"
+    ESCALATE_UNKNOWN_OUTCOME = "escalate_unknown_outcome", "ESCALATE_UNKNOWN_OUTCOME"
+    APPLY_VERIFIED_FUNDS = "apply_verified_funds", "APPLY_VERIFIED_FUNDS"
+
+
+class VerificationWorkStatus(models.TextChoices):
+    PENDING = "pending", "PENDING"
+    CLAIMED = "claimed", "CLAIMED"
+    WAITING = "waiting", "WAITING"
+    COMPLETED = "completed", "COMPLETED"
+    CANCELED = "canceled", "CANCELED"
+
+
 class PaymentCollectionStatus(models.TextChoices):
     OPEN = "open", "OPEN"
     PROCESSING = "processing", "PROCESSING"
@@ -240,6 +338,7 @@ class ProviderCapabilityVersion(BaseModel):
         "authority_expiry_seconds",
         "supports_refund",
         "supports_void",
+        "not_found_is_final_unpaid",
     )
 
     provider = models.ForeignKey(ProviderDefinition, on_delete=models.PROTECT, related_name="capability_versions")
@@ -265,6 +364,7 @@ class ProviderCapabilityVersion(BaseModel):
     authority_expiry_seconds = models.PositiveIntegerField()
     supports_refund = models.BooleanField(default=False)
     supports_void = models.BooleanField(default=False)
+    not_found_is_final_unpaid = models.BooleanField(default=False)
 
     class Meta:
         constraints = [
@@ -924,6 +1024,442 @@ class FinancialOutboxMessage(AppendOnlyModel):
             models.CheckConstraint(check=~Q(topic=""), name="fin_outbox_topic_nonempty"),
             models.CheckConstraint(check=~Q(aggregate_type=""), name="fin_outbox_aggregate_nonempty"),
             models.CheckConstraint(check=~Q(aggregate_id=""), name="fin_outbox_aggregate_id_nonempty"),
+        ]
+
+
+class CallbackReceipt(AppendOnlyModel):
+    public_id = models.UUIDField(default=uuid4, unique=True, editable=False)
+    provider = models.ForeignKey(
+        ProviderDefinition,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="callback_receipts",
+    )
+    capability_version = models.ForeignKey(
+        ProviderCapabilityVersion,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="callback_receipts",
+    )
+    merchant_account_version = models.ForeignKey(
+        MerchantAccountVersion,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="callback_receipts",
+    )
+    provider_key_hint = models.CharField(max_length=64)
+    adapter_version_hint = models.CharField(max_length=32)
+    account_hint_hash = models.CharField(max_length=64, blank=True)
+    http_method = models.CharField(max_length=8)
+    content_type = models.CharField(max_length=100)
+    body_length = models.PositiveIntegerField()
+    raw_envelope_hash = models.CharField(max_length=64)
+    header_evidence = models.JSONField(default=dict, blank=True)
+    source_network_hash = models.CharField(max_length=64, blank=True)
+    authentication_status = models.CharField(max_length=32, choices=CallbackAuthenticationStatus.choices)
+    authentication_strength = models.CharField(
+        max_length=32,
+        choices=CallbackAuthenticationStrength.choices,
+        default=CallbackAuthenticationStrength.NONE,
+    )
+    authentication_method = models.CharField(max_length=64, blank=True)
+    authentication_version = models.CharField(max_length=32, blank=True)
+    authentication_evidence_hash = models.CharField(max_length=64, blank=True)
+    signing_key_reference_hash = models.CharField(max_length=64, blank=True)
+    replay_window_status = models.CharField(max_length=24, choices=CallbackReplayWindowStatus.choices)
+    processing_status = models.CharField(max_length=24, choices=CallbackProcessingStatus.choices)
+    correlation_id = models.UUIDField(db_index=True)
+    duplicate_of = models.ForeignKey(
+        "self",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="duplicate_deliveries",
+    )
+    quarantine_reason = models.CharField(max_length=64, blank=True)
+    safe_reason_code = models.CharField(max_length=64, blank=True)
+    delivery_idempotency_key = models.UUIDField(unique=True, editable=False)
+    retention_until = models.DateTimeField()
+    received_at = models.DateTimeField(default=timezone.now, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(check=Q(body_length__gte=0), name="fin_cb_body_length_nonnegative"),
+            models.CheckConstraint(check=~Q(raw_envelope_hash=""), name="fin_cb_envelope_hash_nonempty"),
+            models.CheckConstraint(check=~Q(http_method=""), name="fin_cb_method_nonempty"),
+            models.CheckConstraint(
+                check=Q(authentication_status__in=CallbackAuthenticationStatus.values),
+                name="fin_cb_auth_status_valid",
+            ),
+            models.CheckConstraint(
+                check=(
+                    ~Q(authentication_status=CallbackAuthenticationStatus.AUTHENTICATED)
+                    | ~Q(authentication_evidence_hash="")
+                ),
+                name="fin_cb_authenticated_evidence",
+            ),
+            models.CheckConstraint(
+                check=Q(replay_window_status__in=CallbackReplayWindowStatus.values),
+                name="fin_cb_replay_status_valid",
+            ),
+            models.CheckConstraint(
+                check=Q(processing_status__in=CallbackProcessingStatus.values),
+                name="fin_cb_processing_status_valid",
+            ),
+            models.CheckConstraint(
+                check=Q(retention_until__gt=F("received_at")),
+                name="fin_cb_retention_after_receipt",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=("provider", "raw_envelope_hash"), name="fin_cb_provider_envelope"),
+            models.Index(fields=("processing_status", "received_at"), name="fin_cb_status_received"),
+        ]
+
+
+class ProviderEvent(AppendOnlyModel):
+    public_id = models.UUIDField(default=uuid4, unique=True, editable=False)
+    provider = models.ForeignKey(ProviderDefinition, on_delete=models.PROTECT, related_name="provider_events")
+    capability_version = models.ForeignKey(
+        ProviderCapabilityVersion,
+        on_delete=models.PROTECT,
+        related_name="provider_events",
+    )
+    merchant_account_version = models.ForeignKey(
+        MerchantAccountVersion,
+        on_delete=models.PROTECT,
+        related_name="provider_events",
+    )
+    transaction = models.ForeignKey(
+        PaymentTransaction,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="provider_events",
+    )
+    adapter_contract_version = models.CharField(max_length=32)
+    provider_event_id = models.CharField(max_length=128, blank=True)
+    canonical_envelope_hash = models.CharField(max_length=64)
+    merchant_reference = models.CharField(max_length=128, blank=True)
+    provider_authority = models.CharField(max_length=128, blank=True)
+    provider_reference = models.CharField(max_length=128, blank=True)
+    operation_type_hint = models.CharField(max_length=16, blank=True)
+    provider_amount_hint = models.DecimalField(max_digits=20, decimal_places=0, null=True, blank=True)
+    provider_unit_hint = models.CharField(max_length=16, blank=True)
+    normalized_hint = models.CharField(max_length=64)
+    provider_occurred_at = models.DateTimeField(null=True, blank=True)
+    authentication_strength = models.CharField(max_length=32, choices=CallbackAuthenticationStrength.choices)
+    deduplication_identity = models.CharField(max_length=64, unique=True)
+    resolution_status = models.CharField(max_length=32, choices=ProviderEventResolutionStatus.choices)
+    quarantine_reason = models.CharField(max_length=64, blank=True)
+    correlation_id = models.UUIDField(db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                check=~Q(canonical_envelope_hash=""), name="fin_provider_event_hash_nonempty"
+            ),
+            models.CheckConstraint(
+                check=~Q(normalized_hint=""), name="fin_provider_event_hint_nonempty"
+            ),
+            models.CheckConstraint(
+                check=Q(resolution_status__in=ProviderEventResolutionStatus.values),
+                name="fin_provider_event_resolution_valid",
+            ),
+            models.CheckConstraint(
+                check=Q(provider_amount_hint__isnull=True) | Q(provider_amount_hint__gt=0),
+                name="fin_provider_event_amount_positive",
+            ),
+            models.CheckConstraint(
+                check=(
+                    Q(provider_amount_hint__isnull=True, provider_unit_hint="")
+                    | Q(provider_amount_hint__isnull=False, provider_unit_hint__in=MoneyUnit.values)
+                ),
+                name="fin_provider_event_money_together",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=("merchant_account_version", "provider_event_id"),
+                name="fin_provider_event_external",
+            ),
+            models.Index(fields=("merchant_reference", "created_at"), name="fin_provider_event_merchant"),
+        ]
+
+
+class ProviderEventReceipt(AppendOnlyModel):
+    provider_event = models.ForeignKey(
+        ProviderEvent,
+        on_delete=models.PROTECT,
+        related_name="receipt_links",
+    )
+    callback_receipt = models.OneToOneField(
+        CallbackReceipt,
+        on_delete=models.PROTECT,
+        related_name="event_link",
+    )
+    linkage_fingerprint = models.CharField(max_length=64, unique=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
+class VerificationWorkItem(BaseModel):
+    public_id = models.UUIDField(default=uuid4, unique=True, editable=False)
+    transaction = models.ForeignKey(
+        PaymentTransaction,
+        on_delete=models.PROTECT,
+        related_name="verification_work_items",
+    )
+    provider_event = models.ForeignKey(
+        ProviderEvent,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="verification_work_items",
+    )
+    work_type = models.CharField(max_length=40, choices=VerificationWorkType.choices)
+    deterministic_identity = models.CharField(max_length=200, unique=True)
+    status = models.CharField(
+        max_length=16,
+        choices=VerificationWorkStatus.choices,
+        default=VerificationWorkStatus.PENDING,
+        db_index=True,
+    )
+    attempt_count = models.PositiveIntegerField(default=0)
+    max_attempts = models.PositiveIntegerField(default=8)
+    next_attempt_at = models.DateTimeField(default=timezone.now, db_index=True)
+    claim_token = models.UUIDField(null=True, blank=True)
+    claimed_at = models.DateTimeField(null=True, blank=True)
+    claim_expires_at = models.DateTimeField(null=True, blank=True)
+    last_error_classification = models.CharField(max_length=64, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    correlation_id = models.UUIDField(db_index=True)
+    causation_id = models.UUIDField(null=True, blank=True, db_index=True)
+    version = models.PositiveIntegerField(default=1)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(check=Q(attempt_count__lte=F("max_attempts")), name="fin_work_attempts_bounded"),
+            models.CheckConstraint(check=Q(max_attempts__gt=0), name="fin_work_max_attempts_positive"),
+            models.CheckConstraint(
+                check=Q(work_type__in=VerificationWorkType.values), name="fin_work_type_valid"
+            ),
+            models.CheckConstraint(
+                check=Q(status__in=VerificationWorkStatus.values), name="fin_work_status_valid"
+            ),
+            models.CheckConstraint(
+                check=(
+                    Q(
+                        status=VerificationWorkStatus.CLAIMED,
+                        claim_token__isnull=False,
+                        claimed_at__isnull=False,
+                        claim_expires_at__isnull=False,
+                        completed_at__isnull=True,
+                    )
+                    | Q(
+                        status__in=(VerificationWorkStatus.PENDING, VerificationWorkStatus.WAITING),
+                        claim_token__isnull=True,
+                        claimed_at__isnull=True,
+                        claim_expires_at__isnull=True,
+                        completed_at__isnull=True,
+                    )
+                    | Q(
+                        status__in=(VerificationWorkStatus.COMPLETED, VerificationWorkStatus.CANCELED),
+                        claim_token__isnull=True,
+                        claimed_at__isnull=True,
+                        claim_expires_at__isnull=True,
+                        completed_at__isnull=False,
+                    )
+                ),
+                name="fin_work_lease_state_consistent",
+            ),
+        ]
+        indexes = [models.Index(fields=("status", "next_attempt_at"), name="fin_work_due")]
+
+
+class VerificationClaim(AppendOnlyModel):
+    work_item = models.ForeignKey(
+        VerificationWorkItem,
+        on_delete=models.PROTECT,
+        related_name="claims",
+    )
+    transaction = models.ForeignKey(
+        PaymentTransaction,
+        on_delete=models.PROTECT,
+        related_name="verification_claims",
+    )
+    sequence = models.PositiveIntegerField()
+    claim_token = models.UUIDField(unique=True, editable=False)
+    claimed_at = models.DateTimeField()
+    expires_at = models.DateTimeField()
+    request_fingerprint = models.CharField(max_length=64)
+    idempotency_key = models.UUIDField(unique=True, editable=False)
+    correlation_id = models.UUIDField(db_index=True)
+    causation_id = models.UUIDField(null=True, blank=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=("work_item", "sequence"), name="fin_ver_claim_sequence_uniq"),
+            models.CheckConstraint(check=Q(sequence__gt=0), name="fin_ver_claim_sequence_positive"),
+            models.CheckConstraint(check=Q(expires_at__gt=F("claimed_at")), name="fin_ver_claim_window_valid"),
+            models.CheckConstraint(check=~Q(request_fingerprint=""), name="fin_ver_claim_hash_nonempty"),
+        ]
+
+
+class Verification(AppendOnlyModel):
+    public_id = models.UUIDField(default=uuid4, unique=True, editable=False)
+    transaction = models.ForeignKey(
+        PaymentTransaction,
+        on_delete=models.PROTECT,
+        related_name="verifications",
+    )
+    claim = models.OneToOneField(
+        VerificationClaim,
+        on_delete=models.PROTECT,
+        related_name="verification",
+    )
+    work_item = models.ForeignKey(
+        VerificationWorkItem,
+        on_delete=models.PROTECT,
+        related_name="verifications",
+    )
+    provider_event = models.ForeignKey(
+        ProviderEvent,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="verifications",
+    )
+    provider = models.ForeignKey(ProviderDefinition, on_delete=models.PROTECT, related_name="verifications")
+    capability_version = models.ForeignKey(
+        ProviderCapabilityVersion,
+        on_delete=models.PROTECT,
+        related_name="verifications",
+    )
+    merchant_account_version = models.ForeignKey(
+        MerchantAccountVersion,
+        on_delete=models.PROTECT,
+        related_name="verifications",
+    )
+    sequence = models.PositiveIntegerField()
+    trigger_source = models.CharField(max_length=32, choices=VerificationTriggerSource.choices)
+    adapter_contract_version = models.CharField(max_length=32)
+    merchant_reference = models.CharField(max_length=128)
+    provider_authority = models.CharField(max_length=128, blank=True)
+    provider_reference = models.CharField(max_length=128, blank=True)
+    operation_type = models.CharField(max_length=16, choices=PaymentTransactionOperation.choices)
+    requested_provider_amount = models.DecimalField(max_digits=20, decimal_places=0)
+    requested_provider_unit = models.CharField(max_length=16, choices=MoneyUnit.choices)
+    observed_provider_amount = models.DecimalField(max_digits=20, decimal_places=0, null=True, blank=True)
+    observed_provider_unit = models.CharField(max_length=16, blank=True)
+    canonical_allocation_amount = models.DecimalField(max_digits=20, decimal_places=0)
+    canonical_currency = models.CharField(max_length=3, default=CANONICAL_CURRENCY)
+    normalized_outcome = models.CharField(max_length=40, choices=VerificationOutcome.choices)
+    normalized_financial_effect = models.CharField(
+        max_length=16,
+        choices=VerificationFinancialEffect.choices,
+    )
+    finality = models.CharField(max_length=16, choices=VerificationFinality.choices)
+    provider_occurred_at = models.DateTimeField(null=True, blank=True)
+    transport_classification = models.CharField(
+        max_length=24,
+        choices=VerificationTransportClassification.choices,
+    )
+    evidence_hash = models.CharField(max_length=64)
+    request_evidence_reference = models.CharField(max_length=128, blank=True)
+    response_evidence_reference = models.CharField(max_length=128, blank=True)
+    correlation_id = models.UUIDField(db_index=True)
+    causation_id = models.UUIDField(null=True, blank=True, db_index=True)
+    verified_at = models.DateTimeField(default=timezone.now, db_index=True)
+    application_state = models.CharField(max_length=32, choices=VerificationApplicationState.choices)
+    error_classification = models.CharField(max_length=64, blank=True)
+    retryable = models.BooleanField(default=False)
+    result_idempotency_key = models.UUIDField(unique=True, editable=False)
+    result_fingerprint = models.CharField(max_length=64)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=("transaction", "sequence"), name="fin_ver_tx_sequence_uniq"),
+            models.CheckConstraint(check=Q(sequence__gt=0), name="fin_ver_sequence_positive"),
+            models.CheckConstraint(check=Q(requested_provider_amount__gt=0), name="fin_ver_requested_positive"),
+            models.CheckConstraint(check=Q(canonical_allocation_amount__gt=0), name="fin_ver_canonical_positive"),
+            models.CheckConstraint(check=Q(canonical_currency=CANONICAL_CURRENCY), name="fin_ver_currency_irr"),
+            models.CheckConstraint(
+                check=(
+                    Q(observed_provider_amount__isnull=True, observed_provider_unit="")
+                    | Q(observed_provider_amount__gt=0, observed_provider_unit__in=MoneyUnit.values)
+                ),
+                name="fin_ver_observed_money_together",
+            ),
+            models.CheckConstraint(
+                check=(
+                    Q(
+                        normalized_outcome=VerificationOutcome.CONFIRMED_SUCCESS,
+                        normalized_financial_effect=VerificationFinancialEffect.PAID,
+                        finality=VerificationFinality.FINAL,
+                        application_state=VerificationApplicationState.APPLIED_BLOCKING_SUCCESS,
+                        observed_provider_amount__isnull=False,
+                    )
+                    & ~Q(provider_reference="")
+                    | ~Q(normalized_outcome=VerificationOutcome.CONFIRMED_SUCCESS)
+                ),
+                name="fin_ver_success_evidence_complete",
+            ),
+            models.CheckConstraint(check=~Q(evidence_hash=""), name="fin_ver_evidence_hash_nonempty"),
+            models.CheckConstraint(check=~Q(result_fingerprint=""), name="fin_ver_result_hash_nonempty"),
+        ]
+        indexes = [
+            models.Index(fields=("transaction", "normalized_outcome"), name="fin_ver_tx_outcome"),
+            models.Index(fields=("application_state", "verified_at"), name="fin_ver_application"),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.transaction_id:
+            transaction_obj = self.transaction
+            if self.provider_id != transaction_obj.capability_version.provider_id:
+                raise ValidationError({"provider": "Verification provider must match the Transaction."})
+            if self.capability_version_id != transaction_obj.capability_version_id:
+                raise ValidationError({"capability_version": "Verification capability must match the Transaction."})
+            if self.merchant_account_version_id != transaction_obj.merchant_account_version_id:
+                raise ValidationError({"merchant_account_version": "Verification account must match the Transaction."})
+            if self.merchant_reference != transaction_obj.merchant_reference:
+                raise ValidationError({"merchant_reference": "Verification merchant reference must match."})
+
+
+class ProviderReferenceAllocation(AppendOnlyModel):
+    merchant_account_version = models.ForeignKey(
+        MerchantAccountVersion,
+        on_delete=models.PROTECT,
+        related_name="provider_reference_allocations",
+    )
+    transaction = models.OneToOneField(
+        PaymentTransaction,
+        on_delete=models.PROTECT,
+        related_name="provider_reference_allocation",
+    )
+    verification = models.ForeignKey(
+        Verification,
+        on_delete=models.PROTECT,
+        related_name="provider_reference_allocations",
+    )
+    provider_reference = models.CharField(max_length=128)
+    allocation_fingerprint = models.CharField(max_length=64, unique=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("merchant_account_version", "provider_reference"),
+                name="fin_provider_reference_account_uniq",
+            ),
+            models.CheckConstraint(check=~Q(provider_reference=""), name="fin_provider_reference_nonempty"),
         ]
 
 

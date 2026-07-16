@@ -28,6 +28,8 @@ from cheatgame.financial_core.models import (
     ReviewCase,
     ReviewCaseReason,
     ReviewCaseSeverity,
+    Verification,
+    VerificationApplicationState,
 )
 from cheatgame.financial_core.services.adapters import ProviderOperationEnvelope
 from cheatgame.financial_core.services.events import append_financial_event
@@ -261,6 +263,15 @@ def create_or_replay_payment_attempt(
             for attempt in attempts
         ):
             raise CollectionBlocked("A live, successful, unknown, or review Attempt blocks collection.")
+        if Verification.objects.filter(
+            transaction__attempt__payment=payment,
+            application_state__in=(
+                VerificationApplicationState.UNAPPLIED,
+                VerificationApplicationState.APPLIED_BLOCKING_SUCCESS,
+                VerificationApplicationState.REVIEW_REQUIRED,
+            ),
+        ).exists():
+            raise CollectionBlocked("Unapplied, successful, or review Verification evidence blocks collection.")
         blockers = _lock_review_blockers(payment)
         if blockers:
             raise CollectionBlocked("An unresolved ReviewCase blocks collection.")

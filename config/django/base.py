@@ -196,6 +196,10 @@ REST_FRAMEWORK = {
         'checkout_write': env('DRF_THROTTLE_CHECKOUT_WRITE', default='60/min'),
         'payment_write': env('DRF_THROTTLE_PAYMENT_WRITE', default='60/min'),
         'review_submit': env('DRF_THROTTLE_REVIEW_SUBMIT', default='10/min'),
+        # C2B1's callback view is intentionally not URL-wired. Keep the fixed
+        # boundary configured so direct validation cannot accidentally run
+        # without a conservative abuse-control policy.
+        'financial_callback': env('DRF_THROTTLE_FINANCIAL_CALLBACK', default='120/min'),
     },
 }
 
