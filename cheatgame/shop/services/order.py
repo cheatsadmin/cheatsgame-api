@@ -227,6 +227,12 @@ def submit_order(*, user: BaseUser, total_price: int, product: List[CartItem], g
                  cart_items: QuerySet[CartItem]):
     lock_and_assert_user_cart_mutable(user=user)
     cart_items = list(cart_items)
+    from cheatgame.product.models import ProductCommerceAuthority
+    authorities = {item.commerce_authority for item in cart_items}
+    if len(authorities) > 1:
+        raise StockUnavailableError("MIXED_COMMERCE_AUTHORITY_NOT_SUPPORTED")
+    if authorities and authorities != {ProductCommerceAuthority.STANDARD_COMMERCE}:
+        raise StockUnavailableError("DIGITAL_CART_REQUIRES_DIGITAL_CHECKOUT")
     product = list(product)
     game = list(game)
     validate_cart_stock(cart_items=cart_items, lock=True)

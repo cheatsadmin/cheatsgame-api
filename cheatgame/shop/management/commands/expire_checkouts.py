@@ -12,6 +12,7 @@ from cheatgame.shop.models import (
     StockReservation,
     StockReservationState,
 )
+from cheatgame.product.models import ProductCommerceAuthority
 from cheatgame.shop.services.commerce_foundation import append_commerce_event
 
 
@@ -67,16 +68,62 @@ class Command(BaseCommand):
                 if checkout.payment_transactions.filter(status__in=PROTECTED_PAYMENT_STATUSES).exists():
                     continue
 
+                line_authorities = set(checkout.lines.values_list("commerce_authority", flat=True))
+                if len(line_authorities) > 1:
+                    continue
+                is_digital = line_authorities == {ProductCommerceAuthority.DIGITAL_PRODUCTS}
+                if is_digital:
+                    from cheatgame.digital_products.models import (
+                        DigitalInventoryReservation,
+                        DigitalInventoryReservationState,
+                    )
+
+                    if (
+                        checkout.lines.filter(digital_snapshot__isnull=True).exists()
+                        or DigitalInventoryReservation.objects.filter(checkout=checkout).count()
+                        != checkout.lines.count()
+                        or StockReservation.objects.filter(checkout=checkout).exists()
+                        or DigitalInventoryReservation.objects.filter(
+                            checkout=checkout,
+                            state=DigitalInventoryReservationState.HELD_FOR_REVIEW,
+                        ).exists()
+                    ):
+                        continue
+                elif line_authorities in (set(), {ProductCommerceAuthority.STANDARD_COMMERCE}):
+                    if (
+                        checkout.lines.filter(digital_snapshot__isnull=False).exists()
+                        or checkout.digital_inventory_reservations.exists()
+                    ):
+                        continue
+                else:
+                    continue
+
                 previous_status = checkout.status
                 checkout.status = CheckoutStatus.EXPIRED
                 checkout.expired_at = now
                 checkout.version += 1
                 checkout.save(update_fields=["status", "expired_at", "version", "updated_at"])
 
-                StockReservation.objects.filter(
-                    checkout=checkout,
-                    state=StockReservationState.ACTIVE,
-                ).update(state=StockReservationState.RELEASED, updated_at=now)
+                if is_digital:
+                    DigitalInventoryReservation.objects.select_for_update().filter(
+                        checkout=checkout,
+                        state=DigitalInventoryReservationState.ACTIVE,
+                    ).update(
+                        state=DigitalInventoryReservationState.EXPIRED,
+                        state_changed_at=now,
+                        resolution_reason="checkout_expired",
+                        updated_at=now,
+                    )
+                    append_commerce_event(
+                        checkout=checkout,
+                        event_type=CommerceEventType.STOCK_RESERVATION_RELEASED,
+                        metadata={"reason_code": "checkout_expired"},
+                    )
+                else:
+                    StockReservation.objects.filter(
+                        checkout=checkout,
+                        state=StockReservationState.ACTIVE,
+                    ).update(state=StockReservationState.RELEASED, updated_at=now)
 
                 append_commerce_event(
                     checkout=checkout,

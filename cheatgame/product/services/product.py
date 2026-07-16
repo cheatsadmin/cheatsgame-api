@@ -84,17 +84,16 @@ def delete_product(*, product_id: int) -> None:
             "این محصول به سفارش‌ها متصل است و قابل حذف نیست؛ آن را مخفی کنید."
         )
 
-    if settings.COMMERCE_CHECKOUT_V2_ENABLED:
-        locked_carts = list(
-            Cart.objects.select_for_update().filter(
-                cartitem__product=product,
-                state=CartState.LOCKED,
-            )
+    locked_carts = list(
+        Cart.objects.select_for_update().filter(
+            cartitem__product=product,
+            state=CartState.LOCKED,
         )
-        if locked_carts:
-            raise ProductDeleteProtectedError(
-                "این محصول در یک فرایند خرید فعال است؛ آن را مخفی کنید."
-            )
+    )
+    if locked_carts:
+        raise ProductDeleteProtectedError(
+            "این محصول در یک فرایند خرید فعال است؛ آن را مخفی کنید."
+        )
 
     CartItem.objects.filter(product=product).delete()
     try:

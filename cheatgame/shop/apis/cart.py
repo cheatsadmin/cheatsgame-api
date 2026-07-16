@@ -9,7 +9,7 @@ from cheatgame.api.mixins import ApiAuthMixin
 from cheatgame.api.utils import inline_serializer
 from cheatgame.common.utils import reformat_url
 from cheatgame.product.apis.product import ProductDetailProductSerializer
-from cheatgame.product.models import Attachment, Product, ProductType
+from cheatgame.product.models import Attachment, Product, ProductCommerceAuthority, ProductType
 from cheatgame.product.permissions import CustomerPermission, CartItemIsOwnerCustomer, AdminOrManagerPermission
 from cheatgame.product.selectors.product import suggestions_product
 from cheatgame.shop.models import (
@@ -29,7 +29,7 @@ from cheatgame.shop.selectors.cart import cart_item_list_user, cart_item_attachm
 from cheatgame.shop.selectors.discount import validate_discount_code
 from cheatgame.shop.services.cart import CartMutationLocked, check_product_limit, check_product_avaliablity, check_attachment, \
     check_cart_item_exists, add_to_cart, update_cart_item, delete_cart_item, check_attachment_order, \
-    validate_product_attachments
+    validate_product_attachments, CartCommerceAuthorityConflict
 from cheatgame.shop.services.delivery_schedule import DeliveryDataAlreadyUsedError, DeliverySlotFullError
 from cheatgame.shop.services.order import StockUnavailableError, order_item_payable_total, submit_order, update_order
 from cheatgame.users.models import Address, BaseUser
@@ -103,6 +103,11 @@ class AddToCart(ApiAuthMixin, APIView):
         serializer.is_valid(raise_exception=True)
         try:
             product = serializer.validated_data.get("product")
+            if product.commerce_authority != ProductCommerceAuthority.STANDARD_COMMERCE:
+                return Response(
+                    {"code": "DIGITAL_CART_REQUIRES_DIGITAL_SERVICE", "message": "این محصول از مسیر دیجیتال انتخاب می‌شود."},
+                    status=status.HTTP_409_CONFLICT,
+                )
             attachments = serializer.validated_data.get("attachment")
             attachments_are_valid, attachment_error = validate_product_attachments(
                 product=product,
@@ -127,6 +132,8 @@ class AddToCart(ApiAuthMixin, APIView):
             return Response(self.AddToCartOutPutSerializer(cart_item).data, status=status.HTTP_200_OK)
         except CartMutationLocked as error:
             return cart_locked_response(error.cart)
+        except CartCommerceAuthorityConflict as error:
+            return Response({"code": error.code, "message": str(error)}, status=status.HTTP_409_CONFLICT)
         except Exception as error:
             return Response({"error": "محصول به سبد اضافه نشد"}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -156,6 +163,11 @@ class CartItemDetail(ApiAuthMixin, APIView):
                 return Response({"error": "محصولی با این مشخصات در سبد خرید شما یافت نشد."},
                                 status=status.HTTP_400_BAD_REQUEST)
             self.check_object_permissions(request, cart_item)
+            if cart_item.commerce_authority != ProductCommerceAuthority.STANDARD_COMMERCE:
+                return Response(
+                    {"code": "DIGITAL_CART_REQUIRES_DIGITAL_SERVICE", "message": "این قلم از مسیر دیجیتال مدیریت می‌شود."},
+                    status=status.HTTP_409_CONFLICT,
+                )
             if not check_product_limit(product=cart_item.product,
                                        quantity=serializer.validated_data.get("quantity")):
                 return Response({"error": "تعداد بیش از حد مجاز می باشد."}, status=status.HTTP_400_BAD_REQUEST)
@@ -168,6 +180,8 @@ class CartItemDetail(ApiAuthMixin, APIView):
             return Response(self.CartItemDetailOutPutSerializer(cart_item).data, status=status.HTTP_200_OK)
         except CartMutationLocked as error:
             return cart_locked_response(error.cart)
+        except CartCommerceAuthorityConflict as error:
+            return Response({"code": error.code, "message": str(error)}, status=status.HTTP_409_CONFLICT)
         except Exception as error:
             return Response({"error": "خطایی رخ داده است"}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -179,10 +193,17 @@ class CartItemDetail(ApiAuthMixin, APIView):
                 return Response({"error": "محصولی با این مشخصات در سبد خرید شما یافت نشد."},
                                 status=status.HTTP_400_BAD_REQUEST)
             self.check_object_permissions(request, cart_item)
+            if cart_item.commerce_authority != ProductCommerceAuthority.STANDARD_COMMERCE:
+                return Response(
+                    {"code": "DIGITAL_CART_REQUIRES_DIGITAL_SERVICE", "message": "این قلم از مسیر دیجیتال مدیریت می‌شود."},
+                    status=status.HTTP_409_CONFLICT,
+                )
             delete_cart_item(cart_item_id=cart_item.id)
             return Response({"message": "محصول از سبد حذف شد"}, status=status.HTTP_200_OK)
         except CartMutationLocked as error:
             return cart_locked_response(error.cart)
+        except CartCommerceAuthorityConflict as error:
+            return Response({"code": error.code, "message": str(error)}, status=status.HTTP_409_CONFLICT)
         except Exception as error:
             return Response({"error": "مشکلی پیش آمد"}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -231,11 +252,22 @@ class SubmitOrderApi(ApiAuthMixin, APIView):
         game = []
         cart_item_list = cart_item_list_user(user=request.user)
         cart = Cart.objects.filter(user=request.user).select_related("active_checkout").first()
-        if settings.COMMERCE_CHECKOUT_V2_ENABLED and cart is not None and cart.state == "locked":
+        if cart is not None and cart.state == "locked":
             return cart_locked_response(cart)
         type(cart_item_list)
         if len(cart_item_list) <= 0:
             return Response({"error": "کاربر سبد محصولات شما خالی است."}, status=status.HTTP_400_BAD_REQUEST)
+        authorities = {item.commerce_authority for item in cart_item_list}
+        if len(authorities) > 1:
+            return Response(
+                {"code": "MIXED_COMMERCE_AUTHORITY_NOT_SUPPORTED", "message": "ترکیب سبد استاندارد و دیجیتال پشتیبانی نمی‌شود."},
+                status=status.HTTP_409_CONFLICT,
+            )
+        if authorities != {ProductCommerceAuthority.STANDARD_COMMERCE}:
+            return Response(
+                {"code": "DIGITAL_CART_REQUIRES_DIGITAL_CHECKOUT", "message": "این سبد باید از مسیر خرید دیجیتال ادامه یابد."},
+                status=status.HTTP_409_CONFLICT,
+            )
         for cart_item in cart_item_list:
             if cart_item.product.product_type == ProductType.GAME or cart_item.product.product_type == ProductType.PACKAGE:
                 game.append(cart_item)

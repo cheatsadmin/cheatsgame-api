@@ -2,9 +2,13 @@ from _decimal import Decimal
 from typing import List
 
 from django.db import transaction
-from django.conf import settings
-
-from cheatgame.product.models import Product, Attachment, ProductType, AttachmentType
+from cheatgame.product.models import (
+    Attachment,
+    AttachmentType,
+    Product,
+    ProductCommerceAuthority,
+    ProductType,
+)
 from cheatgame.shop.models import Cart, CartItemAttachment, CartItem, OrderItemAttachment, OrderItem
 from cheatgame.shop.services.pricing import product_line_payable_total, selected_attachment_unit_total
 from cheatgame.users.models import BaseUser
@@ -16,15 +20,17 @@ class CartMutationLocked(Exception):
         super().__init__("Cart is locked by an active checkout.")
 
 
+class CartCommerceAuthorityConflict(Exception):
+    code = "MIXED_COMMERCE_AUTHORITY_NOT_SUPPORTED"
+
+
 def assert_cart_mutable(*, cart):
-    if settings.COMMERCE_CHECKOUT_V2_ENABLED and cart.state == "locked":
+    if cart.state == "locked" or cart.active_checkout_id is not None:
         raise CartMutationLocked(cart)
 
 
 @transaction.atomic
 def lock_and_assert_user_cart_mutable(*, user):
-    if not settings.COMMERCE_CHECKOUT_V2_ENABLED:
-        return Cart.objects.filter(user=user).first()
     cart = Cart.objects.select_for_update().filter(user=user).first()
     if cart is not None:
         assert_cart_mutable(cart=cart)
@@ -134,9 +140,14 @@ def check_cart_item_exists(*, product: Product, user: BaseUser) -> bool:
 @transaction.atomic
 def add_to_cart(*, attachment: List[Attachment], quantity: int, product: Product, user: BaseUser) -> CartItem:
     cart = get_cart_or_create(user=user)
-    if settings.COMMERCE_CHECKOUT_V2_ENABLED:
-        cart = Cart.objects.select_for_update().get(id=cart.id)
-        assert_cart_mutable(cart=cart)
+    cart = Cart.objects.select_for_update().get(id=cart.id)
+    assert_cart_mutable(cart=cart)
+    if product.commerce_authority != ProductCommerceAuthority.STANDARD_COMMERCE:
+        raise CartCommerceAuthorityConflict("Digital Products require the Digital Cart service.")
+    if CartItem.objects.filter(cart=cart).exclude(
+        commerce_authority=ProductCommerceAuthority.STANDARD_COMMERCE
+    ).exists():
+        raise CartCommerceAuthorityConflict("Mixed Commerce authority is not supported.")
     cart_item = CartItem.objects.create(cart=cart, price=0, product=product)
     total_attachment_price = calculate_attchment_price_cart(attachments=attachment, cart_item=cart_item,
                                                             product=product)
@@ -159,11 +170,12 @@ def cartitem_attachment_total_price(*, cart_item: CartItem) -> Decimal:
 
 @transaction.atomic
 def update_cart_item(*, cart_item: CartItem, quantity: int = None):
-    if settings.COMMERCE_CHECKOUT_V2_ENABLED:
-        cart_item_identity = CartItem.objects.filter(id=cart_item.id).values("cart_id").get()
-        locked_cart = Cart.objects.select_for_update().get(id=cart_item_identity["cart_id"])
-        assert_cart_mutable(cart=locked_cart)
-        cart_item = CartItem.objects.select_for_update().select_related("cart", "product").get(id=cart_item.id)
+    cart_item_identity = CartItem.objects.filter(id=cart_item.id).values("cart_id").get()
+    locked_cart = Cart.objects.select_for_update().get(id=cart_item_identity["cart_id"])
+    assert_cart_mutable(cart=locked_cart)
+    cart_item = CartItem.objects.select_for_update().select_related("cart", "product").get(id=cart_item.id)
+    if cart_item.commerce_authority != ProductCommerceAuthority.STANDARD_COMMERCE:
+        raise CartCommerceAuthorityConflict("Digital CartItems cannot use Standard quantity mutation.")
     attachment_price = cartitem_attachment_total_price(cart_item=cart_item)
     cart_item.price = product_line_payable_total(
         product=cart_item.product,
@@ -177,9 +189,10 @@ def update_cart_item(*, cart_item: CartItem, quantity: int = None):
 
 @transaction.atomic
 def delete_cart_item(*, cart_item_id: int) -> None:
-    if settings.COMMERCE_CHECKOUT_V2_ENABLED:
-        cart_item_identity = CartItem.objects.filter(id=cart_item_id).values("cart_id").get()
-        locked_cart = Cart.objects.select_for_update().get(id=cart_item_identity["cart_id"])
-        assert_cart_mutable(cart=locked_cart)
-    cart_item = CartItem.objects.select_related("cart").get(id=cart_item_id)
+    cart_item_identity = CartItem.objects.filter(id=cart_item_id).values("cart_id").get()
+    locked_cart = Cart.objects.select_for_update().get(id=cart_item_identity["cart_id"])
+    assert_cart_mutable(cart=locked_cart)
+    cart_item = CartItem.objects.select_for_update().get(id=cart_item_id, cart=locked_cart)
+    if cart_item.commerce_authority != ProductCommerceAuthority.STANDARD_COMMERCE:
+        raise CartCommerceAuthorityConflict("Digital CartItems require the Digital Cart service.")
     cart_item.delete()

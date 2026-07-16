@@ -3,8 +3,15 @@ from uuid import UUID
 
 from django.core.exceptions import PermissionDenied
 from django.db import IntegrityError, transaction
+from django.db.models import Sum
 
-from cheatgame.digital_products.models import InventoryPool, PoolStockAdjustment, PoolStockAdjustmentReason
+from cheatgame.digital_products.models import (
+    DigitalInventoryReservation,
+    DigitalInventoryReservationState,
+    InventoryPool,
+    PoolStockAdjustment,
+    PoolStockAdjustmentReason,
+)
 from cheatgame.digital_products.services import (
     DigitalProductsValidationError,
     InsufficientStockError,
@@ -54,12 +61,29 @@ def _resolve_existing_adjustment(*, adjustment, pool_id, delta, reason, actor_id
     raise StockIdempotencyConflictError("Stock idempotency key was reused with different command semantics.")
 
 
+EFFECTIVE_RESERVATION_STATES = (
+    DigitalInventoryReservationState.ACTIVE,
+    DigitalInventoryReservationState.HELD_FOR_REVIEW,
+)
+
+
+def get_effective_held_quantity(*, pool_id: int) -> int:
+    return (
+        DigitalInventoryReservation.objects.filter(
+            inventory_pool_id=pool_id,
+            state__in=EFFECTIVE_RESERVATION_STATES,
+        ).aggregate(total=Sum("quantity"))["total"]
+        or 0
+    )
+
+
 def get_available_quantity(*, pool_id: int) -> int:
-    """In Batch A, available equals total because reservations do not exist yet."""
+    """Available Digital stock is Pool total minus effective reservations."""
     try:
-        return InventoryPool.objects.values_list("sellable_quantity", flat=True).get(pk=pool_id)
+        total = InventoryPool.objects.values_list("sellable_quantity", flat=True).get(pk=pool_id)
     except InventoryPool.DoesNotExist as exc:
         raise DigitalProductsValidationError("Inventory Pool does not exist.") from exc
+    return max(total - get_effective_held_quantity(pool_id=pool_id), 0)
 
 
 def adjust_pool_stock(*, pool_id: int, delta, reason: str, actor, idempotency_key):
@@ -97,6 +121,11 @@ def adjust_pool_stock(*, pool_id: int, delta, reason: str, actor, idempotency_ke
             resulting_quantity = previous_quantity + normalized_delta
             if resulting_quantity < 0:
                 raise InsufficientStockError("Stock adjustment would make Pool quantity negative.")
+            held_quantity = get_effective_held_quantity(pool_id=pool.id)
+            if resulting_quantity < held_quantity:
+                raise InsufficientStockError(
+                    "Stock adjustment would reduce Pool quantity below active reservations."
+                )
             pool.sellable_quantity = resulting_quantity
             pool.save(update_fields=["sellable_quantity", "updated_at"])
             adjustment = PoolStockAdjustment.objects.create(
@@ -108,7 +137,7 @@ def adjust_pool_stock(*, pool_id: int, delta, reason: str, actor, idempotency_ke
                 actor=actor,
                 idempotency_key=normalized_key,
             )
-            return adjustment, resulting_quantity
+            return adjustment, resulting_quantity - held_quantity
     except IntegrityError:
         existing = PoolStockAdjustment.objects.filter(idempotency_key=normalized_key).first()
         if existing is None:

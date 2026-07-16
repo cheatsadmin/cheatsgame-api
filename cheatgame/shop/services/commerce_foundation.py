@@ -84,7 +84,7 @@ def _canonical_line(line):
         key=lambda item: (item["type"], item["id"]),
     )
     variation_id = line.get("variation_id")
-    return {
+    canonical = {
         "product_id": int(line["product_id"]),
         "variation_id": int(variation_id) if variation_id is not None else None,
         "quantity": int(line["quantity"]),
@@ -92,6 +92,19 @@ def _canonical_line(line):
         "unit_payable_price": _money_string(line["unit_payable_price"]),
         "attachments": attachments,
     }
+    if line.get("commerce_authority") is not None:
+        canonical["commerce_authority"] = str(line["commerce_authority"])
+    if line.get("digital_selection") is not None:
+        selection = line["digital_selection"]
+        canonical["digital_selection"] = {
+            "offer_id": int(selection["offer_id"]),
+            "delivered_version_id": int(selection["delivered_version_id"]),
+            "inventory_pool_id": int(selection["inventory_pool_id"]),
+            "customer_console": str(selection["customer_console"]),
+            "capacity": str(selection["capacity"]),
+            "fulfillment_method": str(selection["fulfillment_method"]),
+        }
+    return canonical
 
 
 def build_cart_fingerprint(*, lines, currency="IRT"):

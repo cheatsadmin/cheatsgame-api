@@ -4,7 +4,7 @@ from decimal import Decimal
 from django.db import transaction
 from django.utils import timezone
 
-from cheatgame.product.models import ProductStatus, ProductType
+from cheatgame.product.models import ProductCommerceAuthority, ProductStatus, ProductType
 from cheatgame.shop.models import (
     Cart,
     CartItem,
@@ -110,6 +110,18 @@ def _commercial_lines(cart_items):
     if not cart_items:
         raise CheckoutServiceError("CART_EMPTY", "سبد خرید شما خالی است.")
 
+    authorities = {item.commerce_authority for item in cart_items}
+    if len(authorities) > 1:
+        raise CheckoutServiceError(
+            "MIXED_COMMERCE_AUTHORITY_NOT_SUPPORTED",
+            "ترکیب محصولات استاندارد و دیجیتال در یک سبد پشتیبانی نمی‌شود.",
+        )
+    if authorities != {ProductCommerceAuthority.STANDARD_COMMERCE}:
+        raise CheckoutServiceError(
+            "DIGITAL_CART_REQUIRES_DIGITAL_CHECKOUT",
+            "این سبد باید از مسیر خرید محصولات دیجیتال ادامه یابد.",
+        )
+
     lines = []
     for item in cart_items:
         product = item.product
@@ -185,6 +197,7 @@ def _create_snapshots(checkout, lines):
             line_original_total=source["line_original_total"],
             line_payable_total=source["line_payable_total"],
             snapshot={"device_model": product.device_model or ""},
+            commerce_authority=ProductCommerceAuthority.STANDARD_COMMERCE,
         )
         for attachment in sorted(source["attachments"], key=lambda value: (value.attachment_type, value.id)):
             CheckoutLineAttachment.objects.create(
@@ -302,6 +315,15 @@ def _require_editable(checkout):
         raise CheckoutServiceError("CHECKOUT_NOT_EDITABLE", "این فرایند خرید دیگر قابل ویرایش نیست.")
 
 
+def _require_standard_checkout(checkout):
+    authorities = set(checkout.lines.values_list("commerce_authority", flat=True))
+    if authorities not in (set(), {ProductCommerceAuthority.STANDARD_COMMERCE}):
+        raise CheckoutServiceError(
+            "DIGITAL_CHECKOUT_STANDARD_MUTATION_NOT_SUPPORTED",
+            "این عملیات برای فرایند خرید دیجیتال قابل استفاده نیست.",
+        )
+
+
 def _touch(checkout):
     checkout.version += 1
     checkout.expires_at = calculate_checkout_expiry(maximum_expires_at=checkout.maximum_expires_at)
@@ -310,7 +332,8 @@ def _touch(checkout):
 
 @transaction.atomic
 def select_checkout_address(*, user, public_id, address_id):
-    checkout = get_owned_checkout(user=user, public_id=public_id, for_update=True)
+    checkout, _ = _lock_owned_checkout_and_cart(user=user, public_id=public_id)
+    _require_standard_checkout(checkout)
     _require_editable(checkout)
     address = Address.objects.filter(id=address_id, user=user).first()
     if address is None:
@@ -357,7 +380,8 @@ def select_checkout_address(*, user, public_id, address_id):
 
 @transaction.atomic
 def select_checkout_shipping(*, user, public_id, delivery_method_id):
-    checkout = get_owned_checkout(user=user, public_id=public_id, for_update=True)
+    checkout, _ = _lock_owned_checkout_and_cart(user=user, public_id=public_id)
+    _require_standard_checkout(checkout)
     _require_editable(checkout)
     snapshot = CheckoutShippingSnapshot.objects.select_for_update().filter(checkout=checkout).first()
     if snapshot is None or snapshot.address_id is None:
@@ -389,7 +413,8 @@ def select_checkout_shipping(*, user, public_id, delivery_method_id):
 
 @transaction.atomic
 def select_checkout_schedule(*, user, public_id, schedule_id):
-    checkout = get_owned_checkout(user=user, public_id=public_id, for_update=True)
+    checkout, _ = _lock_owned_checkout_and_cart(user=user, public_id=public_id)
+    _require_standard_checkout(checkout)
     _require_editable(checkout)
     snapshot = CheckoutShippingSnapshot.objects.select_for_update().filter(checkout=checkout).first()
     if snapshot is None or snapshot.delivery_method_id is None:
@@ -423,14 +448,58 @@ def cancel_checkout(*, user, public_id):
         raise CheckoutServiceError("CHECKOUT_NOT_CANCELABLE", "این فرایند خرید قابل لغو نیست.")
     if checkout.payment_transactions.filter(status__in=UNSAFE_PAYMENT_STATUSES).exists():
         raise CheckoutServiceError("CHECKOUT_NOT_CANCELABLE", "وضعیت پرداخت نیازمند بررسی است.")
+    line_authorities = set(checkout.lines.values_list("commerce_authority", flat=True))
+    if len(line_authorities) > 1:
+        raise CheckoutServiceError("CHECKOUT_AUTHORITY_INCOHERENT", "ساختار مرجع خرید ناسازگار است.")
+    is_digital = line_authorities == {ProductCommerceAuthority.DIGITAL_PRODUCTS}
+    if is_digital:
+        from cheatgame.digital_products.models import (
+            DigitalInventoryReservation,
+            DigitalInventoryReservationState,
+        )
+
+        line_count = checkout.lines.count()
+        if (
+            checkout.lines.filter(digital_snapshot__isnull=True).exists()
+            or DigitalInventoryReservation.objects.filter(checkout=checkout).count() != line_count
+            or StockReservation.objects.filter(checkout=checkout).exists()
+        ):
+            raise CheckoutServiceError("CHECKOUT_AUTHORITY_INCOHERENT", "ساختار مرجع خرید ناسازگار است.")
+        if DigitalInventoryReservation.objects.filter(
+            checkout=checkout, state=DigitalInventoryReservationState.HELD_FOR_REVIEW
+        ).exists():
+            raise CheckoutServiceError("CHECKOUT_NOT_CANCELABLE", "وضعیت موجودی نیازمند بررسی است.")
+    elif line_authorities not in (set(), {ProductCommerceAuthority.STANDARD_COMMERCE}):
+        raise CheckoutServiceError("CHECKOUT_AUTHORITY_INCOHERENT", "ساختار مرجع خرید ناسازگار است.")
+    elif (
+        checkout.lines.filter(digital_snapshot__isnull=False).exists()
+        or checkout.digital_inventory_reservations.exists()
+    ):
+        raise CheckoutServiceError("CHECKOUT_AUTHORITY_INCOHERENT", "ساختار مرجع خرید ناسازگار است.")
     now = timezone.now()
     checkout.status = CheckoutStatus.CANCELED
     checkout.canceled_at = now
     checkout.version += 1
     checkout.save(update_fields=["status", "canceled_at", "version", "updated_at"])
-    StockReservation.objects.filter(checkout=checkout, state=StockReservationState.ACTIVE).update(
-        state=StockReservationState.RELEASED, updated_at=now
-    )
+    if is_digital:
+        DigitalInventoryReservation.objects.select_for_update().filter(
+            checkout=checkout, state=DigitalInventoryReservationState.ACTIVE
+        ).update(
+            state=DigitalInventoryReservationState.RELEASED,
+            state_changed_at=now,
+            resolution_reason="checkout_canceled",
+            updated_at=now,
+        )
+        _event_once(
+            checkout=checkout,
+            event_type=CommerceEventType.STOCK_RESERVATION_RELEASED,
+            actor_id=user.id,
+            metadata={"reason_code": "checkout_canceled"},
+        )
+    else:
+        StockReservation.objects.filter(checkout=checkout, state=StockReservationState.ACTIVE).update(
+            state=StockReservationState.RELEASED, updated_at=now
+        )
     _event_once(checkout=checkout, event_type=CommerceEventType.CHECKOUT_CANCELED, actor_id=user.id)
     if cart is not None:
         if cart.active_checkout_id == checkout.id:

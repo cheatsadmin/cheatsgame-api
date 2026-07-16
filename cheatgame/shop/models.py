@@ -7,7 +7,7 @@ from django.db import models
 from django.db.models import Q
 
 from cheatgame.common.models import BaseModel
-from cheatgame.product.models import DeliveryOption
+from cheatgame.product.models import DeliveryOption, ProductCommerceAuthority
 
 
 class OrderStatus(IntEnum):
@@ -245,6 +245,36 @@ class CartItem(BaseModel):
     quantity = models.PositiveIntegerField(default=1)
     price = models.DecimalField(max_digits=16, decimal_places=0)
     cart = models.ForeignKey("Cart", on_delete=models.CASCADE)
+    commerce_authority = models.CharField(
+        max_length=30,
+        choices=ProductCommerceAuthority.choices,
+        default=ProductCommerceAuthority.STANDARD_COMMERCE,
+    )
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                check=Q(commerce_authority__in=ProductCommerceAuthority.values),
+                name="cart_item_authority_valid",
+            ),
+            models.CheckConstraint(
+                check=(
+                    ~Q(commerce_authority=ProductCommerceAuthority.DIGITAL_PRODUCTS)
+                    | Q(quantity=1)
+                ),
+                name="cart_item_digital_quantity_one",
+            ),
+        ]
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            original_authority = (
+                type(self).objects.filter(pk=self.pk).values_list("commerce_authority", flat=True).first()
+            )
+            if original_authority is not None and original_authority != self.commerce_authority:
+                raise ValidationError({"commerce_authority": "Cart item commerce authority is immutable."})
+        self.full_clean()
+        return super().save(*args, **kwargs)
 
 
 class CartItemAttachment(BaseModel):
@@ -407,6 +437,11 @@ class CheckoutLine(ImmutableSnapshotMixin, models.Model):
     line_original_total = models.DecimalField(max_digits=16, decimal_places=0)
     line_payable_total = models.DecimalField(max_digits=16, decimal_places=0)
     snapshot = models.JSONField(default=dict, blank=True)
+    commerce_authority = models.CharField(
+        max_length=30,
+        choices=ProductCommerceAuthority.choices,
+        default=ProductCommerceAuthority.STANDARD_COMMERCE,
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -417,6 +452,22 @@ class CheckoutLine(ImmutableSnapshotMixin, models.Model):
             models.CheckConstraint(check=Q(unit_payable_price__gte=0), name="checkout_line_payable_gte_zero"),
             models.CheckConstraint(check=Q(line_original_total__gte=0), name="checkout_line_total_orig_gte_zero"),
             models.CheckConstraint(check=Q(line_payable_total__gte=0), name="checkout_line_total_pay_gte_zero"),
+            models.CheckConstraint(
+                check=Q(commerce_authority__in=ProductCommerceAuthority.values),
+                name="checkout_line_authority_valid",
+            ),
+            models.CheckConstraint(
+                check=(
+                    ~Q(commerce_authority=ProductCommerceAuthority.DIGITAL_PRODUCTS)
+                    | Q(quantity=1)
+                ),
+                name="checkout_line_digital_quantity_one",
+            ),
+            models.UniqueConstraint(
+                fields=("checkout", "source_cart_item_id"),
+                condition=Q(source_cart_item_id__isnull=False),
+                name="uniq_checkout_source_cart_item",
+            ),
         ]
 
     def clean(self):
