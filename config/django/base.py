@@ -57,6 +57,7 @@ LOCAL_APPS = [
     "cheatgame.general.apps.GeneralConfig",
     "cheatgame.shop.apps.ShopConfig",
     "cheatgame.digital_products.apps.DigitalProductsConfig",
+    "cheatgame.financial_core.apps.FinancialCoreConfig",
     "cheatgame.issue.apps.IssueConfig",
 ]
 

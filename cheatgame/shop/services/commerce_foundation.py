@@ -265,7 +265,13 @@ def transition_to_manual_review(*, checkout_id, reason, message="", payment_tran
     if reason not in ManualReviewReason.values:
         raise ValidationError({"reason": "Unsupported manual-review reason."})
 
+    checkout_ref = Checkout.objects.only("cart_id").get(id=checkout_id)
+    cart = None
+    if checkout_ref.cart_id:
+        cart = Cart.objects.select_for_update().get(id=checkout_ref.cart_id)
     checkout = Checkout.objects.select_for_update().get(id=checkout_id)
+    if checkout.cart_id != checkout_ref.cart_id:
+        raise ValidationError("Checkout ownership changed while entering manual review.")
     previous_status = checkout.status
     checkout.status = CheckoutStatus.REQUIRES_MANUAL_REVIEW
     checkout.manual_review_reason = reason
@@ -298,8 +304,7 @@ def transition_to_manual_review(*, checkout_id, reason, message="", payment_tran
             ]
         )
 
-    if checkout.cart_id:
-        cart = Cart.objects.select_for_update().get(id=checkout.cart_id)
+    if cart is not None:
         if cart.active_checkout_id in (None, checkout.id):
             cart.state = CartState.LOCKED
             cart.lock_reason = CartLockReason.MANUAL_REVIEW

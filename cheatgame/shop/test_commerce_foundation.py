@@ -9,6 +9,7 @@ from django.core.exceptions import ValidationError
 from django.core.management import call_command
 from django.db import IntegrityError, close_old_connections, connection, transaction
 from django.test import TestCase, TransactionTestCase
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from cheatgame.product.models import Product, ProductType
@@ -218,12 +219,21 @@ class CommerceFoundationTests(TestCase):
             amount=1000,
             idempotency_key=f"manual:{uuid4()}",
         )
-        transition_to_manual_review(
-            checkout_id=checkout.id,
-            payment_transaction_id=payment.id,
-            reason=ManualReviewReason.STOCK_CONFLICT,
-            message="Safe internal reason",
+        with CaptureQueriesContext(connection) as queries:
+            transition_to_manual_review(
+                checkout_id=checkout.id,
+                payment_transaction_id=payment.id,
+                reason=ManualReviewReason.STOCK_CONFLICT,
+                message="Safe internal reason",
+            )
+        locking_sql = [query["sql"] for query in queries if "FOR UPDATE" in query["sql"]]
+        cart_lock = next(index for index, sql in enumerate(locking_sql) if 'FROM "shop_cart"' in sql)
+        checkout_lock = next(index for index, sql in enumerate(locking_sql) if 'FROM "shop_checkout"' in sql)
+        transaction_lock = next(
+            index for index, sql in enumerate(locking_sql) if 'FROM "shop_paymenttransaction"' in sql
         )
+        self.assertLess(cart_lock, checkout_lock)
+        self.assertLess(checkout_lock, transaction_lock)
         checkout.refresh_from_db()
         payment.refresh_from_db()
         self.assertEqual(checkout.status, CheckoutStatus.REQUIRES_MANUAL_REVIEW)
