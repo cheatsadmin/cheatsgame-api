@@ -121,7 +121,7 @@ def is_delivery_schedule_full(*, schedule: DeliverySchedule) -> bool:
 def reserve_delivery_data(*, delivery_data: DeliveryData) -> DeliveryData:
     schedule = DeliverySchedule.objects.select_for_update().get(id=delivery_data.schedule_id)
     delivery_data = (
-        DeliveryData.objects.select_for_update()
+        DeliveryData.objects.select_for_update(of=("self",))
         .select_related("schedule", "address", "type")
         .get(id=delivery_data.id)
     )
