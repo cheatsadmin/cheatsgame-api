@@ -6,6 +6,11 @@ DEBUG = env.bool("DEBUG", default=False)
 if DEBUG:
     raise ImproperlyConfigured("DEBUG must be False in production.")
 
+PAYMENT_GATEWAY_PROVIDER = env("PAYMENT_GATEWAY_PROVIDER", default=PAYMENT_GATEWAY_PROVIDER)
+if PAYMENT_GATEWAY_PROVIDER.strip().lower() == "fake":
+    raise ImproperlyConfigured("The fake payment provider is forbidden in production.")
+PAYMENT_FAKE_PROVIDER_ENABLED = False
+
 SECRET_KEY = env('SECRET_KEY')
 
 ALLOWED_HOSTS = env.list('ALLOWED_HOSTS')

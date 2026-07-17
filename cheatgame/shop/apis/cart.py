@@ -417,6 +417,14 @@ class OrderDetailUserApi(ApiAuthMixin, APIView):
         order = Order.objects.filter(id=id, user=request.user).first()
         if order is None:
             return Response({"error": "سفارشی با این مشخصات یافت نشد."}, status=status.HTTP_400_BAD_REQUEST)
+        if hasattr(order, "financial_payment"):
+            return Response(
+                {
+                    "code": "FINANCIAL_CORE_ORDER_IMMUTABLE",
+                    "error": "این سفارش پس از ثبت توسط فرایند مالی قابل ویرایش نیست.",
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
         if not order.is_game and delivery_data is not None:
             return Response(
                 {"error": "برای سفارش محصول زمان ارسال انتخاب نمی‌شود. فقط روش ارسال را انتخاب کنید."},

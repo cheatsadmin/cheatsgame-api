@@ -291,6 +291,11 @@ class ReviewCaseReason(models.TextChoices):
         "financial_invariant_violation",
         "FINANCIAL_INVARIANT_VIOLATION",
     )
+    COMMERCIAL_FINALIZATION_FAILED = (
+        "commercial_finalization_failed",
+        "COMMERCIAL_FINALIZATION_FAILED",
+    )
+    COMMERCIAL_JOURNAL_FAILED = "commercial_journal_failed", "COMMERCIAL_JOURNAL_FAILED"
 
 
 class IdempotencyStatus(models.TextChoices):
@@ -1749,6 +1754,180 @@ class CommercialFinalizationWorkItem(BaseModel):
 
     def delete(self, *args, **kwargs):
         raise ValidationError("Commercial-finalization work history cannot be deleted.")
+
+
+class CommercialAccountingPolicyVersion(BaseModel):
+    """Immutable account selection for one commercial-authority policy version."""
+
+    IMMUTABLE_FIELDS = (
+        "public_id",
+        "policy_key",
+        "version",
+        "commerce_authority",
+        "customer_unapplied_funds_account_id",
+        "merchandise_revenue_account_id",
+        "shipping_revenue_account_id",
+        "currency",
+    )
+
+    public_id = models.UUIDField(default=uuid4, unique=True, editable=False)
+    policy_key = models.CharField(max_length=128)
+    version = models.PositiveIntegerField()
+    commerce_authority = models.CharField(max_length=30)
+    customer_unapplied_funds_account = models.ForeignKey(
+        "FinancialAccount", on_delete=models.PROTECT, related_name="commercial_deferred_policies"
+    )
+    merchandise_revenue_account = models.ForeignKey(
+        "FinancialAccount", on_delete=models.PROTECT, related_name="commercial_merchandise_policies"
+    )
+    shipping_revenue_account = models.ForeignKey(
+        "FinancialAccount", on_delete=models.PROTECT, related_name="commercial_shipping_policies"
+    )
+    currency = models.CharField(max_length=3, default=CANONICAL_CURRENCY)
+    active_for_new_finalizations = models.BooleanField(default=False, db_index=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("policy_key", "version", "commerce_authority"),
+                name="fin_commercial_policy_version_uniq",
+            ),
+            models.UniqueConstraint(
+                fields=("commerce_authority",),
+                condition=Q(active_for_new_finalizations=True),
+                name="fin_one_active_commercial_policy",
+            ),
+            models.CheckConstraint(check=Q(version__gt=0), name="fin_commercial_policy_version_gt_zero"),
+            models.CheckConstraint(check=~Q(policy_key=""), name="fin_commercial_policy_key_nonempty"),
+            models.CheckConstraint(check=Q(currency=CANONICAL_CURRENCY), name="fin_commercial_policy_irr"),
+            models.CheckConstraint(
+                check=Q(commerce_authority__in=("standard_commerce", "digital_products")),
+                name="fin_commercial_policy_authority_valid",
+            ),
+            models.CheckConstraint(
+                check=(
+                    ~Q(customer_unapplied_funds_account=F("merchandise_revenue_account"))
+                    & ~Q(customer_unapplied_funds_account=F("shipping_revenue_account"))
+                    & ~Q(merchandise_revenue_account=F("shipping_revenue_account"))
+                ),
+                name="fin_commercial_policy_accounts_distinct",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        for field in (
+            "customer_unapplied_funds_account",
+            "merchandise_revenue_account",
+            "shipping_revenue_account",
+        ):
+            account = getattr(self, field, None)
+            if account and account.currency != CANONICAL_CURRENCY:
+                raise ValidationError({field: "Commercial policy accounts must use IRR."})
+        if self.customer_unapplied_funds_account_id:
+            if self.customer_unapplied_funds_account.account_type != FinancialAccountType.LIABILITY:
+                raise ValidationError({"customer_unapplied_funds_account": "Deferred funds must be a liability."})
+        for field in ("merchandise_revenue_account", "shipping_revenue_account"):
+            account = getattr(self, field, None)
+            if account and account.account_type != FinancialAccountType.REVENUE:
+                raise ValidationError({field: "Commercial destination accounts must be revenue accounts."})
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            original = type(self).objects.filter(pk=self.pk).values(*self.IMMUTABLE_FIELDS).first()
+            if original and any(original[field] != getattr(self, field) for field in self.IMMUTABLE_FIELDS):
+                raise ValidationError("Commercial accounting policy identity is immutable.")
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("Commercial accounting policy history cannot be deleted.")
+
+
+class CommercialFinalization(AppendOnlyModel):
+    public_id = models.UUIDField(default=uuid4, unique=True, editable=False)
+    payment = models.OneToOneField(Payment, on_delete=models.PROTECT, related_name="commercial_finalization")
+    order = models.OneToOneField("shop.Order", on_delete=models.PROTECT, related_name="commercial_finalization")
+    accounting_policy_version = models.ForeignKey(
+        CommercialAccountingPolicyVersion, on_delete=models.PROTECT, related_name="finalizations"
+    )
+    journal_entry = models.OneToOneField(
+        "JournalEntry", on_delete=models.PROTECT, related_name="commercial_finalization"
+    )
+    amount = models.DecimalField(max_digits=20, decimal_places=0)
+    merchandise_amount = models.DecimalField(max_digits=20, decimal_places=0)
+    shipping_amount = models.DecimalField(max_digits=20, decimal_places=0)
+    currency = models.CharField(max_length=3, default=CANONICAL_CURRENCY)
+    commerce_authority = models.CharField(max_length=30)
+    finalizer_version = models.CharField(max_length=64)
+    application_idempotency_key = models.UUIDField(unique=True, editable=False)
+    application_fingerprint = models.CharField(max_length=64)
+    correlation_id = models.UUIDField(db_index=True)
+    causation_id = models.UUIDField(null=True, blank=True, db_index=True)
+    finalized_at = models.DateTimeField(default=timezone.now, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(check=Q(amount__gt=0), name="fin_commercial_final_amount_gt_zero"),
+            models.CheckConstraint(check=Q(merchandise_amount__gte=0), name="fin_commercial_merch_gte_zero"),
+            models.CheckConstraint(check=Q(shipping_amount__gte=0), name="fin_commercial_shipping_gte_zero"),
+            models.CheckConstraint(
+                check=Q(amount=F("merchandise_amount") + F("shipping_amount")),
+                name="fin_commercial_amount_components",
+            ),
+            models.CheckConstraint(check=Q(currency=CANONICAL_CURRENCY), name="fin_commercial_currency_irr"),
+            models.CheckConstraint(check=~Q(finalizer_version=""), name="fin_commercial_finalizer_nonempty"),
+            models.CheckConstraint(check=~Q(application_fingerprint=""), name="fin_commercial_hash_nonempty"),
+        ]
+
+
+class StandardFulfillmentObligation(AppendOnlyModel):
+    public_id = models.UUIDField(default=uuid4, unique=True, editable=False)
+    finalization = models.ForeignKey(
+        CommercialFinalization, on_delete=models.PROTECT, related_name="standard_fulfillment_obligations"
+    )
+    order = models.ForeignKey("shop.Order", on_delete=models.PROTECT, related_name="standard_fulfillment_obligations")
+    order_item = models.OneToOneField(
+        "shop.OrderItem", on_delete=models.PROTECT, related_name="standard_fulfillment_obligation"
+    )
+    reservation = models.ForeignKey(
+        "shop.StockReservation", on_delete=models.PROTECT, related_name="fulfillment_obligations"
+    )
+    product = models.ForeignKey("product.Product", on_delete=models.PROTECT, related_name="standard_fulfillment_obligations")
+    quantity = models.PositiveIntegerField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.CheckConstraint(check=Q(quantity__gt=0), name="fin_standard_fulfillment_qty_gt_zero")]
+
+
+class DigitalFulfillmentObligation(AppendOnlyModel):
+    public_id = models.UUIDField(default=uuid4, unique=True, editable=False)
+    finalization = models.ForeignKey(
+        CommercialFinalization, on_delete=models.PROTECT, related_name="digital_fulfillment_obligations"
+    )
+    order = models.ForeignKey("shop.Order", on_delete=models.PROTECT, related_name="digital_fulfillment_obligations")
+    order_item = models.OneToOneField(
+        "shop.OrderItem", on_delete=models.PROTECT, related_name="digital_fulfillment_obligation"
+    )
+    reservation = models.OneToOneField(
+        "digital_products.DigitalInventoryReservation",
+        on_delete=models.PROTECT,
+        related_name="fulfillment_obligation",
+    )
+    inventory_pool = models.ForeignKey(
+        "digital_products.InventoryPool", on_delete=models.PROTECT, related_name="fulfillment_obligations"
+    )
+    checkout_line = models.OneToOneField(
+        "shop.CheckoutLine", on_delete=models.PROTECT, related_name="digital_fulfillment_obligation"
+    )
+    quantity = models.PositiveIntegerField()
+    fulfillment_method = models.CharField(max_length=16)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.CheckConstraint(check=Q(quantity=1), name="fin_digital_fulfillment_qty_one")]
 
 
 class FinancialAccount(BaseModel):

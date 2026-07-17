@@ -63,6 +63,7 @@ def _resolve_existing_adjustment(*, adjustment, pool_id, delta, reason, actor_id
 
 EFFECTIVE_RESERVATION_STATES = (
     DigitalInventoryReservationState.ACTIVE,
+    DigitalInventoryReservationState.PAYMENT_HOLD,
     DigitalInventoryReservationState.HELD_FOR_REVIEW,
 )
 

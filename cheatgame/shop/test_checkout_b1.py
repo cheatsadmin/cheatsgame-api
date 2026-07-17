@@ -31,6 +31,7 @@ from cheatgame.shop.models import (
     PaymentTransaction,
     PaymentTransactionStatus,
     Order,
+    StockReservationState,
 )
 from cheatgame.shop.services.checkout import (
     CheckoutServiceError,
@@ -118,9 +119,17 @@ class CheckoutB1ServiceTests(CheckoutB1Fixture, TestCase):
         self.assertEqual(line.line_payable_total, self.item.price)
         self.assertEqual(line.attachments.get().total_price, Decimal("200"))
         self.assertFalse(PaymentTransaction.objects.filter(checkout=result.checkout).exists())
+        reservation = result.checkout.stock_reservations.get()
+        self.assertEqual(reservation.product_id, self.item.product_id)
+        self.assertEqual(reservation.quantity, self.item.quantity)
+        self.assertEqual(reservation.state, StockReservationState.ACTIVE)
         self.assertEqual(
             list(result.checkout.events.values_list("event_type", flat=True)),
-            [CommerceEventType.CHECKOUT_DRAFT_CREATED, CommerceEventType.CART_LOCKED],
+            [
+                CommerceEventType.CHECKOUT_DRAFT_CREATED,
+                CommerceEventType.STOCK_RESERVATION_CREATED,
+                CommerceEventType.CART_LOCKED,
+            ],
         )
 
     def test_same_uuid_and_fingerprint_reuses_once(self):
@@ -137,6 +146,18 @@ class CheckoutB1ServiceTests(CheckoutB1Fixture, TestCase):
             ).count(),
             1,
         )
+
+    def test_existing_active_hold_reduces_standard_availability(self):
+        first = self.create().checkout
+        product = self.item.product
+        product.quantity = 3
+        product.save(update_fields=("quantity", "updated_at"))
+        other = self.make_user("09120000109")
+        self.make_cart(other, product=product, quantity=2, with_attachment=False)
+        with self.assertRaises(CheckoutServiceError) as raised:
+            create_or_reuse_checkout(user=other, client_checkout_uuid=uuid4())
+        self.assertEqual(raised.exception.code, "CART_INVALID")
+        self.assertEqual(first.stock_reservations.get().state, StockReservationState.ACTIVE)
 
     def test_same_uuid_with_changed_content_conflicts(self):
         checkout_uuid = uuid4()
@@ -660,6 +681,37 @@ class CheckoutB1ConcurrencyTests(CheckoutB1Fixture, TransactionTestCase):
         self.assertEqual(sorted(value[0] for value in outcomes), ["CART_LOCKED", "ok"])
         self.assertEqual(Checkout.objects.count(), 1)
         self.assertEqual(CheckoutLine.objects.count(), 1)
+
+    def test_concurrent_carts_cannot_over_reserve_same_product(self):
+        self.item.product.quantity = 2
+        self.item.product.save(update_fields=("quantity", "updated_at"))
+        other = self.make_user("09120000110")
+        self.make_cart(other, product=self.item.product, quantity=2, with_attachment=False)
+        barrier = Barrier(2)
+        outcomes = []
+
+        def worker(user_id):
+            close_old_connections()
+            try:
+                barrier.wait(timeout=5)
+                create_or_reuse_checkout(
+                    user=BaseUser.objects.get(pk=user_id), client_checkout_uuid=uuid4()
+                )
+            except CheckoutServiceError as error:
+                outcomes.append(error.code)
+            else:
+                outcomes.append("ok")
+            finally:
+                close_old_connections()
+
+        threads = [Thread(target=worker, args=(self.user.pk,)), Thread(target=worker, args=(other.pk,))]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(10)
+        self.assertFalse(any(thread.is_alive() for thread in threads), outcomes)
+        self.assertCountEqual(outcomes, ["ok", "CART_INVALID"])
+        self.assertEqual(Checkout.objects.count(), 1)
 
     def test_cancel_and_cart_mutation_race_preserves_consistent_ownership(self):
         checkout = create_or_reuse_checkout(user=self.user, client_checkout_uuid=uuid4()).checkout

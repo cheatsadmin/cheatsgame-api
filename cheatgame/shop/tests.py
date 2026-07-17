@@ -1114,7 +1114,7 @@ class Batch3CheckoutIntegrityTests(TestCase):
         self.assertIn("ظرفیت زمان ارسال", response.data["error"])
         self.assertEqual(PaymentTransaction.objects.count(), 0)
 
-    def test_verify_payment_fails_if_stock_changes_after_payment_request(self):
+    def test_paid_verification_enters_review_if_stock_changes_after_payment_request(self):
         order = self.create_order_with_item()
         response = self.request_fake_payment(order)
         self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
@@ -1127,11 +1127,14 @@ class Batch3CheckoutIntegrityTests(TestCase):
         self.assertEqual(verify_response.status_code, status.HTTP_200_OK)
         transaction_obj.refresh_from_db()
         order.refresh_from_db()
-        self.assertEqual(transaction_obj.status, PaymentTransactionStatus.FAILED)
-        self.assertEqual(transaction_obj.error_code, "checkout_integrity_failed")
-        self.assertEqual(order.payment_status, OrderStatus.FAIDED.value)
+        self.assertEqual(transaction_obj.status, PaymentTransactionStatus.REQUIRES_MANUAL_REVIEW)
+        self.assertEqual(transaction_obj.error_code, "provider_paid_local_finalization_failed")
+        self.assertEqual(order.payment_status, OrderStatus.PENDDING.value)
+        retry = self.request_fake_payment(order)
+        self.assertEqual(retry.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(PaymentTransaction.objects.count(), 1)
 
-    def test_verify_payment_fails_if_delivery_slot_fills_after_payment_request(self):
+    def test_paid_verification_enters_review_if_delivery_slot_fills_after_payment_request(self):
         delivery_data = self.create_delivery_data(capacity=1)
         order = self.create_order_with_item(schedule=delivery_data, is_game=True, with_shipping=False)
         response = self.request_fake_payment(order)
@@ -1147,9 +1150,9 @@ class Batch3CheckoutIntegrityTests(TestCase):
         order.refresh_from_db()
         delivery_data.refresh_from_db()
         self.product.refresh_from_db()
-        self.assertEqual(transaction_obj.status, PaymentTransactionStatus.FAILED)
-        self.assertEqual(transaction_obj.error_code, "checkout_integrity_failed")
-        self.assertEqual(order.payment_status, OrderStatus.FAIDED.value)
+        self.assertEqual(transaction_obj.status, PaymentTransactionStatus.REQUIRES_MANUAL_REVIEW)
+        self.assertEqual(transaction_obj.error_code, "provider_paid_local_finalization_failed")
+        self.assertEqual(order.payment_status, OrderStatus.PENDDING.value)
         self.assertFalse(delivery_data.is_used)
         self.assertEqual(self.product.quantity, 1)
 

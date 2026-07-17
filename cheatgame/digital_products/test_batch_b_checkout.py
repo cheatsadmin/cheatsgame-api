@@ -129,6 +129,15 @@ class BatchBCheckoutTests(TestCase):
         self.assertEqual(item.commerce_authority, ProductCommerceAuthority.STANDARD_COMMERCE)
         self.assertEqual(line.commerce_authority, ProductCommerceAuthority.STANDARD_COMMERCE)
 
+    def test_payment_hold_remains_unavailable(self):
+        self.add_digital()
+        checkout, _ = self.prepare()
+        reservation = DigitalInventoryReservation.objects.get(checkout=checkout)
+        self.assertEqual(get_available_quantity(pool_id=self.pool.pk), 1)
+        reservation.state = DigitalInventoryReservationState.PAYMENT_HOLD
+        reservation.save(update_fields=("state", "updated_at"))
+        self.assertEqual(get_available_quantity(pool_id=self.pool.pk), 1)
+
     def test_database_rejects_invalid_authority_and_digital_quantity(self):
         standard = self.product("Constraint Standard")
         item = CartItem.objects.create(cart=self.cart, product=standard, quantity=1, price=standard.price)

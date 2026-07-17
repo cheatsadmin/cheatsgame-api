@@ -7,6 +7,8 @@ from django.core.exceptions import ValidationError
 from django.db import DatabaseError, IntegrityError, close_old_connections, connection, transaction
 from django.test import TestCase, TransactionTestCase
 from django.utils import timezone
+from rest_framework import status
+from rest_framework.test import APIClient
 
 from cheatgame.digital_products.models import (
     DigitalCartFulfillmentMethod,
@@ -185,12 +187,6 @@ class C2AFixture:
             delivery_cost=Decimal("0"),
             is_pricing_finalized=finalized,
         )
-        StockReservation.objects.create(
-            checkout=checkout,
-            product=product,
-            quantity=quantity,
-            expires_at=checkout.expires_at,
-        )
         return user, product, cart, checkout
 
     def place_standard(self, *, source_unit=MoneyUnit.IRR, price=1000):
@@ -269,6 +265,14 @@ class C2APlacementAndMoneyTests(C2AFixture, TestCase):
         self.assertEqual(product.quantity, 20)
         self.assertEqual(result.payment.order_id, result.order.id)
         self.assertEqual(result.payment.amount_due, Decimal("1000"))
+
+    def test_legacy_customer_order_mutation_rejects_financial_core_owner_cleanly(self):
+        user, _, _, _, result = self.place_standard()
+        client = APIClient()
+        client.force_authenticate(user)
+        response = client.put(f"/api/shop/order-detail/{result.order.pk}/", {}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(response.data["code"], "FINANCIAL_CORE_ORDER_IMMUTABLE")
 
     def test_duplicate_placement_replays_and_payload_mismatch_conflicts(self):
         user, _, _, checkout = self.make_standard_checkout()

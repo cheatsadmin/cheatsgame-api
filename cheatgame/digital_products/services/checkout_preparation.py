@@ -304,7 +304,11 @@ def prepare_digital_checkout(*, actor, client_checkout_uuid):
     held = dict(
         DigitalInventoryReservation.objects.filter(
             inventory_pool_id__in=pool_ids,
-            state__in=(DigitalInventoryReservationState.ACTIVE, DigitalInventoryReservationState.HELD_FOR_REVIEW),
+            state__in=(
+                DigitalInventoryReservationState.ACTIVE,
+                DigitalInventoryReservationState.PAYMENT_HOLD,
+                DigitalInventoryReservationState.HELD_FOR_REVIEW,
+            ),
         )
         .values_list("inventory_pool_id")
         .annotate(total=Sum("quantity"))

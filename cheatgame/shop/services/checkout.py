@@ -2,9 +2,10 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from django.db import transaction
+from django.db.models import Sum
 from django.utils import timezone
 
-from cheatgame.product.models import ProductCommerceAuthority, ProductStatus, ProductType
+from cheatgame.product.models import Product, ProductCommerceAuthority, ProductStatus, ProductType
 from cheatgame.shop.models import (
     Cart,
     CartItem,
@@ -211,6 +212,52 @@ def _create_snapshots(checkout, lines):
             )
 
 
+EFFECTIVE_STOCK_RESERVATION_STATES = (
+    StockReservationState.ACTIVE,
+    StockReservationState.PAYMENT_HOLD,
+    StockReservationState.REVIEW_HOLD,
+)
+
+
+def _lock_and_refresh_standard_lines(*, cart, lines):
+    product_ids = sorted({line["product"].pk for line in lines})
+    locked_ids = list(
+        Product.objects.select_for_update().filter(pk__in=product_ids).order_by("pk").values_list("pk", flat=True)
+    )
+    if locked_ids != product_ids:
+        raise CheckoutServiceError("CART_INVALID", "یکی از محصولات سبد خرید در دسترس نیست.")
+    return _commercial_lines(_load_cart_lines(cart))
+
+
+def _create_standard_reservations(*, checkout, lines):
+    """Reserve Standard stock from Checkout while authoritative Product rows are locked."""
+    product_ids = sorted({line["product"].pk for line in lines})
+    requirements = {}
+    for line in lines:
+        product_id = line["product"].pk
+        requirements[product_id] = requirements.get(product_id, 0) + line["quantity"]
+
+    held = dict(
+        StockReservation.objects.filter(
+            product_id__in=product_ids,
+            state__in=EFFECTIVE_STOCK_RESERVATION_STATES,
+        )
+        .values_list("product_id")
+        .annotate(total=Sum("quantity"))
+    )
+    for product_id in product_ids:
+        requested = requirements[product_id]
+        product = next(line["product"] for line in lines if line["product"].pk == product_id)
+        if product.quantity - held.get(product_id, 0) < requested:
+            raise CheckoutServiceError("CART_INVALID", "موجودی یکی از محصولات سبد خرید کافی نیست.")
+        StockReservation.objects.create(
+            checkout=checkout,
+            product_id=product_id,
+            quantity=requested,
+            expires_at=checkout.expires_at,
+        )
+
+
 @transaction.atomic
 def create_or_reuse_checkout(*, user, client_checkout_uuid, request_context=None):
     request_context = request_context or {}
@@ -243,6 +290,9 @@ def create_or_reuse_checkout(*, user, client_checkout_uuid, request_context=None
         details = _resume_data(active) if active else {}
         raise CheckoutServiceError("CART_LOCKED", "سبد خرید در یک فرایند پرداخت فعال است.", details=details)
 
+    lines = _lock_and_refresh_standard_lines(cart=cart, lines=lines)
+    fingerprint = _fingerprint(lines)
+
     now = timezone.now()
     expires_at, maximum_expires_at = calculate_checkout_expiry_window(now=now)
     checkout = Checkout.objects.create(
@@ -255,6 +305,7 @@ def create_or_reuse_checkout(*, user, client_checkout_uuid, request_context=None
         locked_at=now,
     )
     _create_snapshots(checkout, lines)
+    _create_standard_reservations(checkout=checkout, lines=lines)
     cart.state = CartState.LOCKED
     cart.lock_reason = CartLockReason.CHECKOUT_IN_PROGRESS
     cart.active_checkout = checkout
@@ -268,6 +319,13 @@ def create_or_reuse_checkout(*, user, client_checkout_uuid, request_context=None
         actor_id=user.id,
         request_context=request_context,
         metadata={"checkout_public_id": checkout.public_id, "outcome": "created"},
+    )
+    _event_once(
+        checkout=checkout,
+        event_type=CommerceEventType.STOCK_RESERVATION_CREATED,
+        actor_id=user.id,
+        request_context=request_context,
+        metadata={"quantity": sum(line["quantity"] for line in lines), "outcome": "reserved"},
     )
     _event_once(
         checkout=checkout,

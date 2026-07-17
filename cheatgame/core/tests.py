@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from config.django import base as base_settings
 from django.core.exceptions import ImproperlyConfigured
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, override_settings
 
 
 PRODUCTION_ENV = {
@@ -18,6 +18,7 @@ PRODUCTION_ENV = {
     "AWS_SECRET_ACCESS_KEY": "secret-key",
     "AWS_STORAGE_BUCKET_NAME": "bucket",
     "AWS_S3_REGION_NAME": "us-east-1",
+    "PAYMENT_GATEWAY_PROVIDER": "zarinpal",
 }
 
 
@@ -61,6 +62,25 @@ class ProductionSettingsTests(SimpleTestCase):
         self.assertTrue(module.SECURE_HSTS_PRELOAD)
         self.assertEqual(module.SECURE_REFERRER_POLICY, "same-origin")
         self.assertEqual(module.X_FRAME_OPTIONS, "DENY")
+        self.assertFalse(module.PAYMENT_FAKE_PROVIDER_ENABLED)
+
+    def test_production_settings_reject_fake_payment_provider(self):
+        env = {**PRODUCTION_ENV, "PAYMENT_GATEWAY_PROVIDER": "fake"}
+
+        with self.assertRaises(ImproperlyConfigured):
+            self.import_production_settings(env)
+
+    @override_settings(PAYMENT_FAKE_PROVIDER_ENABLED=False)
+    def test_fake_callback_is_not_wired_when_provider_is_disabled(self):
+        sys.modules.pop("cheatgame.api.urls", None)
+        module = importlib.import_module("cheatgame.api.urls")
+        try:
+            self.assertNotIn(
+                "fake-payment-callback",
+                {getattr(pattern, "name", None) for pattern in module.urlpatterns},
+            )
+        finally:
+            sys.modules.pop("cheatgame.api.urls", None)
 
     def test_production_settings_reject_debug_true(self):
         env = {**PRODUCTION_ENV, "DEBUG": "True"}
