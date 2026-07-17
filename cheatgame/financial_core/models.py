@@ -126,6 +126,7 @@ class VerificationApplicationState(models.TextChoices):
     APPLIED_BLOCKING_SUCCESS = "applied_blocking_success", "APPLIED_BLOCKING_SUCCESS"
     REVIEW_REQUIRED = "review_required", "REVIEW_REQUIRED"
     SUPERSEDED = "superseded", "SUPERSEDED"
+    FINANCIALLY_APPLIED = "financially_applied", "FINANCIALLY_APPLIED"
 
 
 class VerificationWorkType(models.TextChoices):
@@ -142,6 +143,19 @@ class VerificationWorkStatus(models.TextChoices):
     PENDING = "pending", "PENDING"
     CLAIMED = "claimed", "CLAIMED"
     WAITING = "waiting", "WAITING"
+    COMPLETED = "completed", "COMPLETED"
+    CANCELED = "canceled", "CANCELED"
+
+
+class VerificationEvidenceBasis(models.TextChoices):
+    NONE = "none", "NONE"
+    SERVER_TO_SERVER = "server_to_server", "SERVER_TO_SERVER"
+    AUTHENTICATED_SETTLEMENT = "authenticated_settlement", "AUTHENTICATED_SETTLEMENT"
+
+
+class FinalizationWorkStatus(models.TextChoices):
+    PENDING = "pending", "PENDING"
+    CLAIMED = "claimed", "CLAIMED"
     COMPLETED = "completed", "COMPLETED"
     CANCELED = "canceled", "CANCELED"
 
@@ -258,6 +272,25 @@ class ReviewCaseReason(models.TextChoices):
     RECONCILIATION_MISMATCH = "reconciliation_mismatch", "RECONCILIATION_MISMATCH"
     FRAUD_RISK = "fraud_risk", "FRAUD_RISK"
     INVARIANT_VIOLATION = "invariant_violation", "INVARIANT_VIOLATION"
+    VERIFIED_FUNDS_APPLICATION_FAILED = (
+        "verified_funds_application_failed",
+        "VERIFIED_FUNDS_APPLICATION_FAILED",
+    )
+    PROVIDER_RECEIPT_JOURNAL_FAILED = (
+        "provider_receipt_journal_failed",
+        "PROVIDER_RECEIPT_JOURNAL_FAILED",
+    )
+    PAID_PENDING_FINALIZATION = "paid_pending_finalization", "PAID_PENDING_FINALIZATION"
+    DUPLICATE_FINANCIAL_ALLOCATION = (
+        "duplicate_financial_allocation",
+        "DUPLICATE_FINANCIAL_ALLOCATION",
+    )
+    OVERPAYMENT = "overpayment", "OVERPAYMENT"
+    ACCOUNTING_POLICY_MISSING = "accounting_policy_missing", "ACCOUNTING_POLICY_MISSING"
+    FINANCIAL_INVARIANT_VIOLATION = (
+        "financial_invariant_violation",
+        "FINANCIAL_INVARIANT_VIOLATION",
+    )
 
 
 class IdempotencyStatus(models.TextChoices):
@@ -1370,6 +1403,11 @@ class Verification(AppendOnlyModel):
         max_length=24,
         choices=VerificationTransportClassification.choices,
     )
+    evidence_basis = models.CharField(
+        max_length=32,
+        choices=VerificationEvidenceBasis.choices,
+        default=VerificationEvidenceBasis.NONE,
+    )
     evidence_hash = models.CharField(max_length=64)
     request_evidence_reference = models.CharField(max_length=128, blank=True)
     response_evidence_reference = models.CharField(max_length=128, blank=True)
@@ -1432,6 +1470,12 @@ class Verification(AppendOnlyModel):
             if self.merchant_reference != transaction_obj.merchant_reference:
                 raise ValidationError({"merchant_reference": "Verification merchant reference must match."})
 
+    @property
+    def projected_application_state(self):
+        if self.pk and FinancialAllocation.objects.filter(verification_id=self.pk).exists():
+            return VerificationApplicationState.FINANCIALLY_APPLIED
+        return self.application_state
+
 
 class ProviderReferenceAllocation(AppendOnlyModel):
     merchant_account_version = models.ForeignKey(
@@ -1461,6 +1505,250 @@ class ProviderReferenceAllocation(AppendOnlyModel):
             ),
             models.CheckConstraint(check=~Q(provider_reference=""), name="fin_provider_reference_nonempty"),
         ]
+
+
+class ReceiptAccountingPolicyVersion(BaseModel):
+    IMMUTABLE_FIELDS = (
+        "public_id",
+        "merchant_account_version_id",
+        "policy_key",
+        "version",
+        "provider_clearing_account_id",
+        "customer_unapplied_funds_account_id",
+        "currency",
+    )
+
+    public_id = models.UUIDField(default=uuid4, unique=True, editable=False)
+    merchant_account_version = models.ForeignKey(
+        MerchantAccountVersion,
+        on_delete=models.PROTECT,
+        related_name="receipt_accounting_policies",
+    )
+    policy_key = models.CharField(max_length=128)
+    version = models.PositiveIntegerField()
+    provider_clearing_account = models.ForeignKey(
+        "FinancialAccount",
+        on_delete=models.PROTECT,
+        related_name="provider_receipt_policies",
+    )
+    customer_unapplied_funds_account = models.ForeignKey(
+        "FinancialAccount",
+        on_delete=models.PROTECT,
+        related_name="customer_unapplied_receipt_policies",
+    )
+    currency = models.CharField(max_length=3, default=CANONICAL_CURRENCY)
+    active_for_new_applications = models.BooleanField(default=False, db_index=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("merchant_account_version", "policy_key", "version"),
+                name="fin_receipt_policy_version_uniq",
+            ),
+            models.UniqueConstraint(
+                fields=("merchant_account_version",),
+                condition=Q(active_for_new_applications=True),
+                name="fin_one_active_receipt_policy",
+            ),
+            models.CheckConstraint(check=Q(version__gt=0), name="fin_receipt_policy_version_positive"),
+            models.CheckConstraint(check=~Q(policy_key=""), name="fin_receipt_policy_key_nonempty"),
+            models.CheckConstraint(check=Q(currency=CANONICAL_CURRENCY), name="fin_receipt_policy_currency_irr"),
+            models.CheckConstraint(
+                check=~Q(provider_clearing_account=F("customer_unapplied_funds_account")),
+                name="fin_receipt_policy_accounts_distinct",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.provider_clearing_account_id:
+            if self.provider_clearing_account.currency != CANONICAL_CURRENCY:
+                raise ValidationError({"provider_clearing_account": "Clearing account must use IRR."})
+            if self.provider_clearing_account.account_type != FinancialAccountType.ASSET:
+                raise ValidationError({"provider_clearing_account": "Clearing account must be an asset."})
+        if self.customer_unapplied_funds_account_id:
+            if self.customer_unapplied_funds_account.currency != CANONICAL_CURRENCY:
+                raise ValidationError({"customer_unapplied_funds_account": "Unapplied-funds account must use IRR."})
+            if self.customer_unapplied_funds_account.account_type != FinancialAccountType.LIABILITY:
+                raise ValidationError({"customer_unapplied_funds_account": "Unapplied-funds account must be a liability."})
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            original = type(self).objects.filter(pk=self.pk).values(*self.IMMUTABLE_FIELDS).first()
+            if original and any(original[field] != getattr(self, field) for field in self.IMMUTABLE_FIELDS):
+                raise ValidationError("Receipt accounting policy identity is immutable.")
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("Receipt accounting policy history cannot be deleted.")
+
+
+class FinancialAllocation(AppendOnlyModel):
+    public_id = models.UUIDField(default=uuid4, unique=True, editable=False)
+    payment = models.ForeignKey(Payment, on_delete=models.PROTECT, related_name="financial_allocations")
+    attempt = models.ForeignKey(
+        PaymentAttempt,
+        on_delete=models.PROTECT,
+        related_name="financial_allocations",
+    )
+    transaction = models.OneToOneField(
+        PaymentTransaction,
+        on_delete=models.PROTECT,
+        related_name="financial_allocation",
+    )
+    verification = models.OneToOneField(
+        Verification,
+        on_delete=models.PROTECT,
+        related_name="financial_allocation",
+    )
+    merchant_account_version = models.ForeignKey(
+        MerchantAccountVersion,
+        on_delete=models.PROTECT,
+        related_name="financial_allocations",
+    )
+    accounting_policy_version = models.ForeignKey(
+        ReceiptAccountingPolicyVersion,
+        on_delete=models.PROTECT,
+        related_name="financial_allocations",
+    )
+    journal_entry = models.OneToOneField(
+        "JournalEntry",
+        on_delete=models.PROTECT,
+        related_name="financial_allocation",
+    )
+    provider_reference = models.CharField(max_length=128)
+    amount = models.DecimalField(max_digits=20, decimal_places=0)
+    currency = models.CharField(max_length=3, default=CANONICAL_CURRENCY)
+    application_idempotency_key = models.UUIDField(unique=True, editable=False)
+    application_fingerprint = models.CharField(max_length=64)
+    correlation_id = models.UUIDField(db_index=True)
+    causation_id = models.UUIDField(null=True, blank=True, db_index=True)
+    applied_at = models.DateTimeField(default=timezone.now, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("merchant_account_version", "provider_reference"),
+                name="fin_allocation_provider_reference_uniq",
+            ),
+            models.CheckConstraint(check=Q(amount__gt=0), name="fin_allocation_amount_positive"),
+            models.CheckConstraint(check=Q(currency=CANONICAL_CURRENCY), name="fin_allocation_currency_irr"),
+            models.CheckConstraint(check=~Q(provider_reference=""), name="fin_allocation_provider_ref_nonempty"),
+            models.CheckConstraint(check=~Q(application_fingerprint=""), name="fin_allocation_hash_nonempty"),
+        ]
+        indexes = [models.Index(fields=("payment", "applied_at"), name="fin_allocation_payment_time")]
+
+    def clean(self):
+        super().clean()
+        if not self.transaction_id:
+            return
+        transaction_obj = self.transaction
+        if self.attempt_id != transaction_obj.attempt_id:
+            raise ValidationError({"attempt": "Allocation Attempt must own the Transaction."})
+        if self.payment_id != transaction_obj.attempt.payment_id:
+            raise ValidationError({"payment": "Allocation Payment must own the Attempt."})
+        if self.verification_id and self.verification.transaction_id != self.transaction_id:
+            raise ValidationError({"verification": "Allocation Verification must belong to the Transaction."})
+        if self.merchant_account_version_id != transaction_obj.merchant_account_version_id:
+            raise ValidationError({"merchant_account_version": "Allocation account must match the Transaction."})
+        if self.accounting_policy_version_id:
+            if self.accounting_policy_version.merchant_account_version_id != self.merchant_account_version_id:
+                raise ValidationError({"accounting_policy_version": "Receipt policy must belong to the merchant account."})
+        if self.amount != self.verification.canonical_allocation_amount or self.currency != self.verification.canonical_currency:
+            raise ValidationError("Allocation money must equal immutable Verification money.")
+        if self.provider_reference != self.verification.provider_reference:
+            raise ValidationError({"provider_reference": "Allocation reference must equal Verification evidence."})
+
+
+class CommercialFinalizationWorkItem(BaseModel):
+    public_id = models.UUIDField(default=uuid4, unique=True, editable=False)
+    payment = models.ForeignKey(Payment, on_delete=models.PROTECT, related_name="finalization_work_items")
+    finalizer_version = models.CharField(max_length=64)
+    deterministic_identity = models.CharField(max_length=200, unique=True)
+    status = models.CharField(
+        max_length=16,
+        choices=FinalizationWorkStatus.choices,
+        default=FinalizationWorkStatus.PENDING,
+        db_index=True,
+    )
+    attempt_count = models.PositiveIntegerField(default=0)
+    max_attempts = models.PositiveIntegerField(default=12)
+    next_attempt_at = models.DateTimeField(default=timezone.now, db_index=True)
+    claim_token = models.UUIDField(null=True, blank=True)
+    claimed_at = models.DateTimeField(null=True, blank=True)
+    claim_expires_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    last_error_classification = models.CharField(max_length=64, blank=True)
+    correlation_id = models.UUIDField(db_index=True)
+    causation_id = models.UUIDField(null=True, blank=True, db_index=True)
+    version = models.PositiveIntegerField(default=1)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("payment", "finalizer_version"),
+                name="fin_finalization_work_identity_uniq",
+            ),
+            models.CheckConstraint(check=~Q(finalizer_version=""), name="fin_finalizer_version_nonempty"),
+            models.CheckConstraint(check=Q(max_attempts__gt=0), name="fin_finalization_max_attempts_positive"),
+            models.CheckConstraint(
+                check=Q(attempt_count__lte=F("max_attempts")),
+                name="fin_finalization_attempts_bounded",
+            ),
+            models.CheckConstraint(
+                check=Q(status__in=FinalizationWorkStatus.values),
+                name="fin_finalization_work_status_valid",
+            ),
+            models.CheckConstraint(
+                check=(
+                    Q(
+                        status=FinalizationWorkStatus.CLAIMED,
+                        claim_token__isnull=False,
+                        claimed_at__isnull=False,
+                        claim_expires_at__isnull=False,
+                        completed_at__isnull=True,
+                    )
+                    | Q(
+                        status=FinalizationWorkStatus.PENDING,
+                        claim_token__isnull=True,
+                        claimed_at__isnull=True,
+                        claim_expires_at__isnull=True,
+                        completed_at__isnull=True,
+                    )
+                    | Q(
+                        status__in=(FinalizationWorkStatus.COMPLETED, FinalizationWorkStatus.CANCELED),
+                        claim_token__isnull=True,
+                        claimed_at__isnull=True,
+                        claim_expires_at__isnull=True,
+                        completed_at__isnull=False,
+                    )
+                ),
+                name="fin_finalization_work_state_consistent",
+            ),
+        ]
+        indexes = [models.Index(fields=("status", "next_attempt_at"), name="fin_finalization_work_due")]
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            immutable_fields = (
+                "public_id",
+                "payment_id",
+                "finalizer_version",
+                "deterministic_identity",
+                "max_attempts",
+                "correlation_id",
+                "causation_id",
+            )
+            original = type(self).objects.filter(pk=self.pk).values(*immutable_fields).first()
+            if original and any(original[field] != getattr(self, field) for field in immutable_fields):
+                raise ValidationError("Commercial-finalization work identity is immutable.")
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("Commercial-finalization work history cannot be deleted.")
 
 
 class FinancialAccount(BaseModel):

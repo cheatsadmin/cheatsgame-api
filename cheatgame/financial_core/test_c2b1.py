@@ -25,6 +25,7 @@ from cheatgame.financial_core.models import (
     ReviewCase,
     Verification,
     VerificationApplicationState,
+    VerificationEvidenceBasis,
     VerificationFinality,
     VerificationFinancialEffect,
     VerificationOutcome,
@@ -206,6 +207,7 @@ class C2B1Fixture(C2AFixture):
             "observed_provider_amount": transaction_obj.provider_amount,
             "observed_provider_unit": transaction_obj.provider_unit,
             "evidence_hash": "2" * 64,
+            "evidence_basis": VerificationEvidenceBasis.SERVER_TO_SERVER,
         }
         values.update(overrides)
         return NormalizedVerificationResult(**values)

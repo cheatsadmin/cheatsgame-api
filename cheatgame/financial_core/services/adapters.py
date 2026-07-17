@@ -9,6 +9,7 @@ from cheatgame.financial_core.models import (
     CallbackAuthenticationStatus,
     CallbackReplayWindowStatus,
     ProviderRequestOutcome,
+    VerificationEvidenceBasis,
     VerificationOutcome,
     VerificationTransportClassification,
 )
@@ -116,6 +117,7 @@ class NormalizedVerificationResult:
     retryable: bool = False
     response_evidence_reference: str = ""
     already_verified_fresh_query: bool = False
+    evidence_basis: str = VerificationEvidenceBasis.NONE
 
 
 class ProviderAdapter(Protocol):
@@ -227,6 +229,8 @@ def execute_verification_outside_transaction(*, adapter, envelope, use_query=Fal
         raise ValidationError("Provider adapter returned an invalid normalized verification result.")
     if result.outcome not in VerificationOutcome.values:
         raise ValidationError("Provider adapter returned an unsupported verification outcome.")
+    if result.evidence_basis not in VerificationEvidenceBasis.values:
+        raise ValidationError("Provider adapter returned an unsupported verification evidence basis.")
     return result
 
 

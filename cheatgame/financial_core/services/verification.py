@@ -26,6 +26,7 @@ from cheatgame.financial_core.models import (
     ReviewCaseStatus,
     Verification,
     VerificationApplicationState,
+    VerificationEvidenceBasis,
     VerificationClaim,
     VerificationFinality,
     VerificationFinancialEffect,
@@ -470,6 +471,7 @@ def apply_verification_result(
         "error_classification": result.error_classification,
         "retryable": bool(result.retryable),
         "already_verified_fresh_query": bool(result.already_verified_fresh_query),
+        "evidence_basis": result.evidence_basis,
     }
     result_fingerprint = canonical_request_hash(clean_payload)
     scope = f"financial_core:verification_result:{claim_ref.transaction_id}"
@@ -589,6 +591,11 @@ def apply_verification_result(
             finality=result.finality,
             provider_occurred_at=result.provider_occurred_at,
             transport_classification=result.transport_classification,
+            evidence_basis=(
+                result.evidence_basis
+                if result.evidence_basis in VerificationEvidenceBasis.values
+                else VerificationEvidenceBasis.NONE
+            ),
             evidence_hash=str(result.evidence_hash),
             request_evidence_reference=str(claim.public_id if hasattr(claim, "public_id") else claim.pk),
             response_evidence_reference=str(result.response_evidence_reference)[:128],
@@ -634,7 +641,7 @@ def apply_verification_result(
             review_reason = (
                 ReviewCaseReason.LATE_PAYMENT
                 if late_terminal
-                else ReviewCaseReason.PAID_FINALIZATION_PENDING
+                else ReviewCaseReason.PAID_PENDING_FINALIZATION
             )
             enqueue_apply_work = True
         elif application_state == VerificationApplicationState.APPLIED_UNPAID:
