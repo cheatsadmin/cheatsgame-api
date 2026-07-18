@@ -47,11 +47,14 @@ def check_product_avaliablity(*, product: Product, quantity: int) -> bool:
     return product.quantity - quantity >= 0
 
 
+@transaction.atomic
 def get_cart_or_create(*, user: BaseUser) -> Cart:
-    cart = Cart.objects.filter(user=user)
-    if cart:
-        return cart.first()
-    return Cart.objects.create(user=user)
+    # Cart is one-to-one with its owner. Locking that always-present identity
+    # serializes the otherwise racy first Cart creation for every commerce
+    # authority without introducing a Digital-only acquisition path.
+    BaseUser.objects.select_for_update().get(pk=user.pk)
+    cart, _ = Cart.objects.get_or_create(user_id=user.pk)
+    return cart
 
 
 def normalize_attachments(*, attachments: List[Attachment]) -> List[Attachment]:

@@ -1,4 +1,4 @@
-from drf_spectacular.utils import extend_schema
+from drf_spectacular.utils import extend_schema, extend_schema_field
 from django.conf import settings
 from rest_framework import serializers, status
 from rest_framework.response import Response
@@ -8,6 +8,15 @@ from rest_framework.views import APIView
 from cheatgame.api.mixins import ApiAuthMixin
 from cheatgame.api.utils import inline_serializer
 from cheatgame.common.utils import reformat_url
+from cheatgame.digital_products.customer_cart import (
+    DigitalCartProjectionIntegrityError,
+    cart_authority_code,
+    digital_cart_product_projection,
+    digital_selection_projection,
+)
+from cheatgame.digital_products.customer_cart_selectors import owned_customer_cart_items
+from cheatgame.digital_products.customer_cart_serializers import DigitalCartSelectionOutputSerializer
+from cheatgame.digital_products.public_catalog_apis import digital_api_error
 from cheatgame.product.apis.product import ProductDetailProductSerializer
 from cheatgame.product.models import Attachment, Product, ProductCommerceAuthority, ProductType
 from cheatgame.product.permissions import CustomerPermission, CartItemIsOwnerCustomer, AdminOrManagerPermission
@@ -71,13 +80,31 @@ class ProductDetailCartSerializer(serializers.ModelSerializer):
 
 
     def get_suggestion(self, product: Product) -> dict:
-        suggestions = suggestions_product(product=product)
+        prefetched_links = getattr(product, "cart_suggestion_links", None)
+        suggestions = (
+            [link.suggested for link in prefetched_links]
+            if prefetched_links is not None
+            else suggestions_product(product=product)
+        )
         return ProductDetailProductSerializer(suggestions, many=True).data
 
     class Meta:
         model = Product
         fields = ("id", "product_type", "title", "slug", "main_image", "price", "off_price", "quantity", "device_model",
                   "suggestion" )
+
+
+class AuthorityAwareCartProductSerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    product_type = serializers.IntegerField()
+    title = serializers.CharField()
+    slug = serializers.CharField()
+    main_image = serializers.CharField(allow_blank=True)
+    price = serializers.DecimalField(max_digits=15, decimal_places=0, required=False)
+    off_price = serializers.DecimalField(max_digits=15, decimal_places=0, required=False)
+    quantity = serializers.IntegerField(required=False)
+    device_model = serializers.CharField(allow_null=True, required=False)
+    suggestion = ProductDetailProductSerializer(many=True, required=False)
 
 
 class AddToCart(ApiAuthMixin, APIView):
@@ -212,23 +239,63 @@ class CartItemListApi(ApiAuthMixin, APIView):
     permission_classes = (CustomerPermission,)
 
     class CartItemListOutPutSerializer(serializers.ModelSerializer):
-        product = ProductDetailCartSerializer()
+        product = serializers.SerializerMethodField()
         attachment = serializers.SerializerMethodField()
+        commerce_authority = serializers.SerializerMethodField()
+        digital_selection = serializers.SerializerMethodField()
 
+        @extend_schema_field(AuthorityAwareCartProductSerializer)
+        def get_product(self, obj):
+            if obj.commerce_authority == ProductCommerceAuthority.DIGITAL_PRODUCTS:
+                return digital_cart_product_projection(obj)
+            return ProductDetailCartSerializer(obj.product).data
+
+        @extend_schema_field(CartItemAttachmentInPutSerializer(many=True))
         def get_attachment(self, obj):
-            attchment_list = CartItemAttachment.objects.filter(cart_item_id=obj.id).values_list("attachment", flat=True)
-            items = Attachment.objects.filter(id__in= attchment_list)
+            prefetched_links = getattr(obj, "owned_attachment_links", None)
+            if prefetched_links is not None:
+                items = [link.attachment for link in prefetched_links]
+            else:
+                attchment_list = CartItemAttachment.objects.filter(cart_item_id=obj.id).values_list("attachment", flat=True)
+                items = Attachment.objects.filter(id__in=attchment_list)
             return CartItemAttachmentInPutSerializer(items, many=True).data
+
+        @extend_schema_field(
+            serializers.ChoiceField(choices=("STANDARD_COMMERCE", "DIGITAL_PRODUCTS"))
+        )
+        def get_commerce_authority(self, obj):
+            return cart_authority_code(obj)
+
+        @extend_schema_field(DigitalCartSelectionOutputSerializer(allow_null=True))
+        def get_digital_selection(self, obj):
+            if obj.commerce_authority == ProductCommerceAuthority.STANDARD_COMMERCE:
+                return None
+            return digital_selection_projection(obj)
 
         class Meta:
             model = CartItem
-            fields =["id" , "product" , "price" , "quantity" , "cart" , "attachment"]
+            fields = [
+                "id",
+                "product",
+                "price",
+                "quantity",
+                "cart",
+                "attachment",
+                "commerce_authority",
+                "digital_selection",
+            ]
 
-    @extend_schema(responses=CartItemListOutPutSerializer)
+    @extend_schema(responses=CartItemListOutPutSerializer(many=True))
     def get(self, request):
         try:
-            cart_items = cart_item_list_user(user=request.user)
+            cart_items = owned_customer_cart_items(user=request.user)
             return Response(self.CartItemListOutPutSerializer(cart_items, many=True).data, status=status.HTTP_200_OK)
+        except DigitalCartProjectionIntegrityError:
+            return digital_api_error(
+                code="digital_cart_integrity_conflict",
+                detail="The Digital Cart selection is inconsistent and cannot be displayed safely.",
+                http_status=status.HTTP_409_CONFLICT,
+            )
         except Exception as error:
             return Response({"error": "مشکل در دریافت اطلاعات سبد پیش آمد"}, status=status.HTTP_400_BAD_REQUEST)
 

@@ -18,7 +18,7 @@ from cheatgame.digital_products.services import (
     MixedCommerceAuthorityError,
 )
 from cheatgame.digital_products.services.inventory import get_available_quantity
-from cheatgame.product.models import ProductCommerceAuthority, ProductType
+from cheatgame.product.models import ProductCommerceAuthority, ProductStatus, ProductType
 from cheatgame.shop.models import Cart, CartItem, CartState
 from cheatgame.users.models import UserTypes
 
@@ -44,7 +44,11 @@ def _validate_method(offer, method):
 
 def _validate_offer(offer):
     product = offer.delivered_version.product
-    if product.product_type != ProductType.GAME or product.commerce_authority != ProductCommerceAuthority.DIGITAL_PRODUCTS:
+    if (
+        product.status != ProductStatus.PUBLISHED
+        or product.product_type != ProductType.GAME
+        or product.commerce_authority != ProductCommerceAuthority.DIGITAL_PRODUCTS
+    ):
         raise DigitalOfferUnavailableError("Offer Product is not eligible for Digital Products.")
     if offer.sale_state != DigitalOfferSaleState.ACTIVE or not offer.delivered_version.is_active:
         raise DigitalOfferUnavailableError("Digital Offer is not active.")
