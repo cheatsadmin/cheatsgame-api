@@ -10,6 +10,7 @@ urlpatterns = [
     path("general/", include("cheatgame.general.urls"), name="general"),
     path("shop/", include("cheatgame.shop.urls"), name="shop"),
     path("issue/", include("cheatgame.issue.urls"), name="issue"),
+    path("digital-products/", include("cheatgame.digital_products.urls"), name="digital-products"),
     path("payment/callback/zarinpal/", ZarinpalPaymentCallbackApi.as_view(), name="zarinpal-payment-callback"),
 
 ]
