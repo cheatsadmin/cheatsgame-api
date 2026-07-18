@@ -3,6 +3,7 @@ import json
 from datetime import timedelta
 from decimal import Decimal
 
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
@@ -26,6 +27,27 @@ from cheatgame.shop.models import (
 
 DEFAULT_CHECKOUT_TTL = timedelta(minutes=30)
 DEFAULT_CHECKOUT_MAXIMUM_LIFETIME = timedelta(hours=2)
+
+
+def checkout_expiration_policy():
+    """Return the finite, configurable commercial lease policy."""
+    ttl = timedelta(
+        seconds=getattr(
+            settings,
+            "COMMERCE_CHECKOUT_TTL_SECONDS",
+            int(DEFAULT_CHECKOUT_TTL.total_seconds()),
+        )
+    )
+    maximum_lifetime = timedelta(
+        seconds=getattr(
+            settings,
+            "COMMERCE_CHECKOUT_MAXIMUM_LIFETIME_SECONDS",
+            int(DEFAULT_CHECKOUT_MAXIMUM_LIFETIME.total_seconds()),
+        )
+    )
+    if ttl.total_seconds() <= 0 or maximum_lifetime.total_seconds() <= 0 or ttl > maximum_lifetime:
+        raise ValidationError("Checkout expiration policy must be finite, positive, and bounded.")
+    return ttl, maximum_lifetime
 
 SAFE_METADATA_KEYS = frozenset(
     {
@@ -146,10 +168,12 @@ def sanitize_commerce_metadata(metadata, *, allowed_keys=SAFE_METADATA_KEYS):
 def calculate_checkout_expiry(
     *,
     now=None,
-    ttl=DEFAULT_CHECKOUT_TTL,
+    ttl=None,
     maximum_expires_at=None,
 ):
     now = now or timezone.now()
+    if ttl is None:
+        ttl, _ = checkout_expiration_policy()
     proposed_expiry = now + ttl
     if maximum_expires_at is not None:
         return min(proposed_expiry, maximum_expires_at)
@@ -158,8 +182,9 @@ def calculate_checkout_expiry(
 
 def calculate_checkout_expiry_window(*, now=None):
     now = now or timezone.now()
-    maximum_expires_at = now + DEFAULT_CHECKOUT_MAXIMUM_LIFETIME
-    return calculate_checkout_expiry(now=now, maximum_expires_at=maximum_expires_at), maximum_expires_at
+    ttl, maximum_lifetime = checkout_expiration_policy()
+    maximum_expires_at = now + maximum_lifetime
+    return calculate_checkout_expiry(now=now, ttl=ttl, maximum_expires_at=maximum_expires_at), maximum_expires_at
 
 
 def is_checkout_active(checkout):

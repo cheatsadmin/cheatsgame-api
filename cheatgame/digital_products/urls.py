@@ -9,6 +9,12 @@ from cheatgame.digital_products.customer_cart_apis import (
     CustomerDigitalCartItemCreateApi,
     CustomerDigitalCartItemDeleteApi,
 )
+from cheatgame.digital_products.customer_checkout_apis import (
+    CustomerDigitalCheckoutActiveApi,
+    CustomerDigitalCheckoutCancelApi,
+    CustomerDigitalCheckoutDetailApi,
+    CustomerDigitalCheckoutPrepareApi,
+)
 
 
 app_name = "digital-products"
@@ -30,5 +36,25 @@ urlpatterns = [
         "customer/cart/items/<int:cart_item_id>/fulfillment-method/",
         CustomerDigitalCartFulfillmentMethodApi.as_view(),
         name="customer-cart-fulfillment-method-change",
+    ),
+    path(
+        "customer/checkout/prepare/",
+        CustomerDigitalCheckoutPrepareApi.as_view(),
+        name="customer-checkout-prepare",
+    ),
+    path(
+        "customer/checkout/active/",
+        CustomerDigitalCheckoutActiveApi.as_view(),
+        name="customer-checkout-active",
+    ),
+    path(
+        "customer/checkout/<uuid:checkout_id>/",
+        CustomerDigitalCheckoutDetailApi.as_view(),
+        name="customer-checkout-detail",
+    ),
+    path(
+        "customer/checkout/<uuid:checkout_id>/cancel/",
+        CustomerDigitalCheckoutCancelApi.as_view(),
+        name="customer-checkout-cancel",
     ),
 ]
