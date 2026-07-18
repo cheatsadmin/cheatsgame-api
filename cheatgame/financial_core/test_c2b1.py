@@ -21,6 +21,7 @@ from cheatgame.financial_core.models import (
     JournalEntry,
     PaymentCollectionStatus,
     ProviderEvent,
+    ProviderEventResolutionStatus,
     ProviderRequestOutcome,
     ReviewCase,
     Verification,
@@ -235,7 +236,12 @@ class C2B1CallbackAndVerificationTests(C2B1Fixture, TransactionTestCase):
             account,
             body_overrides={"amount": int(transaction_obj.provider_amount) + 1},
         )
-        self.assertEqual(first.provider_event.pk, changed.provider_event.pk)
+        self.assertNotEqual(first.provider_event.pk, changed.provider_event.pk)
+        self.assertEqual(changed.provider_event.original_event_id, first.provider_event.pk)
+        self.assertEqual(
+            changed.provider_event.resolution_status,
+            ProviderEventResolutionStatus.CONTRADICTORY,
+        )
         self.assertEqual(changed.receipt.processing_status, CallbackProcessingStatus.QUARANTINED)
         self.assertEqual(changed.receipt.quarantine_reason, "contradictory_callback_evidence")
 

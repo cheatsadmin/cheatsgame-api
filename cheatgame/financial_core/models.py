@@ -1179,6 +1179,13 @@ class ProviderEvent(AppendOnlyModel):
         blank=True,
         related_name="provider_events",
     )
+    original_event = models.ForeignKey(
+        "self",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="contradictory_events",
+    )
     adapter_contract_version = models.CharField(max_length=32)
     provider_event_id = models.CharField(max_length=128, blank=True)
     canonical_envelope_hash = models.CharField(max_length=64)
@@ -1215,6 +1222,19 @@ class ProviderEvent(AppendOnlyModel):
             ),
             models.CheckConstraint(
                 check=(
+                    Q(
+                        resolution_status=ProviderEventResolutionStatus.CONTRADICTORY,
+                        original_event__isnull=False,
+                    )
+                    | (
+                        ~Q(resolution_status=ProviderEventResolutionStatus.CONTRADICTORY)
+                        & Q(original_event__isnull=True)
+                    )
+                ),
+                name="fin_provider_event_contradiction_origin",
+            ),
+            models.CheckConstraint(
+                check=(
                     Q(provider_amount_hint__isnull=True, provider_unit_hint="")
                     | Q(provider_amount_hint__isnull=False, provider_unit_hint__in=MoneyUnit.values)
                 ),
@@ -1228,6 +1248,31 @@ class ProviderEvent(AppendOnlyModel):
             ),
             models.Index(fields=("merchant_reference", "created_at"), name="fin_provider_event_merchant"),
         ]
+
+    def clean(self):
+        super().clean()
+        contradictory = self.resolution_status == ProviderEventResolutionStatus.CONTRADICTORY
+        if contradictory != bool(self.original_event_id):
+            raise ValidationError(
+                {"original_event": "Only contradictory provider events require an original event."}
+            )
+        if not self.original_event_id:
+            return
+        original = self.original_event
+        if original.pk == self.pk:
+            raise ValidationError({"original_event": "A provider event cannot contradict itself."})
+        if original.resolution_status == ProviderEventResolutionStatus.CONTRADICTORY:
+            raise ValidationError({"original_event": "Contradictions must reference the original event."})
+        if (
+            original.provider_id != self.provider_id
+            or original.capability_version_id != self.capability_version_id
+            or original.merchant_account_version_id != self.merchant_account_version_id
+            or not self.provider_event_id
+            or original.provider_event_id != self.provider_event_id
+        ):
+            raise ValidationError(
+                {"original_event": "Contradiction ownership and trusted event identity must match."}
+            )
 
 
 class ProviderEventReceipt(AppendOnlyModel):
