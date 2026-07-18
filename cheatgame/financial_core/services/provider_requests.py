@@ -31,7 +31,7 @@ from cheatgame.financial_core.models import (
     Verification,
     VerificationApplicationState,
 )
-from cheatgame.financial_core.services.adapters import ProviderOperationEnvelope
+from cheatgame.financial_core.services.adapters import ImmutableProviderRequestEnvelope
 from cheatgame.financial_core.services.events import append_financial_event
 from cheatgame.financial_core.services.idempotency import IdempotencyConflict, canonical_request_hash
 from cheatgame.financial_core.services.locks import LockRank, lock_many, lock_one, ordered_lock_scope, register_lock
@@ -88,7 +88,7 @@ class TransactionCreationResult:
 @dataclass(frozen=True)
 class RequestClaimResult:
     claim: ProviderRequestClaim
-    envelope: ProviderOperationEnvelope
+    envelope: ImmutableProviderRequestEnvelope
     replayed: bool
 
 
@@ -444,16 +444,18 @@ def create_or_replay_request_transaction(
 def _request_envelope(transaction_obj, claim):
     account = transaction_obj.merchant_account_version
     capability = transaction_obj.capability_version
-    return ProviderOperationEnvelope(
+    return ImmutableProviderRequestEnvelope(
         transaction_public_id=str(transaction_obj.public_id),
         operation_type=transaction_obj.operation_type,
         provider_key=transaction_obj.provider,
         adapter_key=capability.adapter_key,
         adapter_contract_version=transaction_obj.adapter_contract_version,
+        provider_capability_version=capability.version,
         merchant_account_key=account.account_key,
         merchant_account_version=account.version,
         credential_reference=account.credential_reference,
         merchant_reference=transaction_obj.merchant_reference,
+        provider_reference=transaction_obj.provider_reference or "",
         canonical_amount=str(transaction_obj.amount),
         canonical_currency=transaction_obj.currency,
         provider_amount=str(transaction_obj.provider_amount),
@@ -461,6 +463,7 @@ def _request_envelope(transaction_obj, claim):
         provider_idempotency_reference=transaction_obj.provider_idempotency_reference or "",
         request_fingerprint=transaction_obj.request_fingerprint,
         claim_token=str(claim.claim_token),
+        callback_identity=f"financial-payment:{transaction_obj.public_id}",
         correlation_id=str(transaction_obj.correlation_id),
     )
 

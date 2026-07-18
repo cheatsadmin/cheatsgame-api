@@ -15,6 +15,10 @@ from cheatgame.digital_products.customer_checkout_apis import (
     CustomerDigitalCheckoutDetailApi,
     CustomerDigitalCheckoutPrepareApi,
 )
+from cheatgame.digital_products.customer_payment_apis import (
+    CustomerDigitalPaymentRequestApi,
+    CustomerDigitalPaymentStatusApi,
+)
 
 
 app_name = "digital-products"
@@ -56,5 +60,15 @@ urlpatterns = [
         "customer/checkout/<uuid:checkout_id>/cancel/",
         CustomerDigitalCheckoutCancelApi.as_view(),
         name="customer-checkout-cancel",
+    ),
+    path(
+        "customer/checkout/<uuid:checkout_id>/payment/request/",
+        CustomerDigitalPaymentRequestApi.as_view(),
+        name="customer-payment-request",
+    ),
+    path(
+        "customer/checkout/<uuid:checkout_id>/payment/",
+        CustomerDigitalPaymentStatusApi.as_view(),
+        name="customer-payment-status",
     ),
 ]
