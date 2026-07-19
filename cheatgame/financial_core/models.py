@@ -371,6 +371,9 @@ class ProviderCapabilityVersion(BaseModel):
         "supports_request_idempotency",
         "supports_lookup",
         "callback_authentication",
+        "callback_authentication_method",
+        "callback_authentication_version",
+        "callback_verification_is_final",
         "verification_semantics",
         "finality_window_seconds",
         "authority_expiry_seconds",
@@ -393,6 +396,9 @@ class ProviderCapabilityVersion(BaseModel):
         choices=CallbackAuthenticationStrength.choices,
         default=CallbackAuthenticationStrength.NONE,
     )
+    callback_authentication_method = models.CharField(max_length=64, blank=True)
+    callback_authentication_version = models.CharField(max_length=32, blank=True)
+    callback_verification_is_final = models.BooleanField(default=False)
     verification_semantics = models.CharField(
         max_length=32,
         choices=ProviderVerificationSemantics.choices,
@@ -416,6 +422,17 @@ class ProviderCapabilityVersion(BaseModel):
             models.CheckConstraint(
                 check=~Q(conversion_policy_version=""), name="fin_provider_conversion_version_nonempty"
             ),
+            models.CheckConstraint(
+                check=(
+                    Q(callback_verification_is_final=False)
+                    | (
+                        ~Q(callback_authentication=CallbackAuthenticationStrength.NONE)
+                        & ~Q(callback_authentication_method="")
+                        & ~Q(callback_authentication_version="")
+                    )
+                ),
+                name="fin_cap_callback_final_authenticated",
+            ),
         ]
 
     def clean(self):
@@ -425,6 +442,21 @@ class ProviderCapabilityVersion(BaseModel):
         unsupported = set(self.supported_operations) - set(PaymentTransactionOperation.values)
         if unsupported:
             raise ValidationError({"supported_operations": "Unsupported provider operation declaration."})
+        if (
+            self.callback_verification_is_final
+            and (
+                self.callback_authentication == CallbackAuthenticationStrength.NONE
+                or not self.callback_authentication_method
+                or not self.callback_authentication_version
+            )
+        ):
+            raise ValidationError(
+                {
+                    "callback_verification_is_final": (
+                        "Final callback truth requires a frozen authentication strength, method, and version."
+                    )
+                }
+            )
 
     def save(self, *args, **kwargs):
         if self.pk:
@@ -446,6 +478,7 @@ class MerchantAccountVersion(BaseModel):
         "version",
         "owner_key",
         "credential_reference",
+        "callback_signing_key_reference_hash",
     )
 
     provider = models.ForeignKey(ProviderDefinition, on_delete=models.PROTECT, related_name="merchant_accounts")
@@ -458,6 +491,7 @@ class MerchantAccountVersion(BaseModel):
     version = models.PositiveIntegerField()
     owner_key = models.CharField(max_length=128)
     credential_reference = models.CharField(max_length=255)
+    callback_signing_key_reference_hash = models.CharField(max_length=64, blank=True)
     is_enabled = models.BooleanField(default=False)
     new_requests_enabled = models.BooleanField(default=False)
     recovery_enabled = models.BooleanField(default=True)
@@ -483,6 +517,22 @@ class MerchantAccountVersion(BaseModel):
         lowered = self.credential_reference.lower()
         if any(fragment in lowered for fragment in ("password=", "secret=", "token=", "api_key=")):
             raise ValidationError({"credential_reference": "Credential values must not be stored in the database."})
+        if self.callback_signing_key_reference_hash and len(self.callback_signing_key_reference_hash) != 64:
+            raise ValidationError(
+                {"callback_signing_key_reference_hash": "Callback key identity must be a 64-character hash."}
+            )
+        if (
+            self.capability_version_id
+            and self.capability_version.callback_verification_is_final
+            and not self.callback_signing_key_reference_hash
+        ):
+            raise ValidationError(
+                {
+                    "callback_signing_key_reference_hash": (
+                        "Callback-final accounts require a frozen non-secret signing-key identity hash."
+                    )
+                }
+            )
 
     def save(self, *args, **kwargs):
         if self.pk:
@@ -1195,6 +1245,16 @@ class ProviderEvent(AppendOnlyModel):
     operation_type_hint = models.CharField(max_length=16, blank=True)
     provider_amount_hint = models.DecimalField(max_digits=20, decimal_places=0, null=True, blank=True)
     provider_unit_hint = models.CharField(max_length=16, blank=True)
+    financial_effect_hint = models.CharField(
+        max_length=16,
+        choices=VerificationFinancialEffect.choices,
+        default=VerificationFinancialEffect.UNKNOWN,
+    )
+    finality_hint = models.CharField(
+        max_length=16,
+        choices=VerificationFinality.choices,
+        default=VerificationFinality.UNKNOWN,
+    )
     normalized_hint = models.CharField(max_length=64)
     provider_occurred_at = models.DateTimeField(null=True, blank=True)
     authentication_strength = models.CharField(max_length=32, choices=CallbackAuthenticationStrength.choices)
@@ -1239,6 +1299,14 @@ class ProviderEvent(AppendOnlyModel):
                     | Q(provider_amount_hint__isnull=False, provider_unit_hint__in=MoneyUnit.values)
                 ),
                 name="fin_provider_event_money_together",
+            ),
+            models.CheckConstraint(
+                check=Q(financial_effect_hint__in=VerificationFinancialEffect.values),
+                name="fin_provider_event_effect_valid",
+            ),
+            models.CheckConstraint(
+                check=Q(finality_hint__in=VerificationFinality.values),
+                name="fin_provider_event_finality_valid",
             ),
         ]
         indexes = [
@@ -1492,6 +1560,10 @@ class Verification(AppendOnlyModel):
                         normalized_financial_effect=VerificationFinancialEffect.PAID,
                         finality=VerificationFinality.FINAL,
                         application_state=VerificationApplicationState.APPLIED_BLOCKING_SUCCESS,
+                        evidence_basis__in=(
+                            VerificationEvidenceBasis.SERVER_TO_SERVER,
+                            VerificationEvidenceBasis.AUTHENTICATED_SETTLEMENT,
+                        ),
                         observed_provider_amount__isnull=False,
                     )
                     & ~Q(provider_reference="")
@@ -1517,7 +1589,10 @@ class Verification(AppendOnlyModel):
                 raise ValidationError({"capability_version": "Verification capability must match the Transaction."})
             if self.merchant_account_version_id != transaction_obj.merchant_account_version_id:
                 raise ValidationError({"merchant_account_version": "Verification account must match the Transaction."})
-            if self.merchant_reference != transaction_obj.merchant_reference:
+            if (
+                self.normalized_outcome == VerificationOutcome.CONFIRMED_SUCCESS
+                and self.merchant_reference != transaction_obj.merchant_reference
+            ):
                 raise ValidationError({"merchant_reference": "Verification merchant reference must match."})
 
     @property

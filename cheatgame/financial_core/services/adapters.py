@@ -81,6 +81,8 @@ class NormalizedCallbackEvent:
     provider_unit_hint: str
     normalized_hint: str
     provider_occurred_at: Any = None
+    financial_effect_hint: str = "unknown"
+    finality_hint: str = "unknown"
 
 
 @dataclass(frozen=True)
@@ -102,6 +104,23 @@ class VerificationEnvelope:
     canonical_currency: str
     claim_token: str
     correlation_id: str
+    provider_event_public_id: str = ""
+    provider_event_id: str = ""
+    provider_event_evidence_hash: str = ""
+    callback_authentication_strength: str = ""
+    callback_merchant_reference: str = ""
+    callback_provider_authority: str = ""
+    callback_provider_reference: str = ""
+    callback_operation_type: str = ""
+    callback_provider_amount: str = ""
+    callback_provider_unit: str = ""
+    callback_normalized_hint: str = ""
+    callback_financial_effect: str = ""
+    callback_finality: str = ""
+    callback_provider_occurred_at: str = ""
+    callback_authentication_method: str = ""
+    callback_authentication_version: str = ""
+    callback_signing_key_reference_hash: str = ""
 
 
 @dataclass(frozen=True)
@@ -142,10 +161,10 @@ class ProviderAdapter(Protocol):
     def normalize_callback(self, authenticated_callback: Any) -> Any:
         ...
 
-    def verify_operation(self, envelope: ImmutableProviderRequestEnvelope) -> Any:
+    def verify_operation(self, envelope: VerificationEnvelope) -> Any:
         ...
 
-    def query_operation(self, envelope: ImmutableProviderRequestEnvelope) -> Any:
+    def query_operation(self, envelope: VerificationEnvelope) -> Any:
         ...
 
     def read_reconciliation_records(self, *, period_start, period_end) -> Iterable[Any]:

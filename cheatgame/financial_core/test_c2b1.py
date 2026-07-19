@@ -10,6 +10,8 @@ from uuid import uuid4
 from django.core.exceptions import ValidationError
 from django.db import DatabaseError, close_old_connections, connection, transaction
 from django.test import TransactionTestCase
+from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 
 from cheatgame.financial_core.models import (
     CallbackAuthenticationStatus,
@@ -103,10 +105,21 @@ class SyntheticC2B1Adapter:
             merchant_reference=data.get("merchant_reference", ""),
             provider_authority=data.get("authority", ""),
             provider_reference=data.get("provider_reference", ""),
-            operation_type_hint="sale",
+            operation_type_hint=data.get("operation", ""),
             provider_amount_hint=data.get("amount"),
             provider_unit_hint=data.get("unit", ""),
             normalized_hint=data.get("hint", "pending"),
+            provider_occurred_at=parse_datetime(data.get("occurred_at", "")),
+            financial_effect_hint=(
+                VerificationFinancialEffect.PAID
+                if data.get("hint", "pending") == "success"
+                else VerificationFinancialEffect.UNKNOWN
+            ),
+            finality_hint=(
+                VerificationFinality.FINAL
+                if data.get("hint", "pending") == "success"
+                else VerificationFinality.UNKNOWN
+            ),
         )
 
     def verify_operation(self, envelope):
@@ -141,17 +154,32 @@ class C2B1Fixture(C2AFixture):
         transaction_obj.refresh_from_db()
         return placement, account, attempt, transaction_obj
 
-    def callback(self, transaction_obj, account, *, event_id="evt-1", body_overrides=None, signature=True):
+    def callback(
+        self,
+        transaction_obj,
+        account,
+        *,
+        event_id="evt-1",
+        body_overrides=None,
+        signature=True,
+        correlate_by_transaction=False,
+    ):
         payload = {
             "event_id": event_id,
             "merchant_reference": transaction_obj.merchant_reference,
             "authority": "authority-1",
             "provider_reference": "provider-reference-1",
+            "operation": "sale",
             "amount": int(transaction_obj.provider_amount),
             "unit": transaction_obj.provider_unit,
             "hint": "success",
+            "occurred_at": "2026-01-01T00:00:00+00:00",
         }
-        payload.update(body_overrides or {})
+        for key, value in (body_overrides or {}).items():
+            if value is None:
+                payload.pop(key, None)
+            else:
+                payload[key] = value
         body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         headers = {
             "Content-Type": "application/json",
@@ -176,6 +204,9 @@ class C2B1Fixture(C2AFixture):
             delivery_idempotency_key=uuid4(),
             adapter_registry=registry,
             source_network="192.0.2.10",
+            callback_transaction_public_id=(
+                transaction_obj.public_id if correlate_by_transaction else None
+            ),
         )
 
     def verification_claim(self, transaction_obj, account):

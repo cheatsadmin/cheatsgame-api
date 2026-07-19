@@ -19,6 +19,7 @@ from cheatgame.financial_core.models import (
     PaymentCollectionStatus,
     PaymentTransaction,
     PaymentTransactionStatus,
+    ProviderEventResolutionStatus,
     ProviderReferenceAllocation,
     ReviewCase,
     ReviewCaseReason,
@@ -176,9 +177,10 @@ def _lock_graph(transaction_id):
     return order, payment, attempts, attempt, transactions, transaction_obj
 
 
-def _verification_envelope(transaction_obj, claim):
+def _verification_envelope(transaction_obj, claim, work=None):
     account = transaction_obj.merchant_account_version
     capability = transaction_obj.capability_version
+    event = work.provider_event if work and work.provider_event_id else None
     return VerificationEnvelope(
         transaction_public_id=str(transaction_obj.public_id),
         operation_type=transaction_obj.operation_type,
@@ -197,6 +199,17 @@ def _verification_envelope(transaction_obj, claim):
         canonical_currency=transaction_obj.currency,
         claim_token=str(claim.claim_token),
         correlation_id=str(transaction_obj.correlation_id),
+        provider_event_public_id=str(event.public_id) if event else "",
+        provider_event_id=event.provider_event_id if event else "",
+        provider_event_evidence_hash=event.canonical_envelope_hash if event else "",
+        callback_authentication_strength=event.authentication_strength if event else "",
+        callback_merchant_reference=event.merchant_reference if event else "",
+        callback_provider_authority=event.provider_authority if event else "",
+        callback_provider_reference=event.provider_reference if event else "",
+        callback_operation_type=event.operation_type_hint if event else "",
+        callback_provider_amount=(str(event.provider_amount_hint) if event and event.provider_amount_hint else ""),
+        callback_provider_unit=event.provider_unit_hint if event else "",
+        callback_normalized_hint=event.normalized_hint if event else "",
     )
 
 
@@ -231,7 +244,7 @@ def claim_verification_work(
             record = IdempotencyRecord.objects.filter(scope=scope, key=str(claim_idempotency_key)).first()
             if replay.work_item_id != work.pk or record is None or record.request_hash != request_hash:
                 raise IdempotencyConflict("Verification claim key conflicts with another request.")
-            return VerificationClaimResult(replay, _verification_envelope(transaction_obj, replay), True)
+            return VerificationClaimResult(replay, _verification_envelope(transaction_obj, replay, work), True)
         now = timezone.now()
         if work.transaction_id != transaction_obj.pk:
             raise VerificationBlocked("Verification work ownership is inconsistent.")
@@ -316,7 +329,7 @@ def claim_verification_work(
             causation_id=work.causation_id,
             metadata={"provider": transaction_obj.provider, "sequence": claim.sequence},
         )
-        return VerificationClaimResult(claim, _verification_envelope(transaction_obj, claim), False)
+        return VerificationClaimResult(claim, _verification_envelope(transaction_obj, claim, work), False)
 
 
 def _logical_review_key(transaction_obj, reason):
@@ -346,6 +359,11 @@ def _ensure_review(*, order, payment, attempt, transaction_obj, reason, severity
 
 
 def _comparison_failure(transaction_obj, result, observed_amount, observed_unit):
+    if result.evidence_basis not in (
+        VerificationEvidenceBasis.SERVER_TO_SERVER,
+        VerificationEvidenceBasis.AUTHENTICATED_SETTLEMENT,
+    ):
+        return "authoritative_evidence_basis_required"
     if result.provider_key != transaction_obj.provider:
         return "provider_identity_mismatch"
     if result.adapter_contract_version != transaction_obj.adapter_contract_version:
@@ -417,6 +435,8 @@ def apply_verification_result(
     trigger_source,
     actor_type=FinancialActorType.SYSTEM,
     actor_id=None,
+    truth_only=False,
+    retry_after_seconds=300,
 ):
     if trigger_source not in VerificationTriggerSource.values:
         raise ValidationError("Unsupported verification trigger source.")
@@ -430,6 +450,12 @@ def apply_verification_result(
         raise ValidationError("Unsupported verification transport classification.")
     if not result.evidence_hash or len(str(result.evidence_hash)) != 64:
         raise ValidationError("Verification evidence requires a 64-character sanitized hash.")
+    if truth_only and (
+        not isinstance(retry_after_seconds, int)
+        or isinstance(retry_after_seconds, bool)
+        or not 1 <= retry_after_seconds <= 86400
+    ):
+        raise ValidationError("Verification retry delay must be a bounded integer number of seconds.")
     observed_amount = None
     observed_unit = ""
     malformed_observed_money = False
@@ -527,6 +553,19 @@ def apply_verification_result(
         if existing_success and outcome != VerificationOutcome.CONFIRMED_SUCCESS:
             outcome = VerificationOutcome.CONTRADICTORY_EVIDENCE
             error_classification = "weaker_evidence_after_verified_success"
+        existing_final_unpaid = Verification.objects.filter(
+            transaction=transaction_obj,
+            application_state=VerificationApplicationState.APPLIED_UNPAID,
+        ).exists()
+        if existing_final_unpaid and outcome == VerificationOutcome.CONFIRMED_SUCCESS:
+            outcome = VerificationOutcome.CONTRADICTORY_EVIDENCE
+            error_classification = "late_success_after_final_unpaid"
+        if (
+            work.provider_event_id
+            and work.provider_event.resolution_status == ProviderEventResolutionStatus.CONTRADICTORY
+        ):
+            outcome = VerificationOutcome.CONTRADICTORY_EVIDENCE
+            error_classification = "contradictory_callback_evidence"
 
         reference_allocation = None
         if outcome == VerificationOutcome.CONFIRMED_SUCCESS:
@@ -553,13 +592,38 @@ def apply_verification_result(
             outcome = VerificationOutcome.OUTCOME_UNKNOWN
             error_classification = error_classification or "unpaid_finality_not_proven"
 
+        waiting_outcomes = (
+            VerificationOutcome.PENDING,
+            VerificationOutcome.NO_EFFECT_RETRYABLE,
+            VerificationOutcome.OUTCOME_UNKNOWN,
+            VerificationOutcome.CONFIGURATION_FAILURE,
+            VerificationOutcome.PROTOCOL_FAILURE,
+        )
+        retry_available = (
+            truth_only
+            and result.retryable
+            and outcome in waiting_outcomes
+            and work.attempt_count < work.max_attempts
+        )
+        retry_exhausted = (
+            truth_only
+            and result.retryable
+            and outcome in waiting_outcomes
+            and work.attempt_count >= work.max_attempts
+        )
+        if retry_exhausted:
+            error_classification = "verification_attempts_exhausted"
+
         if outcome == VerificationOutcome.CONFIRMED_SUCCESS:
             application_state = VerificationApplicationState.APPLIED_BLOCKING_SUCCESS
         elif definitive_unpaid and not _other_blocker(
             payment=payment, attempt=attempt, transaction_obj=transaction_obj
         ):
             application_state = VerificationApplicationState.APPLIED_UNPAID
-        elif outcome in (VerificationOutcome.PENDING, VerificationOutcome.NO_EFFECT_RETRYABLE):
+        elif retry_available or (
+            not truth_only
+            and outcome in (VerificationOutcome.PENDING, VerificationOutcome.NO_EFFECT_RETRYABLE)
+        ):
             application_state = VerificationApplicationState.UNAPPLIED
         else:
             application_state = VerificationApplicationState.REVIEW_REQUIRED
@@ -609,23 +673,63 @@ def apply_verification_result(
             result_fingerprint=result_fingerprint,
         )
 
+        if outcome == VerificationOutcome.CONFIRMED_SUCCESS and reference_allocation is None:
+            reference_allocation = ProviderReferenceAllocation.objects.create(
+                merchant_account_version=transaction_obj.merchant_account_version,
+                transaction=transaction_obj,
+                verification=verification,
+                provider_reference=result.provider_reference,
+                allocation_fingerprint=_sha(
+                    {
+                        "account": transaction_obj.merchant_account_version_id,
+                        "reference": result.provider_reference,
+                        "transaction": transaction_obj.pk,
+                    }
+                ),
+            )
+
+        if truth_only:
+            work.status = (
+                VerificationWorkStatus.WAITING
+                if retry_available
+                else VerificationWorkStatus.COMPLETED
+            )
+            work.claim_token = None
+            work.claimed_at = None
+            work.claim_expires_at = None
+            work.completed_at = None if work.status == VerificationWorkStatus.WAITING else now
+            work.next_attempt_at = now + timedelta(seconds=retry_after_seconds)
+            work.last_error_classification = error_classification
+            work.version += 1
+            work.save(
+                update_fields=(
+                    "status",
+                    "claim_token",
+                    "claimed_at",
+                    "claim_expires_at",
+                    "completed_at",
+                    "next_attempt_at",
+                    "last_error_classification",
+                    "version",
+                    "updated_at",
+                )
+            )
+            _complete_idempotency(
+                scope=scope,
+                key=result_idempotency_key,
+                request_hash=result_fingerprint,
+                result_type=verification._meta.label_lower,
+                result_id=verification.pk,
+                safe_response={
+                    "verification_public_id": str(verification.public_id),
+                    "outcome": outcome,
+                },
+            )
+            return verification
+
         review_reason = None
         enqueue_apply_work = False
         if outcome == VerificationOutcome.CONFIRMED_SUCCESS:
-            if reference_allocation is None:
-                ProviderReferenceAllocation.objects.create(
-                    merchant_account_version=transaction_obj.merchant_account_version,
-                    transaction=transaction_obj,
-                    verification=verification,
-                    provider_reference=result.provider_reference,
-                    allocation_fingerprint=_sha(
-                        {
-                            "account": transaction_obj.merchant_account_version_id,
-                            "reference": result.provider_reference,
-                            "transaction": transaction_obj.pk,
-                        }
-                    ),
-                )
             if not transaction_obj.provider_authority:
                 transaction_obj.provider_authority = result.provider_authority or None
             if not transaction_obj.provider_reference:

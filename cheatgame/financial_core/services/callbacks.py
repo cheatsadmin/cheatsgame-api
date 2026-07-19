@@ -26,6 +26,8 @@ from cheatgame.financial_core.models import (
     ProviderEvent,
     ProviderEventReceipt,
     ProviderEventResolutionStatus,
+    VerificationFinality,
+    VerificationFinancialEffect,
     VerificationWorkType,
 )
 from cheatgame.financial_core.services.adapters import (
@@ -115,6 +117,8 @@ def _normalized_fingerprint(normalized):
         ),
         "provider_unit_hint": str(normalized.provider_unit_hint).upper(),
         "normalized_hint": str(normalized.normalized_hint),
+        "financial_effect_hint": str(normalized.financial_effect_hint),
+        "finality_hint": str(normalized.finality_hint),
         "provider_occurred_at": (
             normalized.provider_occurred_at.isoformat()
             if normalized.provider_occurred_at is not None
@@ -135,6 +139,8 @@ def _event_normalized_fingerprint(event):
             provider_unit_hint=event.provider_unit_hint,
             normalized_hint=event.normalized_hint,
             provider_occurred_at=event.provider_occurred_at,
+            financial_effect_hint=event.financial_effect_hint,
+            finality_hint=event.finality_hint,
         )
     )
 
@@ -176,10 +182,15 @@ def _callback_transaction(*, account, capability, normalized, callback_transacti
         merchant_account_version=account,
         capability_version=capability,
         provider=account.provider.key,
-        merchant_reference=str(normalized.merchant_reference)[:128],
     )
     if callback_transaction_public_id:
         queryset = queryset.filter(public_id=callback_transaction_public_id)
+        if normalized.merchant_reference:
+            queryset = queryset.filter(
+                merchant_reference=str(normalized.merchant_reference)[:128]
+            )
+    else:
+        queryset = queryset.filter(merchant_reference=str(normalized.merchant_reference)[:128])
     return queryset.select_related("attempt__payment").first()
 
 
@@ -631,6 +642,7 @@ def _persist_normalized(
 
     amount = None
     unit = ""
+    authenticated_transaction_hint = bool(authenticated and callback_transaction_public_id)
     if normalized.provider_amount_hint is not None:
         try:
             amount = exact_integer_money(normalized.provider_amount_hint, field="provider_amount_hint")
@@ -638,11 +650,15 @@ def _persist_normalized(
             quarantine_reason = quarantine_reason or "malformed_provider_amount"
         unit = str(normalized.provider_unit_hint).upper()
         if unit not in MoneyUnit.values:
-            quarantine_reason = quarantine_reason or "unsupported_provider_unit"
+            if unit or not authenticated_transaction_hint:
+                quarantine_reason = quarantine_reason or "unsupported_provider_unit"
             amount = None
             unit = ""
     elif normalized.provider_unit_hint:
-        quarantine_reason = quarantine_reason or "provider_money_incomplete"
+        if authenticated_transaction_hint:
+            unit = ""
+        else:
+            quarantine_reason = quarantine_reason or "provider_money_incomplete"
 
     contradiction_event = None
     if contradiction:
@@ -723,6 +739,16 @@ def _persist_normalized(
                 provider_amount_hint=amount,
                 provider_unit_hint=unit,
                 normalized_hint=str(normalized.normalized_hint)[:64],
+                financial_effect_hint=(
+                    normalized.financial_effect_hint
+                    if normalized.financial_effect_hint in VerificationFinancialEffect.values
+                    else VerificationFinancialEffect.UNKNOWN
+                ),
+                finality_hint=(
+                    normalized.finality_hint
+                    if normalized.finality_hint in VerificationFinality.values
+                    else VerificationFinality.UNKNOWN
+                ),
                 provider_occurred_at=normalized.provider_occurred_at,
                 authentication_strength=auth.strength,
                 deduplication_identity=contradiction_dedupe,
@@ -771,6 +797,16 @@ def _persist_normalized(
         provider_amount_hint=amount,
         provider_unit_hint=unit,
         normalized_hint=str(normalized.normalized_hint)[:64],
+        financial_effect_hint=(
+            normalized.financial_effect_hint
+            if normalized.financial_effect_hint in VerificationFinancialEffect.values
+            else VerificationFinancialEffect.UNKNOWN
+        ),
+        finality_hint=(
+            normalized.finality_hint
+            if normalized.finality_hint in VerificationFinality.values
+            else VerificationFinality.UNKNOWN
+        ),
         provider_occurred_at=normalized.provider_occurred_at,
         authentication_strength=auth.strength,
         deduplication_identity=dedupe,
