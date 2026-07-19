@@ -59,11 +59,16 @@ from cheatgame.financial_core.services.state_machines import (
     assert_payment_transaction_transition,
     assert_payment_transition,
 )
+from cheatgame.financial_core.services.verification_worker import (
+    VerificationInterpretationState,
+    derive_current_verification_interpretation,
+)
 from cheatgame.shop.models import Order
 
 
 APPLICATION_NAMESPACE = UUID("fe3600d3-e223-4263-85fd-f8aa8f55bed4")
 FINALIZER_VERSION = "commercial-finalizer-v1-dormant"
+RECOGNITION_CONTRACT_VERSION = "funds-recognition-v1"
 RECEIPT_SOURCE_TYPE = "provider_receipt"
 
 
@@ -106,25 +111,35 @@ def _lock_graph(verification_id):
         rank=LockRank.PAYMENT,
         pk=ref.transaction.attempt.payment_id,
     )
-    attempt = lock_one(
+    attempts = lock_many(
         queryset=PaymentAttempt.objects.all(),
         rank=LockRank.PAYMENT_ATTEMPT,
-        pk=ref.transaction.attempt_id,
+        pks=PaymentAttempt.objects.filter(payment=payment).values_list("pk", flat=True),
     )
-    transaction_obj = lock_one(
+    transactions = lock_many(
         queryset=PaymentTransaction.objects.all(),
         rank=LockRank.PAYMENT_TRANSACTION,
-        pk=ref.transaction_id,
+        pks=PaymentTransaction.objects.filter(attempt__payment=payment).values_list("pk", flat=True),
     )
-    verification = lock_one(
+    verifications = lock_many(
         queryset=Verification.objects.all(),
         rank=LockRank.FINANCIAL_EVIDENCE,
-        pk=verification_id,
+        pks=Verification.objects.filter(transaction__attempt__payment=payment).values_list("pk", flat=True),
     )
+    attempt = next(item for item in attempts if item.pk == ref.transaction.attempt_id)
+    transaction_obj = next(item for item in transactions if item.pk == ref.transaction_id)
+    verification = next(item for item in verifications if item.pk == verification_id)
     return order, payment, attempt, transaction_obj, verification
 
 
 def _validate_exact_success(*, payment, attempt, transaction_obj, verification):
+    interpretation = derive_current_verification_interpretation(transaction_id=transaction_obj.pk)
+    if (
+        interpretation.state != VerificationInterpretationState.ELIGIBLE_FINAL_PAID
+        or interpretation.controlling_verification is None
+        or interpretation.controlling_verification.pk != verification.pk
+    ):
+        raise FundsApplicationBlocked("Current Verification interpretation is not recognition eligible.")
     if verification.normalized_outcome != VerificationOutcome.CONFIRMED_SUCCESS:
         raise FundsApplicationBlocked("Only confirmed-success Verification evidence is eligible.")
     if verification.normalized_financial_effect != VerificationFinancialEffect.PAID:
@@ -183,19 +198,18 @@ def _validate_exact_success(*, payment, attempt, transaction_obj, verification):
         merchant_account_version_id=verification.merchant_account_version_id,
         provider_reference=verification.provider_reference,
     ).first()
-    if ownership is None or ownership.transaction_id != transaction_obj.pk:
+    if (
+        ownership is None
+        or ownership.transaction_id != transaction_obj.pk
+        or ownership.verification_id != verification.pk
+    ):
         raise FundsApplicationBlocked(
             "Provider-reference ownership is missing or conflicting.",
             review_reason=ReviewCaseReason.DUPLICATE_FINANCIAL_ALLOCATION,
         )
     contradiction = Verification.objects.filter(
         transaction__attempt__payment=payment,
-        normalized_outcome__in=(
-            VerificationOutcome.MISMATCH,
-            VerificationOutcome.CONTRADICTORY_EVIDENCE,
-            VerificationOutcome.SECURITY_FAILURE,
-        ),
-        created_at__gte=verification.created_at,
+        application_state=VerificationApplicationState.REVIEW_REQUIRED,
     ).exclude(pk=verification.pk).exists()
     if contradiction:
         raise FundsApplicationBlocked(
@@ -321,14 +335,21 @@ def _apply_verified_funds_atomic(
     with ordered_lock_scope():
         order, payment, attempt, transaction_obj, verification = _lock_graph(verification_id)
         command_payload = {
+            "contract_version": RECOGNITION_CONTRACT_VERSION,
             "verification_public_id": str(verification.public_id),
+            "verification_id": verification.pk,
             "payment_public_id": str(payment.public_id),
+            "payment_id": payment.pk,
             "expected_payment_version": int(expected_payment_version),
             "actor_type": actor_type,
         }
         application_fingerprint = canonical_request_hash(command_payload)
         if actor_type not in (FinancialActorType.SYSTEM, FinancialActorType.RECONCILIATION):
             raise FundsApplicationBlocked("Only controlled system financial actors may apply verified funds.")
+        if actor_type == FinancialActorType.SYSTEM and actor_id is not None:
+            raise FundsApplicationBlocked("SYSTEM recognition cannot carry a user actor.")
+        if actor_type == FinancialActorType.RECONCILIATION and actor_id is None:
+            raise FundsApplicationBlocked("RECONCILIATION recognition requires an accountable actor identity.")
         existing_by_key = FinancialAllocation.objects.filter(
             application_idempotency_key=idempotency_key
         ).first()
@@ -357,6 +378,11 @@ def _apply_verified_funds_atomic(
             return FundsApplicationResult(existing_source, True)
         if payment.version != int(expected_payment_version):
             raise FundsApplicationBlocked("Payment version changed before funds application.")
+        if payment.collection_status not in (
+            PaymentCollectionStatus.PROCESSING,
+            PaymentCollectionStatus.REVIEW,
+        ):
+            raise FundsApplicationBlocked("Payment is not in an eligible pre-recognition state.")
         _validate_exact_success(
             payment=payment,
             attempt=attempt,
@@ -559,7 +585,7 @@ def _apply_verified_funds_atomic(
         return FundsApplicationResult(allocation, False)
 
 
-def apply_verified_funds(
+def recognize_verified_funds(
     *,
     verification_id,
     idempotency_key,
@@ -594,3 +620,8 @@ def apply_verified_funds(
             correlation_id=correlation_id,
         )
         raise
+
+
+def apply_verified_funds(**kwargs):
+    """Backward-compatible internal alias for the frozen Funds Recognition command."""
+    return recognize_verified_funds(**kwargs)
