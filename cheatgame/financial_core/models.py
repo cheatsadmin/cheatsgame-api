@@ -160,6 +160,84 @@ class FinalizationWorkStatus(models.TextChoices):
     CANCELED = "canceled", "CANCELED"
 
 
+class RecognitionSatisfactionPattern(models.TextChoices):
+    POINT_IN_TIME = "point_in_time", "POINT_IN_TIME"
+    OVER_TIME = "over_time", "OVER_TIME"
+
+
+class RecognitionAllocationMethod(models.TextChoices):
+    DIRECT_FROZEN_PRICE = "direct_frozen_price", "DIRECT_FROZEN_PRICE"
+    RELATIVE_STANDALONE_SELLING_PRICE = (
+        "relative_standalone_selling_price",
+        "RELATIVE_STANDALONE_SELLING_PRICE",
+    )
+
+
+class RecognitionPrincipalAgentClassification(models.TextChoices):
+    PRINCIPAL = "principal", "PRINCIPAL"
+    AGENT_NET = "agent_net", "AGENT_NET"
+
+
+class RecognitionProgressMethod(models.TextChoices):
+    NONE = "none", "NONE"
+    OUTPUT = "output", "OUTPUT"
+    INPUT = "input", "INPUT"
+
+
+class PerformanceObligationType(models.TextChoices):
+    PHYSICAL_GOOD = "physical_good", "PHYSICAL_GOOD"
+    DIGITAL_ACCESS_INSTALLATION = (
+        "digital_access_installation",
+        "DIGITAL_ACCESS_INSTALLATION",
+    )
+    SHIPPING = "shipping", "SHIPPING"
+    INSTALLATION_SERVICE = "installation_service", "INSTALLATION_SERVICE"
+    REPAIR_SERVICE = "repair_service", "REPAIR_SERVICE"
+    CUSTOMIZATION_SERVICE = "customization_service", "CUSTOMIZATION_SERVICE"
+    COMBINED_BUNDLE = "combined_bundle", "COMBINED_BUNDLE"
+
+
+class PerformanceObligationComponentType(models.TextChoices):
+    ORDER_LINE = "order_line", "ORDER_LINE"
+    SHIPPING = "shipping", "SHIPPING"
+    FULFILLMENT = "fulfillment", "FULFILLMENT"
+
+
+class SatisfactionEvidenceClassification(models.TextChoices):
+    POINT_IN_TIME_SATISFIED = "point_in_time_satisfied", "POINT_IN_TIME_SATISFIED"
+    PROGRESS_RECORDED = "progress_recorded", "PROGRESS_RECORDED"
+    CONTRADICTORY = "contradictory", "CONTRADICTORY"
+    CORRECTIVE = "corrective", "CORRECTIVE"
+    RESOLUTION = "resolution", "RESOLUTION"
+
+
+class SatisfactionEvidenceAuthority(models.TextChoices):
+    SYSTEM = "system", "SYSTEM"
+    STAFF = "staff", "STAFF"
+    CUSTOMER = "customer", "CUSTOMER"
+    CARRIER = "carrier", "CARRIER"
+    RECONCILIATION = "reconciliation", "RECONCILIATION"
+
+
+class RevenueRecognitionWorkPurpose(models.TextChoices):
+    RECOGNIZE_SATISFACTION = "recognize_satisfaction", "RECOGNIZE_SATISFACTION"
+    CORRECT_RECOGNITION = "correct_recognition", "CORRECT_RECOGNITION"
+
+
+class RevenueRecognitionWorkStatus(models.TextChoices):
+    PENDING = "pending", "PENDING"
+    CLAIMED = "claimed", "CLAIMED"
+    WAITING = "waiting", "WAITING"
+    COMPLETED = "completed", "COMPLETED"
+    REVIEW_REQUIRED = "review_required", "REVIEW_REQUIRED"
+    CANCELED = "canceled", "CANCELED"
+
+
+class RevenueRecognitionEffect(models.TextChoices):
+    EARN = "earn", "EARN"
+    REVERSE = "reverse", "REVERSE"
+
+
 class PaymentCollectionStatus(models.TextChoices):
     OPEN = "open", "OPEN"
     PROCESSING = "processing", "PROCESSING"
@@ -2129,6 +2207,609 @@ class DigitalInventoryCommitment(AppendOnlyModel):
                 check=~Q(reservation_set_digest=""), name="fin_digital_commit_digest_nonempty"
             ),
         ]
+
+
+class RecognitionPolicyVersion(BaseModel):
+    """Versioned accounting authority for one class of performance obligation."""
+
+    IMMUTABLE_FIELDS = (
+        "public_id",
+        "policy_key",
+        "version",
+        "policy_contract_version",
+        "commerce_authority",
+        "obligation_type",
+        "satisfaction_pattern",
+        "evidence_contract_version",
+        "progress_measurement_method",
+        "allocation_method",
+        "principal_agent_classification",
+        "contract_liability_account_id",
+        "revenue_account_id",
+        "currency",
+        "shipping_treatment",
+        "rounding_policy",
+        "maximum_recognition_basis",
+        "policy_fingerprint",
+    )
+
+    public_id = models.UUIDField(default=uuid4, unique=True, editable=False)
+    policy_key = models.CharField(max_length=128)
+    version = models.PositiveIntegerField()
+    policy_contract_version = models.CharField(max_length=64)
+    commerce_authority = models.CharField(max_length=30)
+    obligation_type = models.CharField(max_length=40, choices=PerformanceObligationType.choices)
+    satisfaction_pattern = models.CharField(max_length=20, choices=RecognitionSatisfactionPattern.choices)
+    evidence_contract_version = models.CharField(max_length=64)
+    progress_measurement_method = models.CharField(
+        max_length=16, choices=RecognitionProgressMethod.choices, default=RecognitionProgressMethod.NONE
+    )
+    allocation_method = models.CharField(max_length=48, choices=RecognitionAllocationMethod.choices)
+    principal_agent_classification = models.CharField(
+        max_length=16, choices=RecognitionPrincipalAgentClassification.choices
+    )
+    contract_liability_account = models.ForeignKey(
+        "FinancialAccount", on_delete=models.PROTECT, related_name="recognition_liability_policies"
+    )
+    revenue_account = models.ForeignKey(
+        "FinancialAccount", on_delete=models.PROTECT, related_name="recognition_revenue_policies"
+    )
+    currency = models.CharField(max_length=3, default=CANONICAL_CURRENCY)
+    shipping_treatment = models.CharField(max_length=64)
+    rounding_policy = models.CharField(max_length=64)
+    maximum_recognition_basis = models.CharField(max_length=64)
+    policy_fingerprint = models.CharField(max_length=64, unique=True)
+    active_for_new_obligations = models.BooleanField(default=False, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=("policy_key", "version"), name="fin_rec_policy_key_version_uniq"),
+            models.UniqueConstraint(
+                fields=("commerce_authority", "obligation_type"),
+                condition=Q(active_for_new_obligations=True),
+                name="fin_one_active_recognition_policy",
+            ),
+            models.CheckConstraint(check=Q(version__gt=0), name="fin_rec_policy_version_positive"),
+            models.CheckConstraint(check=Q(currency=CANONICAL_CURRENCY), name="fin_rec_policy_currency_irr"),
+            models.CheckConstraint(check=~Q(policy_key=""), name="fin_rec_policy_key_nonempty"),
+            models.CheckConstraint(check=~Q(policy_contract_version=""), name="fin_rec_policy_contract_nonempty"),
+            models.CheckConstraint(check=~Q(evidence_contract_version=""), name="fin_rec_evidence_contract_nonempty"),
+            models.CheckConstraint(check=~Q(policy_fingerprint=""), name="fin_rec_policy_fingerprint_nonempty"),
+            models.CheckConstraint(
+                check=~Q(contract_liability_account=F("revenue_account")),
+                name="fin_rec_policy_accounts_distinct",
+            ),
+            models.CheckConstraint(
+                check=(
+                    Q(
+                        satisfaction_pattern=RecognitionSatisfactionPattern.POINT_IN_TIME,
+                        progress_measurement_method=RecognitionProgressMethod.NONE,
+                    )
+                    | Q(
+                        satisfaction_pattern=RecognitionSatisfactionPattern.OVER_TIME,
+                        progress_measurement_method__in=(
+                            RecognitionProgressMethod.INPUT,
+                            RecognitionProgressMethod.OUTPUT,
+                        ),
+                    )
+                ),
+                name="fin_rec_policy_progress_coherent",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        liability = getattr(self, "contract_liability_account", None)
+        revenue = getattr(self, "revenue_account", None)
+        if liability and (
+            liability.account_type != FinancialAccountType.LIABILITY
+            or liability.currency != CANONICAL_CURRENCY
+        ):
+            raise ValidationError({"contract_liability_account": "A canonical IRR liability account is required."})
+        if revenue and (
+            revenue.account_type != FinancialAccountType.REVENUE or revenue.currency != CANONICAL_CURRENCY
+        ):
+            raise ValidationError({"revenue_account": "A canonical IRR revenue account is required."})
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            original = type(self).objects.filter(pk=self.pk).values(*self.IMMUTABLE_FIELDS).first()
+            if original and any(original[field] != getattr(self, field) for field in self.IMMUTABLE_FIELDS):
+                raise ValidationError("Recognition policy versions are immutable; create a new version.")
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("Recognition policy history cannot be deleted.")
+
+
+class PerformanceObligation(AppendOnlyModel):
+    public_id = models.UUIDField(default=uuid4, unique=True, editable=False)
+    finalization = models.ForeignKey(
+        CommercialFinalization, on_delete=models.PROTECT, related_name="performance_obligations"
+    )
+    order = models.ForeignKey("shop.Order", on_delete=models.PROTECT, related_name="performance_obligations")
+    obligation_key = models.CharField(max_length=128)
+    obligation_type = models.CharField(max_length=40, choices=PerformanceObligationType.choices)
+    commerce_authority = models.CharField(max_length=30)
+    satisfaction_pattern = models.CharField(max_length=20, choices=RecognitionSatisfactionPattern.choices)
+    recognition_policy_version = models.ForeignKey(
+        RecognitionPolicyVersion, on_delete=models.PROTECT, related_name="performance_obligations"
+    )
+    currency = models.CharField(max_length=3, default=CANONICAL_CURRENCY)
+    quantity_basis = models.PositiveBigIntegerField(default=1)
+    fulfillment_required = models.BooleanField(default=True)
+    obligation_contract_version = models.CharField(max_length=64)
+    correlation_id = models.UUIDField(db_index=True)
+    causation_id = models.UUIDField(null=True, blank=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=("finalization", "obligation_key"), name="fin_perf_obligation_key_uniq"),
+            models.CheckConstraint(check=~Q(obligation_key=""), name="fin_perf_obligation_key_nonempty"),
+            models.CheckConstraint(check=Q(quantity_basis__gt=0), name="fin_perf_obligation_quantity_positive"),
+            models.CheckConstraint(check=Q(currency=CANONICAL_CURRENCY), name="fin_perf_obligation_currency_irr"),
+            models.CheckConstraint(check=~Q(obligation_contract_version=""), name="fin_perf_obligation_contract_nonempty"),
+        ]
+
+    def clean(self):
+        super().clean()
+        finalization = getattr(self, "finalization", None)
+        policy = getattr(self, "recognition_policy_version", None)
+        if finalization and self.order_id != finalization.order_id:
+            raise ValidationError({"order": "The obligation order must own the finalization."})
+        if finalization and self.commerce_authority != finalization.commerce_authority:
+            raise ValidationError({"commerce_authority": "The obligation must preserve finalization authority."})
+        if policy and any(
+            (
+                self.commerce_authority != policy.commerce_authority,
+                self.obligation_type != policy.obligation_type,
+                self.satisfaction_pattern != policy.satisfaction_pattern,
+                self.currency != policy.currency,
+            )
+        ):
+            raise ValidationError({"recognition_policy_version": "Policy identity does not match the obligation."})
+
+
+class PerformanceObligationComponent(AppendOnlyModel):
+    obligation = models.ForeignKey(
+        PerformanceObligation, on_delete=models.PROTECT, related_name="components"
+    )
+    order = models.ForeignKey("shop.Order", on_delete=models.PROTECT, related_name="obligation_components")
+    order_item = models.ForeignKey(
+        "shop.OrderItem", on_delete=models.PROTECT, null=True, blank=True, related_name="obligation_components"
+    )
+    checkout_line = models.ForeignKey(
+        "shop.CheckoutLine", on_delete=models.PROTECT, null=True, blank=True, related_name="obligation_components"
+    )
+    standard_fulfillment_obligation = models.ForeignKey(
+        StandardFulfillmentObligation,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="performance_components",
+    )
+    digital_fulfillment_obligation = models.ForeignKey(
+        DigitalFulfillmentObligation,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="performance_components",
+    )
+    component_key = models.CharField(max_length=128)
+    component_type = models.CharField(max_length=24, choices=PerformanceObligationComponentType.choices)
+    source_authority_identity = models.CharField(max_length=128)
+    quantity = models.PositiveBigIntegerField()
+    commercial_snapshot_digest = models.CharField(max_length=64)
+    sequence = models.PositiveIntegerField()
+    component_contract_version = models.CharField(max_length=64)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=("obligation", "component_key"), name="fin_perf_component_key_uniq"),
+            models.UniqueConstraint(fields=("obligation", "sequence"), name="fin_perf_component_sequence_uniq"),
+            models.CheckConstraint(check=Q(quantity__gt=0), name="fin_perf_component_quantity_positive"),
+            models.CheckConstraint(check=Q(sequence__gt=0), name="fin_perf_component_sequence_positive"),
+            models.CheckConstraint(check=~Q(component_key=""), name="fin_perf_component_key_nonempty"),
+            models.CheckConstraint(check=~Q(source_authority_identity=""), name="fin_perf_component_source_nonempty"),
+            models.CheckConstraint(check=~Q(commercial_snapshot_digest=""), name="fin_perf_component_digest_nonempty"),
+            models.CheckConstraint(
+                check=~(Q(standard_fulfillment_obligation__isnull=False) & Q(digital_fulfillment_obligation__isnull=False)),
+                name="fin_perf_component_one_fulfillment",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        obligation = getattr(self, "obligation", None)
+        if obligation and self.order_id != obligation.order_id:
+            raise ValidationError({"order": "Component order must match its obligation."})
+        order_item = getattr(self, "order_item", None)
+        if order_item and order_item.order_id != self.order_id:
+            raise ValidationError({"order_item": "Order item is foreign to the component order."})
+        checkout_line = getattr(self, "checkout_line", None)
+        if checkout_line and obligation and checkout_line.checkout_id != obligation.finalization.order.checkout_id:
+            raise ValidationError({"checkout_line": "Checkout line is foreign to the finalized order."})
+        standard = getattr(self, "standard_fulfillment_obligation", None)
+        digital = getattr(self, "digital_fulfillment_obligation", None)
+        for field, fulfillment in (
+            ("standard_fulfillment_obligation", standard),
+            ("digital_fulfillment_obligation", digital),
+        ):
+            if fulfillment and (
+                fulfillment.finalization_id != obligation.finalization_id
+                or fulfillment.order_id != self.order_id
+                or (self.order_item_id and fulfillment.order_item_id != self.order_item_id)
+            ):
+                raise ValidationError({field: "Fulfillment lineage does not match the component."})
+
+
+class ConsiderationAllocation(AppendOnlyModel):
+    public_id = models.UUIDField(default=uuid4, unique=True, editable=False)
+    finalization = models.ForeignKey(
+        CommercialFinalization, on_delete=models.PROTECT, related_name="consideration_allocations"
+    )
+    obligation = models.OneToOneField(
+        PerformanceObligation, on_delete=models.PROTECT, related_name="consideration_allocation"
+    )
+    payment = models.ForeignKey(Payment, on_delete=models.PROTECT, related_name="consideration_allocations")
+    recognition_policy_version = models.ForeignKey(
+        RecognitionPolicyVersion, on_delete=models.PROTECT, related_name="consideration_allocations"
+    )
+    contract_liability_account = models.ForeignKey(
+        "FinancialAccount", on_delete=models.PROTECT, related_name="consideration_allocations"
+    )
+    currency = models.CharField(max_length=3, default=CANONICAL_CURRENCY)
+    allocated_amount = models.DecimalField(max_digits=20, decimal_places=0)
+    standalone_selling_price = models.DecimalField(max_digits=20, decimal_places=0)
+    standalone_selling_price_denominator = models.DecimalField(max_digits=20, decimal_places=0)
+    allocation_method = models.CharField(max_length=48, choices=RecognitionAllocationMethod.choices)
+    discount_classification = models.CharField(max_length=64)
+    shipping_classification = models.CharField(max_length=64)
+    rounding_amount = models.DecimalField(max_digits=20, decimal_places=0, default=0)
+    remainder_recipient = models.BooleanField(default=False)
+    allocation_contract_version = models.CharField(max_length=64)
+    allocation_fingerprint = models.CharField(max_length=64, unique=True)
+    application_idempotency_key = models.UUIDField(unique=True, editable=False)
+    correlation_id = models.UUIDField(db_index=True)
+    causation_id = models.UUIDField(null=True, blank=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(check=Q(allocated_amount__gte=0), name="fin_consideration_amount_nonnegative"),
+            models.CheckConstraint(check=Q(standalone_selling_price__gte=0), name="fin_consideration_ssp_nonnegative"),
+            models.CheckConstraint(check=Q(standalone_selling_price_denominator__gt=0), name="fin_consideration_denominator_positive"),
+            models.CheckConstraint(check=Q(currency=CANONICAL_CURRENCY), name="fin_consideration_currency_irr"),
+            models.CheckConstraint(check=~Q(allocation_fingerprint=""), name="fin_consideration_fingerprint_nonempty"),
+            models.CheckConstraint(check=~Q(allocation_contract_version=""), name="fin_consideration_contract_nonempty"),
+        ]
+
+    def clean(self):
+        super().clean()
+        finalization = getattr(self, "finalization", None)
+        obligation = getattr(self, "obligation", None)
+        policy = getattr(self, "recognition_policy_version", None)
+        liability = getattr(self, "contract_liability_account", None)
+        if finalization and self.payment_id != finalization.payment_id:
+            raise ValidationError({"payment": "Allocation payment must match the finalization."})
+        if obligation and self.finalization_id != obligation.finalization_id:
+            raise ValidationError({"obligation": "Allocation obligation must belong to the finalization."})
+        if obligation and self.recognition_policy_version_id != obligation.recognition_policy_version_id:
+            raise ValidationError({"recognition_policy_version": "Allocation must freeze the obligation policy."})
+        if policy and self.allocation_method != policy.allocation_method:
+            raise ValidationError({"allocation_method": "Allocation method must match the frozen policy."})
+        if policy and self.contract_liability_account_id != policy.contract_liability_account_id:
+            raise ValidationError({"contract_liability_account": "Allocation liability must match the frozen policy."})
+        if liability and (liability.account_type != FinancialAccountType.LIABILITY or liability.currency != self.currency):
+            raise ValidationError({"contract_liability_account": "Allocation requires its canonical liability account."})
+
+
+class SatisfactionEvidence(AppendOnlyModel):
+    public_id = models.UUIDField(default=uuid4, unique=True, editable=False)
+    obligation = models.ForeignKey(
+        PerformanceObligation, on_delete=models.PROTECT, related_name="satisfaction_evidence"
+    )
+    evidence_classification = models.CharField(max_length=32, choices=SatisfactionEvidenceClassification.choices)
+    source_domain = models.CharField(max_length=64)
+    source_aggregate_type = models.CharField(max_length=64)
+    source_aggregate_id = models.CharField(max_length=128)
+    source_event_id = models.CharField(max_length=128)
+    source_event_version = models.PositiveBigIntegerField()
+    evidence_contract_version = models.CharField(max_length=64)
+    standard_fulfillment_obligation = models.ForeignKey(
+        StandardFulfillmentObligation,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="satisfaction_evidence",
+    )
+    digital_fulfillment_obligation = models.ForeignKey(
+        DigitalFulfillmentObligation,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="satisfaction_evidence",
+    )
+    satisfied_quantity = models.DecimalField(max_digits=20, decimal_places=6, default=0)
+    progress_numerator = models.DecimalField(max_digits=20, decimal_places=6, null=True, blank=True)
+    progress_denominator = models.DecimalField(max_digits=20, decimal_places=6, null=True, blank=True)
+    occurred_at = models.DateTimeField(db_index=True)
+    evidence_authority = models.CharField(max_length=20, choices=SatisfactionEvidenceAuthority.choices)
+    actor_type = models.CharField(max_length=24, choices=FinancialActorType.choices)
+    actor_id = models.PositiveBigIntegerField(null=True, blank=True)
+    source_evidence_hash = models.CharField(max_length=64)
+    request_fingerprint = models.CharField(max_length=64)
+    idempotency_key = models.UUIDField(unique=True, editable=False)
+    correlation_id = models.UUIDField(db_index=True)
+    causation_id = models.UUIDField(null=True, blank=True, db_index=True)
+    corrects = models.ForeignKey(
+        "self", on_delete=models.PROTECT, null=True, blank=True, related_name="corrections"
+    )
+    contradicts = models.ForeignKey(
+        "self", on_delete=models.PROTECT, null=True, blank=True, related_name="contradictions"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=(
+                    "obligation",
+                    "source_domain",
+                    "source_aggregate_type",
+                    "source_aggregate_id",
+                    "source_event_id",
+                    "source_event_version",
+                    "source_evidence_hash",
+                ),
+                name="fin_satisfaction_source_identity_uniq",
+            ),
+            models.CheckConstraint(check=Q(source_event_version__gt=0), name="fin_satisfaction_event_version_positive"),
+            models.CheckConstraint(check=Q(satisfied_quantity__gte=0), name="fin_satisfaction_quantity_nonnegative"),
+            models.CheckConstraint(
+                check=(
+                    Q(progress_numerator__isnull=True, progress_denominator__isnull=True)
+                    | Q(
+                        progress_numerator__isnull=False,
+                        progress_denominator__isnull=False,
+                        progress_numerator__gte=0,
+                        progress_denominator__gt=0,
+                        progress_numerator__lte=F("progress_denominator"),
+                    )
+                ),
+                name="fin_satisfaction_progress_coherent",
+            ),
+            models.CheckConstraint(
+                check=~(Q(standard_fulfillment_obligation__isnull=False) & Q(digital_fulfillment_obligation__isnull=False)),
+                name="fin_satisfaction_one_fulfillment",
+            ),
+            models.CheckConstraint(check=~(Q(corrects__isnull=False) & Q(contradicts__isnull=False)), name="fin_satisfaction_one_lineage_link"),
+            models.CheckConstraint(check=~Q(source_evidence_hash=""), name="fin_satisfaction_hash_nonempty"),
+            models.CheckConstraint(check=~Q(request_fingerprint=""), name="fin_satisfaction_request_nonempty"),
+        ]
+
+    def clean(self):
+        super().clean()
+        standard = getattr(self, "standard_fulfillment_obligation", None)
+        digital = getattr(self, "digital_fulfillment_obligation", None)
+        for field, fulfillment in (
+            ("standard_fulfillment_obligation", standard),
+            ("digital_fulfillment_obligation", digital),
+        ):
+            if fulfillment and fulfillment.finalization_id != self.obligation.finalization_id:
+                raise ValidationError({field: "Fulfillment evidence is foreign to the obligation."})
+        for field in ("corrects", "contradicts"):
+            related = getattr(self, field, None)
+            if related and related.obligation_id != self.obligation_id:
+                raise ValidationError({field: "Evidence lineage cannot cross obligations."})
+
+
+class RevenueRecognitionWorkItem(BaseModel):
+    IDENTITY_FIELDS = (
+        "public_id",
+        "obligation_id",
+        "purpose",
+        "evidence_set_digest",
+        "recognition_policy_version_id",
+        "recognition_contract_version",
+        "recognition_period_key",
+        "cumulative_target_amount",
+        "deterministic_identity",
+        "max_attempts",
+        "correlation_id",
+        "causation_id",
+    )
+
+    public_id = models.UUIDField(default=uuid4, unique=True, editable=False)
+    obligation = models.ForeignKey(
+        PerformanceObligation, on_delete=models.PROTECT, related_name="recognition_work_items"
+    )
+    purpose = models.CharField(max_length=32, choices=RevenueRecognitionWorkPurpose.choices)
+    evidence_set_digest = models.CharField(max_length=64)
+    recognition_policy_version = models.ForeignKey(
+        RecognitionPolicyVersion, on_delete=models.PROTECT, related_name="recognition_work_items"
+    )
+    recognition_contract_version = models.CharField(max_length=64)
+    recognition_period_key = models.CharField(max_length=64)
+    cumulative_target_amount = models.DecimalField(max_digits=20, decimal_places=0)
+    deterministic_identity = models.CharField(max_length=64, unique=True)
+    status = models.CharField(
+        max_length=24, choices=RevenueRecognitionWorkStatus.choices, default=RevenueRecognitionWorkStatus.PENDING
+    )
+    attempt_count = models.PositiveIntegerField(default=0)
+    max_attempts = models.PositiveIntegerField(default=5)
+    next_attempt_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    claim_owner = models.CharField(max_length=128, blank=True)
+    claim_token = models.UUIDField(null=True, blank=True, unique=True)
+    claimed_at = models.DateTimeField(null=True, blank=True)
+    claim_expires_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    failure_classification = models.CharField(max_length=64, blank=True)
+    safe_result = models.JSONField(default=dict, blank=True)
+    correlation_id = models.UUIDField(db_index=True)
+    causation_id = models.UUIDField(null=True, blank=True, db_index=True)
+    version = models.PositiveBigIntegerField(default=1)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=(
+                    "obligation",
+                    "purpose",
+                    "evidence_set_digest",
+                    "recognition_period_key",
+                    "cumulative_target_amount",
+                ),
+                name="fin_recognition_work_scope_uniq",
+            ),
+            models.CheckConstraint(check=~Q(evidence_set_digest=""), name="fin_rec_work_evidence_nonempty"),
+            models.CheckConstraint(check=~Q(deterministic_identity=""), name="fin_rec_work_identity_nonempty"),
+            models.CheckConstraint(check=~Q(recognition_contract_version=""), name="fin_rec_work_contract_nonempty"),
+            models.CheckConstraint(check=~Q(recognition_period_key=""), name="fin_rec_work_period_nonempty"),
+            models.CheckConstraint(check=Q(cumulative_target_amount__gte=0), name="fin_rec_work_target_nonnegative"),
+            models.CheckConstraint(check=Q(max_attempts__gt=0), name="fin_rec_work_attempts_positive"),
+            models.CheckConstraint(check=Q(attempt_count__lte=F("max_attempts")), name="fin_rec_work_attempt_bound"),
+            models.CheckConstraint(
+                check=(
+                    Q(
+                        status__in=(RevenueRecognitionWorkStatus.PENDING, RevenueRecognitionWorkStatus.WAITING),
+                        claim_owner="",
+                        claim_token__isnull=True,
+                        claimed_at__isnull=True,
+                        claim_expires_at__isnull=True,
+                        completed_at__isnull=True,
+                    )
+                    | Q(
+                        status=RevenueRecognitionWorkStatus.CLAIMED,
+                        claim_owner__gt="",
+                        claim_token__isnull=False,
+                        claimed_at__isnull=False,
+                        claim_expires_at__isnull=False,
+                        completed_at__isnull=True,
+                    )
+                    | Q(
+                        status__in=(
+                            RevenueRecognitionWorkStatus.COMPLETED,
+                            RevenueRecognitionWorkStatus.REVIEW_REQUIRED,
+                            RevenueRecognitionWorkStatus.CANCELED,
+                        ),
+                        claim_owner="",
+                        claim_token__isnull=True,
+                        claimed_at__isnull=True,
+                        claim_expires_at__isnull=True,
+                        completed_at__isnull=False,
+                    )
+                ),
+                name="fin_recognition_work_state_coherent",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        obligation = getattr(self, "obligation", None)
+        if obligation and self.recognition_policy_version_id != obligation.recognition_policy_version_id:
+            raise ValidationError({"recognition_policy_version": "Work must preserve the obligation policy."})
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            original = type(self).objects.filter(pk=self.pk).values(*self.IDENTITY_FIELDS).first()
+            if original and any(original[field] != getattr(self, field) for field in self.IDENTITY_FIELDS):
+                raise ValidationError("Revenue-recognition work identity is immutable.")
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("Revenue-recognition work history cannot be deleted.")
+
+
+class RevenueRecognition(AppendOnlyModel):
+    public_id = models.UUIDField(default=uuid4, unique=True, editable=False)
+    obligation = models.ForeignKey(
+        PerformanceObligation, on_delete=models.PROTECT, related_name="revenue_recognitions"
+    )
+    consideration_allocation = models.ForeignKey(
+        ConsiderationAllocation, on_delete=models.PROTECT, related_name="revenue_recognitions"
+    )
+    work_item = models.OneToOneField(
+        RevenueRecognitionWorkItem,
+        on_delete=models.PROTECT,
+        related_name="revenue_recognition",
+    )
+    recognition_policy_version = models.ForeignKey(
+        RecognitionPolicyVersion, on_delete=models.PROTECT, related_name="revenue_recognitions"
+    )
+    journal_entry = models.OneToOneField(
+        "JournalEntry", on_delete=models.PROTECT, related_name="revenue_recognition"
+    )
+    effect = models.CharField(max_length=12, choices=RevenueRecognitionEffect.choices)
+    amount = models.DecimalField(max_digits=20, decimal_places=0)
+    currency = models.CharField(max_length=3, default=CANONICAL_CURRENCY)
+    cumulative_net_recognized_amount = models.DecimalField(max_digits=20, decimal_places=0)
+    evidence_set_digest = models.CharField(max_length=64)
+    recognition_period_key = models.CharField(max_length=64)
+    corrects = models.ForeignKey(
+        "self", on_delete=models.PROTECT, null=True, blank=True, related_name="corrections"
+    )
+    correction_reason = models.CharField(max_length=256, blank=True)
+    command_contract_version = models.CharField(max_length=64)
+    idempotency_key = models.UUIDField(unique=True, editable=False)
+    application_fingerprint = models.CharField(max_length=64, unique=True)
+    actor_type = models.CharField(max_length=24, choices=FinancialActorType.choices)
+    actor_id = models.PositiveBigIntegerField(null=True, blank=True)
+    correlation_id = models.UUIDField(db_index=True)
+    causation_id = models.UUIDField(null=True, blank=True, db_index=True)
+    recognized_at = models.DateTimeField(default=timezone.now, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(check=Q(amount__gt=0), name="fin_revenue_recognition_amount_positive"),
+            models.CheckConstraint(check=Q(cumulative_net_recognized_amount__gte=0), name="fin_revenue_recognition_cumulative_nonnegative"),
+            models.CheckConstraint(check=Q(currency=CANONICAL_CURRENCY), name="fin_revenue_recognition_currency_irr"),
+            models.CheckConstraint(check=~Q(evidence_set_digest=""), name="fin_revenue_recognition_evidence_nonempty"),
+            models.CheckConstraint(check=~Q(command_contract_version=""), name="fin_revenue_recognition_contract_nonempty"),
+            models.CheckConstraint(check=~Q(application_fingerprint=""), name="fin_revenue_recognition_fingerprint_nonempty"),
+            models.CheckConstraint(
+                check=(
+                    Q(actor_type=FinancialActorType.SYSTEM, actor_id__isnull=True)
+                    | Q(actor_type=FinancialActorType.RECONCILIATION, actor_id__isnull=False)
+                ),
+                name="fin_revenue_recognition_actor_authorized",
+            ),
+            models.CheckConstraint(
+                check=(
+                    Q(effect=RevenueRecognitionEffect.EARN, corrects__isnull=True, correction_reason="")
+                    | Q(effect=RevenueRecognitionEffect.REVERSE, corrects__isnull=False) & ~Q(correction_reason="")
+                ),
+                name="fin_revenue_recognition_effect_coherent",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        obligation = getattr(self, "obligation", None)
+        allocation = getattr(self, "consideration_allocation", None)
+        work = getattr(self, "work_item", None)
+        corrected = getattr(self, "corrects", None)
+        if allocation and allocation.obligation_id != self.obligation_id:
+            raise ValidationError({"consideration_allocation": "Recognition allocation is foreign to the obligation."})
+        if obligation and self.recognition_policy_version_id != obligation.recognition_policy_version_id:
+            raise ValidationError({"recognition_policy_version": "Recognition must preserve the obligation policy."})
+        if work and (work.obligation_id != self.obligation_id or work.recognition_policy_version_id != self.recognition_policy_version_id):
+            raise ValidationError({"work_item": "Recognition work lineage is incoherent."})
+        if corrected and corrected.obligation_id != self.obligation_id:
+            raise ValidationError({"corrects": "Recognition correction cannot cross obligations."})
+        journal = getattr(self, "journal_entry", None)
+        if journal and (
+            journal.source_type != "revenue_recognition" or journal.source_id != str(self.public_id)
+        ):
+            raise ValidationError({"journal_entry": "Recognition journal source identity is incoherent."})
 
 
 class FinancialAccount(BaseModel):
