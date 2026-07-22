@@ -394,7 +394,9 @@ class CustomerDigitalPaymentApiTests(TransactionTestCase):
     def test_completed_replay_precedes_later_checkout_state_validation(self):
         key = uuid4()
         self.assertEqual(self.request(key).status_code, 201)
-        Checkout.objects.filter(pk=self.checkout.pk).update(status=CheckoutStatus.PAID)
+        Checkout.objects.filter(pk=self.checkout.pk).update(
+            status=CheckoutStatus.REQUIRES_MANUAL_REVIEW
+        )
 
         replay = self.request(key)
 

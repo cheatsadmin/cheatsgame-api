@@ -10,6 +10,7 @@ from django.test import TransactionTestCase
 from cheatgame.financial_core.models import (
     CommercialAccountingPolicyVersion,
     CommercialFinalization,
+    CommercialFinalizationWorkItem,
     DigitalFulfillmentObligation,
     FinancialAccount,
     FinancialAccountType,
@@ -34,7 +35,7 @@ from cheatgame.digital_products.services.cart import add_digital_offer_to_cart
 from cheatgame.digital_products.services.checkout_preparation import prepare_digital_checkout
 from cheatgame.financial_core.services.commercial_finalization import (
     CommercialFinalizationBlocked,
-    finalize_paid_commerce,
+    finalize_commercial_work_item,
 )
 from cheatgame.financial_core.services.funds_application import apply_verified_funds
 from cheatgame.financial_core.services.idempotency import IdempotencyConflict
@@ -163,9 +164,14 @@ class CommercialFinalizerFixture(ProviderExecutionPhase1Fixture):
 
     def finalize(self, placement, *, key=None, expected_version=None):
         placement.payment.refresh_from_db()
-        return finalize_paid_commerce(
-            payment_id=placement.payment.pk,
+        work = CommercialFinalizationWorkItem.objects.get(payment=placement.payment)
+        expected_work_version = (
+            work.version - 2 if work.status == "completed" else work.version
+        )
+        return finalize_commercial_work_item(
+            work_item_public_id=work.public_id,
             idempotency_key=key or uuid4(),
+            expected_work_item_version=expected_work_version,
             expected_payment_version=(
                 placement.payment.version if expected_version is None else expected_version
             ),
@@ -250,15 +256,17 @@ class CommercialFinalizerPhase1Tests(CommercialFinalizerFixture, TransactionTest
         self.assertFalse(CommercialFinalization.objects.exists())
         self.assertFalse(StandardFulfillmentObligation.objects.exists())
 
-    def test_insufficient_inventory_rolls_back_without_losing_paid_truth(self):
+    def test_inventory_cannot_disappear_behind_payment_hold_or_lose_paid_truth(self):
         placement, _ = self.ready_standard()
         product = placement.order.order_items.get().product
-        product.quantity = 0
-        product.save(update_fields=("quantity", "updated_at"))
-        with self.assertRaises(CommercialFinalizationBlocked):
-            self.finalize(placement)
+        original_quantity = product.quantity
+        with self.assertRaises(DatabaseError), transaction.atomic():
+            product.quantity = 0
+            product.save(update_fields=("quantity", "updated_at"))
         placement.payment.refresh_from_db()
+        product.refresh_from_db()
         self.assertEqual(placement.payment.collection_status, PaymentCollectionStatus.PAID_PENDING_FINALIZATION)
+        self.assertEqual(product.quantity, original_quantity)
         self.assertFalse(CommercialFinalization.objects.exists())
 
     @skipUnless(connection.vendor == "postgresql", "PostgreSQL trigger guards require PostgreSQL.")
@@ -307,6 +315,8 @@ class CommercialFinalizerConcurrencyTests(CommercialFinalizerFixture, Transactio
         placement, _ = self.ready_standard()
         placement.payment.refresh_from_db()
         version = placement.payment.version
+        work = CommercialFinalizationWorkItem.objects.get(payment=placement.payment)
+        work_version = work.version
         barrier = Barrier(2)
         outcomes = []
 
@@ -314,9 +324,10 @@ class CommercialFinalizerConcurrencyTests(CommercialFinalizerFixture, Transactio
             close_old_connections()
             try:
                 barrier.wait()
-                result = finalize_paid_commerce(
-                    payment_id=placement.payment.pk,
+                result = finalize_commercial_work_item(
+                    work_item_public_id=work.public_id,
                     idempotency_key=uuid4(),
+                    expected_work_item_version=work_version,
                     expected_payment_version=version,
                     correlation_id=uuid4(),
                 )

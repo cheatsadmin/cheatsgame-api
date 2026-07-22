@@ -244,6 +244,7 @@ class FinancialActorType(models.TextChoices):
     ADMIN = "admin", "ADMIN"
     SUPPORT = "support", "SUPPORT"
     RECONCILIATION = "reconciliation", "RECONCILIATION"
+    COMMERCIAL_RECOVERY = "commercial_recovery", "COMMERCIAL_RECOVERY"
 
 
 class ReviewCaseStatus(models.TextChoices):
@@ -2050,6 +2051,86 @@ class DigitalFulfillmentObligation(AppendOnlyModel):
         constraints = [models.CheckConstraint(check=Q(quantity=1), name="fin_digital_fulfillment_qty_one")]
 
 
+class StandardInventoryCommitment(AppendOnlyModel):
+    """Immutable aggregate evidence for one finalized Standard Product decrement."""
+
+    public_id = models.UUIDField(default=uuid4, unique=True, editable=False)
+    finalization = models.ForeignKey(
+        CommercialFinalization, on_delete=models.PROTECT, related_name="standard_inventory_commitments"
+    )
+    order = models.ForeignKey(
+        "shop.Order", on_delete=models.PROTECT, related_name="standard_inventory_commitments"
+    )
+    product = models.ForeignKey(
+        "product.Product", on_delete=models.PROTECT, related_name="commercial_inventory_commitments"
+    )
+    reservation_set_digest = models.CharField(max_length=64)
+    pre_quantity = models.PositiveBigIntegerField()
+    committed_quantity = models.PositiveBigIntegerField()
+    post_quantity = models.PositiveBigIntegerField()
+    correlation_id = models.UUIDField(db_index=True)
+    causation_id = models.UUIDField(null=True, blank=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("finalization", "product"), name="fin_standard_commit_final_product_uniq"
+            ),
+            models.CheckConstraint(
+                check=Q(committed_quantity__gt=0), name="fin_standard_commit_quantity_positive"
+            ),
+            models.CheckConstraint(
+                check=Q(pre_quantity=F("post_quantity") + F("committed_quantity")),
+                name="fin_standard_commit_quantity_delta",
+            ),
+            models.CheckConstraint(
+                check=~Q(reservation_set_digest=""), name="fin_standard_commit_digest_nonempty"
+            ),
+        ]
+
+
+class DigitalInventoryCommitment(AppendOnlyModel):
+    """Immutable aggregate evidence for one finalized Digital Pool decrement."""
+
+    public_id = models.UUIDField(default=uuid4, unique=True, editable=False)
+    finalization = models.ForeignKey(
+        CommercialFinalization, on_delete=models.PROTECT, related_name="digital_inventory_commitments"
+    )
+    order = models.ForeignKey(
+        "shop.Order", on_delete=models.PROTECT, related_name="digital_inventory_commitments"
+    )
+    inventory_pool = models.ForeignKey(
+        "digital_products.InventoryPool",
+        on_delete=models.PROTECT,
+        related_name="commercial_inventory_commitments",
+    )
+    reservation_set_digest = models.CharField(max_length=64)
+    pre_quantity = models.PositiveBigIntegerField()
+    committed_quantity = models.PositiveBigIntegerField()
+    post_quantity = models.PositiveBigIntegerField()
+    correlation_id = models.UUIDField(db_index=True)
+    causation_id = models.UUIDField(null=True, blank=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("finalization", "inventory_pool"), name="fin_digital_commit_final_pool_uniq"
+            ),
+            models.CheckConstraint(
+                check=Q(committed_quantity__gt=0), name="fin_digital_commit_quantity_positive"
+            ),
+            models.CheckConstraint(
+                check=Q(pre_quantity=F("post_quantity") + F("committed_quantity")),
+                name="fin_digital_commit_quantity_delta",
+            ),
+            models.CheckConstraint(
+                check=~Q(reservation_set_digest=""), name="fin_digital_commit_digest_nonempty"
+            ),
+        ]
+
+
 class FinancialAccount(BaseModel):
     key = models.CharField(max_length=128, unique=True)
     name = models.CharField(max_length=200)
@@ -2250,8 +2331,17 @@ class ReviewCase(BaseModel):
 class ReviewAction(AppendOnlyModel):
     review_case = models.ForeignKey(ReviewCase, on_delete=models.PROTECT, related_name="actions")
     action_type = models.CharField(max_length=64)
+    actor_type = models.CharField(
+        max_length=20,
+        choices=FinancialActorType.choices,
+        default=FinancialActorType.ADMIN,
+    )
     actor = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="financial_review_actions"
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="financial_review_actions",
     )
     reason_code = models.CharField(max_length=64)
     note = models.CharField(max_length=1000, blank=True)
@@ -2270,6 +2360,13 @@ class ReviewAction(AppendOnlyModel):
         constraints = [
             models.CheckConstraint(check=~Q(action_type=""), name="fin_review_action_nonempty"),
             models.CheckConstraint(check=~Q(reason_code=""), name="fin_review_reason_nonempty"),
+            models.CheckConstraint(
+                check=(
+                    Q(actor_type=FinancialActorType.SYSTEM, actor__isnull=True)
+                    | (~Q(actor_type=FinancialActorType.SYSTEM) & Q(actor__isnull=False))
+                ),
+                name="fin_review_action_actor_coherent",
+            ),
             models.CheckConstraint(
                 check=Q(requires_approval=False, approved_by__isnull=True) | Q(requires_approval=True),
                 name="fin_review_approval_consistent",

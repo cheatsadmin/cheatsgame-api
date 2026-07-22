@@ -12,6 +12,12 @@ SAFE_OUTBOX_KEYS = frozenset(
         "payment_public_id",
         "new_status",
         "reason_code",
+        "commercial_finalization_public_id",
+        "order_public_id",
+        "commerce_authority",
+        "finalizer_contract_version",
+        "correlation_id",
+        "causation_id",
     }
 )
 SENSITIVE_FRAGMENTS = ("secret", "password", "credential", "token", "authorization", "cookie", "card")
