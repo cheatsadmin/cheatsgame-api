@@ -4,6 +4,7 @@ from decimal import Decimal
 from time import monotonic, sleep
 from uuid import UUID, uuid4, uuid5
 
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import DatabaseError, transaction
 from django.utils import timezone
@@ -19,6 +20,7 @@ from cheatgame.financial_core.models import (
     CommercialAccountingPolicyVersion,
     CommercialFinalization,
     CommercialFinalizationWorkItem,
+    ConsiderationAllocation,
     DigitalInventoryCommitment,
     DigitalFulfillmentObligation,
     FinancialActorType,
@@ -35,6 +37,13 @@ from cheatgame.financial_core.models import (
     PaymentTransaction,
     PaymentTransactionStatus,
     PostingDirection,
+    PerformanceObligation,
+    PerformanceObligationComponent,
+    PerformanceObligationComponentType,
+    PerformanceObligationType,
+    RecognitionAllocationMethod,
+    RecognitionPolicyVersion,
+    RecognitionSatisfactionPattern,
     ProviderReferenceAllocation,
     ReceiptAccountingPolicyVersion,
     ReviewCase,
@@ -75,12 +84,36 @@ from cheatgame.shop.services.commerce_foundation import append_commerce_event
 FINALIZER_VERSION = "commercial-finalizer-v1"
 WORK_CONTRACT_VERSION = "commercial-finalizer-v1-dormant"
 FINALIZER_CONTRACT_VERSION = "commercial-finalizer-api08-v1"
+FINALIZER_V2_CONTRACT_VERSION = "commercial-finalizer-v2-contract-liability"
+V2_STANDARD_SHIPPING_TREATMENT = "included"
 SUPPORTED_WORK_ENGINE_VERSIONS = {WORK_CONTRACT_VERSION: FINALIZER_VERSION}
 COMMERCIAL_JOURNAL_SOURCE = "commercial_reclassification"
 RECEIPT_JOURNAL_SOURCE = "provider_receipt"
 FULFILLMENT_OUTBOX_TOPIC = "commercial.fulfillment.requested"
 FINALIZATION_NAMESPACE = UUID("5c71ef26-9ace-4b8e-81fd-25e01a285cf9")
 CLAIM_LEASE = timedelta(minutes=5)
+
+
+def _new_finalization_contract():
+    return (
+        FINALIZER_V2_CONTRACT_VERSION
+        if getattr(settings, "REVENUE_RECOGNITION_V2_ENABLED", False)
+        else FINALIZER_CONTRACT_VERSION
+    )
+
+
+def _active_recognition_policy(authority, obligation_type):
+    rows = list(RecognitionPolicyVersion.objects.filter(
+        commerce_authority=authority, obligation_type=obligation_type,
+        satisfaction_pattern=RecognitionSatisfactionPattern.POINT_IN_TIME,
+        active_for_new_obligations=True,
+    ).order_by("pk"))
+    if len(rows) != 1:
+        raise CommercialFinalizationBlocked("Exactly one compatible active recognition policy is required.")
+    policy = lock_one(queryset=RecognitionPolicyVersion.objects.all(), rank=LockRank.ACCOUNTING_POLICY, pk=rows[0].pk)
+    if policy.currency != CANONICAL_CURRENCY:
+        raise CommercialFinalizationBlocked("Recognition policy must use canonical IRR.")
+    return policy
 
 
 class CommercialFinalizationBlocked(ValidationError):
@@ -294,6 +327,7 @@ def finalize_paid_commerce(
     work_claim_token=None,
     application_fingerprint=None,
     expected_policy_id=None,
+    accounting_contract=FINALIZER_CONTRACT_VERSION,
 ):
     """Atomically execute commercial obligations already backed by recognized provider funds."""
     _validate_finalizer_actor(actor_type=actor_type, actor_id=actor_id, actor_reason=actor_reason)
@@ -372,9 +406,20 @@ def finalize_paid_commerce(
             raise CommercialFinalizationBlocked("Commercial authority is unsupported.")
         if source.canonical_amount != payment.amount_due or source.canonical_currency != CANONICAL_CURRENCY:
             raise CommercialFinalizationBlocked("Payment obligation evidence does not match Payment.")
-        policy = _active_policy(authority)
-        if expected_policy_id is not None and policy.pk != int(expected_policy_id):
-            raise CommercialFinalizationBlocked("Commercial accounting policy changed before finalization.")
+        is_v2 = accounting_contract == FINALIZER_V2_CONTRACT_VERSION
+        if accounting_contract not in (FINALIZER_CONTRACT_VERSION, FINALIZER_V2_CONTRACT_VERSION):
+            raise CommercialFinalizationBlocked("Commercial accounting contract is unsupported.")
+        if is_v2:
+            obligation_type = (PerformanceObligationType.PHYSICAL_GOOD if authority == ProductCommerceAuthority.STANDARD_COMMERCE else PerformanceObligationType.DIGITAL_ACCESS_INSTALLATION)
+            recognition_policy = _active_recognition_policy(authority, obligation_type)
+            if recognition_policy.pk != int(expected_policy_id):
+                raise CommercialFinalizationBlocked("Recognition policy changed before finalization.")
+            policy = None
+        else:
+            policy = _active_policy(authority)
+            recognition_policy = None
+            if expected_policy_id is not None and policy.pk != int(expected_policy_id):
+                raise CommercialFinalizationBlocked("Commercial accounting policy changed before finalization.")
 
         order_items = _lock_ranked_rows(
             queryset=OrderItem.objects.all(),
@@ -540,23 +585,41 @@ def finalize_paid_commerce(
         )
         if frozen_merchandise_amount != merchandise_amount:
             raise CommercialFinalizationBlocked("Frozen line totals do not reconcile to the Payment obligation.")
+        if is_v2 and authority == ProductCommerceAuthority.STANDARD_COMMERCE:
+            if recognition_policy.shipping_treatment != V2_STANDARD_SHIPPING_TREATMENT:
+                raise CommercialFinalizationBlocked(
+                    "The launch v2 path supports only explicitly included shipping treatment."
+                )
 
         liability_accounts = {
             allocation.accounting_policy_version.customer_unapplied_funds_account_id
             for allocation in FinancialAllocation.objects.filter(payment=payment).select_related("accounting_policy_version")
         }
-        if liability_accounts != {policy.customer_unapplied_funds_account_id}:
+        if len(liability_accounts) != 1:
+            raise CommercialFinalizationBlocked("Recognized funds do not have one frozen liability account.")
+        source_liability_id = next(iter(liability_accounts))
+        if not is_v2 and source_liability_id != policy.customer_unapplied_funds_account_id:
             raise CommercialFinalizationBlocked("Commercial policy does not reclassify the recognized liability.")
+        if is_v2 and source_liability_id == recognition_policy.contract_liability_account_id:
+            raise CommercialFinalizationBlocked("Unapplied-funds and contract-liability accounts must be distinct.")
 
         finalization_public_id = uuid4()
         postings = [{
-            "account_id": policy.customer_unapplied_funds_account_id,
+            "account_id": source_liability_id,
             "direction": PostingDirection.DEBIT,
             "amount": payment.amount_due,
             "currency": CANONICAL_CURRENCY,
             "memo": "Release deferred customer funds",
         }]
-        if merchandise_amount:
+        if is_v2:
+            postings.append({
+                "account_id": recognition_policy.contract_liability_account_id,
+                "direction": PostingDirection.CREDIT,
+                "amount": payment.amount_due,
+                "currency": CANONICAL_CURRENCY,
+                "memo": "Commercial consideration deferred pending satisfaction",
+            })
+        elif merchandise_amount:
             postings.append({
                 "account_id": policy.merchandise_revenue_account_id,
                 "direction": PostingDirection.CREDIT,
@@ -578,7 +641,8 @@ def finalize_paid_commerce(
             idempotency_key=_deterministic_uuid(f"journal:{finalization_public_id}"),
             correlation_id=correlation_id,
             occurred_at=timezone.now(),
-            description="Deferred customer funds reclassified on commercial acceptance.",
+            description=("Customer funds classified as contract liability on commercial acceptance."
+                         if is_v2 else "Deferred customer funds reclassified on commercial acceptance."),
             postings=postings,
         )
         finalization = CommercialFinalization.objects.create(
@@ -586,6 +650,11 @@ def finalize_paid_commerce(
             payment=payment,
             order=order,
             accounting_policy_version=policy,
+            recognition_accounting_contract=(FINALIZER_V2_CONTRACT_VERSION if is_v2 else None),
+            contract_liability_account=(recognition_policy.contract_liability_account if is_v2 else None),
+            # Launch v2 permits one policy for the homogeneous obligation set.  Persisting
+            # its immutable fingerprint lets PostgreSQL independently authenticate it.
+            recognition_policy_set_digest=(recognition_policy.policy_fingerprint if is_v2 else None),
             journal_entry=journal,
             amount=payment.amount_due,
             merchandise_amount=merchandise_amount,
@@ -618,6 +687,64 @@ def finalize_paid_commerce(
                 quantity=1,
                 fulfillment_method=snapshot.fulfillment_method,
             )
+        if is_v2:
+            line_pairs = list(zip(lines, order_items))
+            for sequence, (line, item) in enumerate(line_pairs, start=1):
+                fulfillment = (
+                    StandardFulfillmentObligation.objects.get(finalization=finalization, order_item=item)
+                    if authority == ProductCommerceAuthority.STANDARD_COMMERCE
+                    else DigitalFulfillmentObligation.objects.get(finalization=finalization, order_item=item)
+                )
+                line_amount = _canonical_commercial_component(
+                    source=source, amount=line.line_payable_total, checkout_id=checkout.pk,
+                    source_field=f"lines.{line.pk}.line_payable_total",
+                )
+                if authority == ProductCommerceAuthority.STANDARD_COMMERCE and sequence == 1:
+                    line_amount += shipping_amount
+                obligation_key = f"{authority}:order-item:{item.pk}"
+                obligation = PerformanceObligation.objects.create(
+                    public_id=_deterministic_uuid(f"obligation:{finalization.public_id}:{obligation_key}"),
+                    finalization=finalization, order=order, obligation_key=obligation_key,
+                    obligation_type=recognition_policy.obligation_type,
+                    commerce_authority=authority,
+                    satisfaction_pattern=recognition_policy.satisfaction_pattern,
+                    recognition_policy_version=recognition_policy,
+                    currency=CANONICAL_CURRENCY, quantity_basis=item.quantity,
+                    fulfillment_required=True,
+                    obligation_contract_version="performance-obligation-v1",
+                    correlation_id=correlation_id, causation_id=causation_id,
+                )
+                snapshot_identity = (
+                    str(line.digital_snapshot.pk)
+                    if authority == ProductCommerceAuthority.DIGITAL_PRODUCTS else str(item.pk)
+                )
+                PerformanceObligationComponent.objects.create(
+                    obligation=obligation, order=order, order_item=item, checkout_line=line,
+                    standard_fulfillment_obligation=(fulfillment if authority == ProductCommerceAuthority.STANDARD_COMMERCE else None),
+                    digital_fulfillment_obligation=(fulfillment if authority == ProductCommerceAuthority.DIGITAL_PRODUCTS else None),
+                    component_key=f"order-line:{item.pk}",
+                    component_type=PerformanceObligationComponentType.ORDER_LINE,
+                    source_authority_identity=snapshot_identity,
+                    quantity=item.quantity,
+                    commercial_snapshot_digest=canonical_request_hash(line.snapshot),
+                    sequence=1, component_contract_version="obligation-component-v1",
+                )
+                ConsiderationAllocation.objects.create(
+                    public_id=_deterministic_uuid(f"allocation:{obligation.public_id}"),
+                    finalization=finalization, obligation=obligation, payment=payment,
+                    recognition_policy_version=recognition_policy,
+                    contract_liability_account=recognition_policy.contract_liability_account,
+                    currency=CANONICAL_CURRENCY, allocated_amount=line_amount,
+                    standalone_selling_price=line_amount,
+                    standalone_selling_price_denominator=payment.amount_due,
+                    allocation_method=recognition_policy.allocation_method,
+                    discount_classification="frozen_line_consideration",
+                    shipping_classification=("included_in_first_goods_obligation" if shipping_amount and sequence == 1 else "none"),
+                    allocation_contract_version="consideration-allocation-v1",
+                    allocation_fingerprint=canonical_request_hash({"obligation": str(obligation.public_id), "amount": str(line_amount), "policy": recognition_policy.pk}),
+                    application_idempotency_key=_deterministic_uuid(f"allocation-idempotency:{obligation.public_id}"),
+                    correlation_id=correlation_id, causation_id=causation_id,
+                )
         for product, commitment_reservations, pre_quantity, quantity, post_quantity in standard_commitment_specs:
             StandardInventoryCommitment.objects.create(
                 finalization=finalization,
@@ -858,6 +985,7 @@ def _work_application_identity(
     expected_payment_version,
     actor_type,
     frozen_policy_id=None,
+    frozen_contract=None,
 ):
     payment = work.payment
     order = payment.order
@@ -948,7 +1076,23 @@ def _work_application_identity(
             "line_total",
         )
     )
-    if frozen_policy_id is None:
+    contract_version = frozen_contract or _new_finalization_contract()
+    if contract_version == FINALIZER_V2_CONTRACT_VERSION:
+        obligation_type = (
+            PerformanceObligationType.PHYSICAL_GOOD
+            if source.commerce_authority == ProductCommerceAuthority.STANDARD_COMMERCE
+            else PerformanceObligationType.DIGITAL_ACCESS_INSTALLATION
+        )
+        policies = list(RecognitionPolicyVersion.objects.filter(
+            commerce_authority=source.commerce_authority,
+            obligation_type=obligation_type,
+            satisfaction_pattern=RecognitionSatisfactionPattern.POINT_IN_TIME,
+            active_for_new_obligations=True,
+        ).values_list("pk", flat=True)) if frozen_policy_id is None else [int(frozen_policy_id)]
+        if len(policies) != 1:
+            raise CommercialFinalizationBlocked("Exactly one active recognition policy is required.")
+        policy_id = policies[0]
+    elif frozen_policy_id is None:
         policies = list(
             CommercialAccountingPolicyVersion.objects.filter(
                 commerce_authority=source.commerce_authority,
@@ -972,7 +1116,7 @@ def _work_application_identity(
         }
     )
     payload = {
-        "contract_version": FINALIZER_CONTRACT_VERSION,
+        "contract_version": contract_version,
         "work_public_id": str(work.public_id),
         "work_id": work.pk,
         "work_contract_version": work.finalizer_version,
@@ -993,12 +1137,12 @@ def _work_application_identity(
         "receipt_journals": receipt_journals,
         "receipt_postings": receipt_postings,
         "digital_snapshots": digital_snapshots,
-        "commercial_policy_id": policy_id,
+        "accounting_policy_id": policy_id,
         "actor_type": actor_type,
         "expected_work_version": int(expected_work_version),
         "expected_payment_version": int(expected_payment_version),
     }
-    return canonical_request_hash(payload), policy_id
+    return canonical_request_hash(payload), policy_id, contract_version
 
 
 @transaction.atomic
@@ -1133,17 +1277,24 @@ def finalize_commercial_work_item(
     )
     existing = CommercialFinalization.objects.filter(payment=work_ref.payment).first()
     if existing is not None:
-        fingerprint, _ = _work_application_identity(
+        persisted_contract = existing.recognition_accounting_contract or FINALIZER_CONTRACT_VERSION
+        frozen_policy_id = (
+            existing.accounting_policy_version_id
+            if persisted_contract == FINALIZER_CONTRACT_VERSION
+            else PerformanceObligation.objects.filter(finalization=existing).values_list("recognition_policy_version_id", flat=True).first()
+        )
+        fingerprint, _, _ = _work_application_identity(
             work=work_ref,
             expected_work_version=expected_work_item_version,
             expected_payment_version=expected_payment_version,
             actor_type=actor_type,
-            frozen_policy_id=existing.accounting_policy_version_id,
+            frozen_policy_id=frozen_policy_id,
+            frozen_contract=persisted_contract,
         )
         if existing.application_fingerprint != fingerprint:
             raise IdempotencyConflict("Existing commercial finalization has different immutable command evidence.")
         return CommercialWorkFinalizationResult(existing, work_ref, True)
-    fingerprint, policy_id = _work_application_identity(
+    fingerprint, policy_id, contract_version = _work_application_identity(
         work=work_ref,
         expected_work_version=expected_work_item_version,
         expected_payment_version=expected_payment_version,
@@ -1189,6 +1340,7 @@ def finalize_commercial_work_item(
             work_claim_token=claim_token,
             application_fingerprint=fingerprint,
             expected_policy_id=policy_id,
+            accounting_contract=contract_version,
         )
     except Exception as exc:
         terminal = isinstance(exc, CommercialFinalizationBlocked) and any(

@@ -2048,8 +2048,15 @@ class CommercialFinalization(AppendOnlyModel):
     payment = models.OneToOneField(Payment, on_delete=models.PROTECT, related_name="commercial_finalization")
     order = models.OneToOneField("shop.Order", on_delete=models.PROTECT, related_name="commercial_finalization")
     accounting_policy_version = models.ForeignKey(
-        CommercialAccountingPolicyVersion, on_delete=models.PROTECT, related_name="finalizations"
+        CommercialAccountingPolicyVersion, on_delete=models.PROTECT, related_name="finalizations",
+        null=True, blank=True,
     )
+    recognition_accounting_contract = models.CharField(max_length=64, null=True, blank=True)
+    contract_liability_account = models.ForeignKey(
+        "FinancialAccount", on_delete=models.PROTECT, related_name="contract_liability_finalizations",
+        null=True, blank=True,
+    )
+    recognition_policy_set_digest = models.CharField(max_length=64, null=True, blank=True)
     journal_entry = models.OneToOneField(
         "JournalEntry", on_delete=models.PROTECT, related_name="commercial_finalization"
     )
@@ -2068,6 +2075,15 @@ class CommercialFinalization(AppendOnlyModel):
 
     class Meta:
         constraints = [
+            models.CheckConstraint(
+                check=(
+                    Q(recognition_accounting_contract__isnull=True, accounting_policy_version__isnull=False,
+                      contract_liability_account__isnull=True, recognition_policy_set_digest__isnull=True)
+                    | Q(recognition_accounting_contract="commercial-finalizer-v2-contract-liability",
+                        accounting_policy_version__isnull=True, contract_liability_account__isnull=False,
+                        recognition_policy_set_digest__isnull=False)
+                ), name="fin_commercial_accounting_contract_coherent",
+            ),
             models.CheckConstraint(check=Q(amount__gt=0), name="fin_commercial_final_amount_gt_zero"),
             models.CheckConstraint(check=Q(merchandise_amount__gte=0), name="fin_commercial_merch_gte_zero"),
             models.CheckConstraint(check=Q(shipping_amount__gte=0), name="fin_commercial_shipping_gte_zero"),
