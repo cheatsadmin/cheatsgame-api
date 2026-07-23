@@ -123,6 +123,28 @@ venv.bak/
 # mkdocs documentation
 /site
 staticfiles/
+
+# Local preview/generated artifacts
+/content*.html
+/images/
+/product/
+/product_images/
+/seed/
+/staging-seed/
+
+# Root-level local audit/media artifacts
+/*.html
+/*.png
+/*.PNG
+/*.jpg
+/*.JPG
+/*.jpeg
+/*.JPEG
+/*.svg
+/*.SVG
+/*.webp
+/*.WEBP
+
 # mypy
 .mypy_cache/
 .dmypy.json

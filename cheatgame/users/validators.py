@@ -21,7 +21,7 @@ def number_validator(password):
     regex = re.compile('[0-9]')
     if regex.search(password) == None:
         raise ValidationError(
-                _("password must include number"),
+                _("رمز عبور باید شامل عدد باشد."),
                 code="password_must_include_number"
                 )
 
@@ -29,14 +29,14 @@ def letter_validator(password):
     regex = re.compile('[a-zA-Z]')
     if regex.search(password) == None:
         raise ValidationError(
-                _("password must include letter"),
+                _("رمز عبور باید شامل حرف باشد."),
                 code="password_must_include_letter"
                 )
 
 def special_char_validator(password):
-    regex = re.compile('[@_!#$%^&*()<>?/\|}{~:]')
+    regex = re.compile('[^a-zA-Z0-9]')
     if regex.search(password) == None:
         raise ValidationError(
-                _("password must include special char"),
+                _("رمز عبور باید شامل یک نشانه مثل خط تیره یا @ باشد."),
                 code="password_must_include_special_char"
                 )

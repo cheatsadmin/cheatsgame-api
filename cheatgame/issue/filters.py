@@ -1,9 +1,11 @@
 from django_filters import (
+    BooleanFilter,
     CharFilter,
     FilterSet,
 
 )
-from django.contrib.postgres.search import SearchVector
+from django.contrib.postgres.search import SearchQuery, SearchVector
+from django.db import connection
 from django.utils import timezone
 
 from rest_framework.exceptions import APIException
@@ -16,10 +18,18 @@ class IssueFilter(FilterSet):
     created_at__range = CharFilter(method="filter_created_at__range")
     categories__in = CharFilter(method="filter_categories__in")
     tags__in = CharFilter(method="filter_tags__in")
+    is_active = BooleanFilter(field_name="is_active")
     
 
     def filter_search(self, queryset, name, value):
-        return queryset.annotate(search=SearchVector("title")).filter(search=value)
+        search_term = value.strip()
+        if not search_term:
+            return queryset
+        if connection.vendor == "postgresql":
+            return queryset.annotate(
+                search=SearchVector("title")
+            ).filter(search=SearchQuery(search_term))
+        return queryset.filter(title__icontains=search_term)
 
     def filter_categories__in(self, queryset, name, value):
         limit = 10
@@ -57,5 +67,5 @@ class IssueFilter(FilterSet):
         model = Issue
         fields = (
             "title",
+            "is_active",
         )
-

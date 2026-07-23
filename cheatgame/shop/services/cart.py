@@ -1,14 +1,40 @@
-import decimal
 from _decimal import Decimal
 from typing import List
-from unicodedata import decimal
 
 from django.db import transaction
-from django.utils import timezone
-
-from cheatgame.product.models import Product, Attachment, ProductType
+from cheatgame.product.models import (
+    Attachment,
+    AttachmentType,
+    Product,
+    ProductCommerceAuthority,
+    ProductType,
+)
 from cheatgame.shop.models import Cart, CartItemAttachment, CartItem, OrderItemAttachment, OrderItem
+from cheatgame.shop.services.pricing import product_line_payable_total, selected_attachment_unit_total
 from cheatgame.users.models import BaseUser
+
+
+class CartMutationLocked(Exception):
+    def __init__(self, cart):
+        self.cart = cart
+        super().__init__("Cart is locked by an active checkout.")
+
+
+class CartCommerceAuthorityConflict(Exception):
+    code = "MIXED_COMMERCE_AUTHORITY_NOT_SUPPORTED"
+
+
+def assert_cart_mutable(*, cart):
+    if cart.state == "locked" or cart.active_checkout_id is not None:
+        raise CartMutationLocked(cart)
+
+
+@transaction.atomic
+def lock_and_assert_user_cart_mutable(*, user):
+    cart = Cart.objects.select_for_update().filter(user=user).first()
+    if cart is not None:
+        assert_cart_mutable(cart=cart)
+    return cart
 
 
 def check_product_limit(*, product: Product, quantity: int) -> bool:
@@ -21,23 +47,59 @@ def check_product_avaliablity(*, product: Product, quantity: int) -> bool:
     return product.quantity - quantity >= 0
 
 
+@transaction.atomic
 def get_cart_or_create(*, user: BaseUser) -> Cart:
-    cart = Cart.objects.filter(user=user)
-    if cart:
-        return cart.first()
-    return Cart.objects.create(user=user)
+    # Cart is one-to-one with its owner. Locking that always-present identity
+    # serializes the otherwise racy first Cart creation for every commerce
+    # authority without introducing a Digital-only acquisition path.
+    BaseUser.objects.select_for_update().get(pk=user.pk)
+    cart, _ = Cart.objects.get_or_create(user_id=user.pk)
+    return cart
+
+
+def normalize_attachments(*, attachments: List[Attachment]) -> List[Attachment]:
+    normalized_attachments = []
+    for item in attachments or []:
+        if isinstance(item, dict):
+            attachment = item.get("attachment")
+        else:
+            attachment = item
+        if attachment:
+            normalized_attachments.append(attachment)
+    return normalized_attachments
+
+
+def validate_product_attachments(*, product: Product, attachments: List[Attachment]) -> tuple[bool, str]:
+    selected_attachments = normalize_attachments(attachments=attachments)
+    selected_attachment_types = []
+
+    for attachment in selected_attachments:
+        if attachment.product_id != product.id:
+            return False, "گزینه انتخابی برای این محصول معتبر نیست."
+        if attachment.attachment_type in selected_attachment_types:
+            return False, "از هر گروه گارانتی، بیمه یا ظرفیت فقط یک گزینه قابل انتخاب است."
+        selected_attachment_types.append(attachment.attachment_type)
+
+    if product.product_type == ProductType.GAME and AttachmentType.CAPACITY not in selected_attachment_types:
+        return False, "انتخاب ظرفیت بازی الزامی است."
+
+    required_attachments = Attachment.objects.filter(product=product, is_force_attachment=True)
+    selected_attachment_ids = {attachment.id for attachment in selected_attachments}
+    missing_required_attachments = [
+        attachment.title for attachment in required_attachments if attachment.id not in selected_attachment_ids
+    ]
+    if missing_required_attachments:
+        return False, f"انتخاب {'، '.join(missing_required_attachments)} الزامی است."
+
+    return True, ""
 
 
 def check_attachment(*, attachments: List[Attachment], ) -> bool:
     attachment_type_list = []
-    # TODO: also check force attachments
-    for item in attachments:
-        attachment = item["attachment"]
-        print(attachment)
+    for attachment in normalize_attachments(attachments=attachments):
         if attachment.attachment_type in attachment_type_list:
             return False
-        else:
-            attachment_type_list.append(attachment.attachment_type)
+        attachment_type_list.append(attachment.attachment_type)
     return True
 
 
@@ -51,63 +113,25 @@ def check_attachment_order(*, attachments: List[Attachment]) -> bool:
     return True
 
 
-def calculate_attchment_price_cart(*, attachments: List[Attachment], product: Product, cart_item: CartItem) -> decimal:
-    total_price = Decimal("0.0")
+def calculate_attchment_price_cart(*, attachments: List[Attachment], product: Product, cart_item: CartItem) -> Decimal:
+    selected_attachments = normalize_attachments(attachments=attachments)
     cart_item_attachment = []
 
-    if attachments:
-        for item in attachments:
-            attachment = item["attachment"]
-            if product.product_type == ProductType.GAME:
-                total_price = attachment.price
-            else:
-                total_price += attachment.price
-            cart_item_attachment.append(CartItemAttachment(cart_item=cart_item, attachment=attachment))
-        CartItemAttachment.objects.bulk_create(cart_item_attachment)
-        return total_price
-    else:
-        attachments_objects = Attachment.objects.filter(product=product, is_force_attachement=True)
-        for item in attachments_objects:
-            attachment = item["attachment"]
-            if product.product_type == ProductType.GAME:
-                total_price = attachment.price
-            else:
-                total_price += attachment.price
-            cart_item_attachment.append(CartItemAttachment(cart_item=cart_item, attachment=attachment))
-        CartItemAttachment.objects.bulk_create(cart_item_attachment)
-        return total_price
+    for attachment in selected_attachments:
+        cart_item_attachment.append(CartItemAttachment(cart_item=cart_item, attachment=attachment))
+    CartItemAttachment.objects.bulk_create(cart_item_attachment)
+    return selected_attachment_unit_total(attachments=selected_attachments, product=product)
 
 
 def calculate_attchment_price_order(*, attachments: List[Attachment], product: Product,
-                                    order_item: OrderItem) -> decimal:
-    total_price = Decimal("0.0")
+                                    order_item: OrderItem) -> Decimal:
+    selected_attachments = normalize_attachments(attachments=attachments)
     order_item_attachment = []
 
-    if attachments:
-        for attachment in attachments:
-            if product.product_type == ProductType.GAME:
-                total_price = attachment.price
-            else:
-                total_price += attachment.price
-            print(f"{type(order_item)}=")
-            print(f'{type(attachment)}=')
-            print("print if ")
-            order_item_attachment.append(OrderItemAttachment(order_item=order_item, attachment=attachment))
-        OrderItemAttachment.objects.bulk_create(order_item_attachment)
-        return total_price
-    else:
-        attachments_objects = Attachment.objects.filter(product=product, is_force_attachement=True)
-        for attachment in attachments_objects:
-            if product.product_type == ProductType.GAME:
-                total_price = attachment.price
-            else:
-                total_price += attachment.price
-            print("else if print")
-            print(f"{type(order_item)}=")
-            print(f'{type(attachment)}=')
-            order_item_attachment.append(OrderItemAttachment(order_item=order_item, attachment=attachment))
-        OrderItemAttachment.objects.bulk_create(order_item_attachment)
-        return total_price
+    for attachment in selected_attachments:
+        order_item_attachment.append(OrderItemAttachment(order_item=order_item, attachment=attachment))
+    OrderItemAttachment.objects.bulk_create(order_item_attachment)
+    return selected_attachment_unit_total(attachments=selected_attachments, product=product)
 
 
 def check_cart_item_exists(*, product: Product, user: BaseUser) -> bool:
@@ -119,42 +143,59 @@ def check_cart_item_exists(*, product: Product, user: BaseUser) -> bool:
 @transaction.atomic
 def add_to_cart(*, attachment: List[Attachment], quantity: int, product: Product, user: BaseUser) -> CartItem:
     cart = get_cart_or_create(user=user)
+    cart = Cart.objects.select_for_update().get(id=cart.id)
+    assert_cart_mutable(cart=cart)
+    if product.commerce_authority != ProductCommerceAuthority.STANDARD_COMMERCE:
+        raise CartCommerceAuthorityConflict("Digital Products require the Digital Cart service.")
+    if CartItem.objects.filter(cart=cart).exclude(
+        commerce_authority=ProductCommerceAuthority.STANDARD_COMMERCE
+    ).exists():
+        raise CartCommerceAuthorityConflict("Mixed Commerce authority is not supported.")
     cart_item = CartItem.objects.create(cart=cart, price=0, product=product)
     total_attachment_price = calculate_attchment_price_cart(attachments=attachment, cart_item=cart_item,
                                                             product=product)
     cart_item.quantity = quantity
-    price = product.price if not product.discount_end_time or product.discount_end_time < timezone.now() else product.off_price
-    if product.product_type == ProductType.GAME:
-        cart_item.price = total_attachment_price * quantity
-    else:
-        cart_item.price = price * quantity + total_attachment_price
+    cart_item.price = product_line_payable_total(
+        product=product,
+        attachment_total=total_attachment_price,
+        quantity=quantity,
+    )
     cart_item.save()
     return cart_item
 
 
-def cartitem_attachment_total_price(*, cart_item: CartItem) -> decimal:
-    attachment_list = CartItemAttachment.objects.filter(cart_item=cart_item)
-    total_price = 0
-    for attachment in attachment_list:
-        if cart_item.product.product_type == ProductType.GAME:
-            total_price = attachment.attachment.price
-        else:
-            total_price += attachment.attachment.price
-    return total_price
+def cartitem_attachment_total_price(*, cart_item: CartItem) -> Decimal:
+    attachments = [
+        item.attachment for item in CartItemAttachment.objects.filter(cart_item=cart_item).select_related("attachment")
+    ]
+    return selected_attachment_unit_total(attachments=attachments, product=cart_item.product)
 
 
 @transaction.atomic
 def update_cart_item(*, cart_item: CartItem, quantity: int = None):
-    price = cart_item.product.price if not cart_item.product.discount_end_time or cart_item.product.discount_end_time < timezone.now() else cart_item.product.off_price
+    cart_item_identity = CartItem.objects.filter(id=cart_item.id).values("cart_id").get()
+    locked_cart = Cart.objects.select_for_update().get(id=cart_item_identity["cart_id"])
+    assert_cart_mutable(cart=locked_cart)
+    cart_item = CartItem.objects.select_for_update().select_related("cart", "product").get(id=cart_item.id)
+    if cart_item.commerce_authority != ProductCommerceAuthority.STANDARD_COMMERCE:
+        raise CartCommerceAuthorityConflict("Digital CartItems cannot use Standard quantity mutation.")
     attachment_price = cartitem_attachment_total_price(cart_item=cart_item)
-    if cart_item.product.product_type == ProductType.GAME:
-        cart_item.price = quantity * attachment_price
-    else:
-        cart_item.price = quantity * price + attachment_price
+    cart_item.price = product_line_payable_total(
+        product=cart_item.product,
+        attachment_total=attachment_price,
+        quantity=quantity,
+    )
     cart_item.quantity = quantity
     cart_item.save()
     return cart_item
 
 
+@transaction.atomic
 def delete_cart_item(*, cart_item_id: int) -> None:
-    CartItem.objects.get(id=cart_item_id).delete()
+    cart_item_identity = CartItem.objects.filter(id=cart_item_id).values("cart_id").get()
+    locked_cart = Cart.objects.select_for_update().get(id=cart_item_identity["cart_id"])
+    assert_cart_mutable(cart=locked_cart)
+    cart_item = CartItem.objects.select_for_update().get(id=cart_item_id, cart=locked_cart)
+    if cart_item.commerce_authority != ProductCommerceAuthority.STANDARD_COMMERCE:
+        raise CartCommerceAuthorityConflict("Digital CartItems require the Digital Cart service.")
+    cart_item.delete()

@@ -1,5 +1,6 @@
 from enum import IntEnum
 
+from django.core.exceptions import ValidationError
 from django.utils.text import slugify
 
 from cheatgame.common.models import BaseModel
@@ -17,6 +18,22 @@ class ProductType(IntEnum):
     @classmethod
     def choices(cls):
         return [(key.value, key.name) for key in cls]
+
+
+class ProductStatus(models.TextChoices):
+    DRAFT = "draft", "DRAFT"
+    PUBLISHED = "published", "PUBLISHED"
+    HIDDEN = "hidden", "HIDDEN"
+
+
+class ProductCommerceAuthority(models.TextChoices):
+    STANDARD_COMMERCE = "standard_commerce", "STANDARD_COMMERCE"
+    DIGITAL_PRODUCTS = "digital_products", "DIGITAL_PRODUCTS"
+
+
+class NativeConsole(models.TextChoices):
+    PS4 = "ps4", "PS4"
+    PS5 = "ps5", "PS5"
 
 
 class ProductOrderBy(IntEnum):
@@ -97,6 +114,12 @@ class RatingChoices(IntEnum):
         return [(key.value, key.name) for key in cls]
 
 
+class ReviewStatus(models.TextChoices):
+    PENDING = "pending", "PENDING"
+    APPROVED = "approved", "APPROVED"
+    REJECTED = "rejected", "REJECTED"
+
+
 class DirectionType(IntEnum):
     SEND = 1
     RECIEVE = 2
@@ -111,10 +134,23 @@ class Product(BaseModel):
         choices=ProductType.choices(),
         default=ProductType.PHYSCIAL,
     )
+    commerce_authority = models.CharField(
+        max_length=30,
+        choices=ProductCommerceAuthority.choices,
+        default=ProductCommerceAuthority.STANDARD_COMMERCE,
+    )
     title = models.CharField(
         max_length=100
     )
-    slug = models.SlugField(db_index=True, unique=True, allow_unicode=True)
+    slug = models.SlugField(db_index=True, unique=True, allow_unicode=True, max_length=120, blank=True)
+    status = models.CharField(
+        max_length=20,
+        choices=ProductStatus.choices,
+        default=ProductStatus.PUBLISHED,
+        db_index=True,
+    )
+    seo_title = models.CharField(max_length=120, blank=True, default="")
+    meta_description = models.CharField(max_length=300, blank=True, default="")
     main_image = models.FileField(
         upload_to="product/main_images/"
     )
@@ -144,12 +180,80 @@ class Product(BaseModel):
     device_model = models.CharField(max_length=100, null=True, blank=True)
     score = models.DecimalField(max_digits=4 , decimal_places=2, default=4.8)
 
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                check=models.Q(commerce_authority__in=ProductCommerceAuthority.values),
+                name="product_commerce_authority_valid",
+            ),
+            models.CheckConstraint(
+                check=(
+                    models.Q(commerce_authority=ProductCommerceAuthority.STANDARD_COMMERCE)
+                    | models.Q(product_type=ProductType.GAME.value)
+                ),
+                name="product_digital_authority_game_only",
+            ),
+        ]
+
     def __str__(self):
         return self.title
 
+    def generate_unique_slug(self) -> str:
+        base_slug = slugify(self.title, allow_unicode=True) or "product"
+        base_slug = base_slug[:110]
+        slug = base_slug
+        counter = 2
+        queryset = self.__class__.objects.all()
+        if self.pk:
+            queryset = queryset.exclude(pk=self.pk)
+
+        while queryset.filter(slug=slug).exists():
+            suffix = f"-{counter}"
+            slug = f"{base_slug[:120 - len(suffix)]}{suffix}"
+            counter += 1
+        return slug
+
     def save(self, *args, **kwargs):
-        self.slug = slugify(self.title, allow_unicode=True)
+        if not self.slug:
+            self.slug = self.generate_unique_slug()
         super(Product, self).save(*args, **kwargs)
+
+
+class DeliveredVersion(BaseModel):
+    """A deliverable console version; pricing and inventory live elsewhere."""
+
+    product = models.ForeignKey(
+        Product,
+        on_delete=models.PROTECT,
+        related_name="delivered_versions",
+    )
+    native_console = models.CharField(max_length=10, choices=NativeConsole.choices)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                check=models.Q(native_console__in=NativeConsole.values),
+                name="delivered_version_console_valid",
+            ),
+            models.UniqueConstraint(
+                fields=("product", "native_console"),
+                condition=models.Q(is_active=True),
+                name="unique_active_delivered_version",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.product_id and self.product.product_type != ProductType.GAME:
+            raise ValidationError({"product": "Delivered versions require a GAME product."})
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.product} - {self.get_native_console_display()}"
 
 
 class GiftCartData(BaseModel):
@@ -205,7 +309,6 @@ class Category(MPTTModel):
     )
     name = models.CharField(
         max_length=50,
-        unique=True
     )
     slug = models.SlugField(
         unique=True,
@@ -223,7 +326,8 @@ class Category(MPTTModel):
         return self.name
 
     def save(self, *args, **kwargs):
-        self.slug = slugify(self.name, allow_unicode=True)
+        if not self.slug:
+            self.slug = slugify(self.name, allow_unicode=True)
         super(Category, self).save(*args, **kwargs)
 
 
@@ -342,10 +446,22 @@ class Reviews(BaseModel):
     rating = models.IntegerField(
         choices=RatingChoices.choices()
     )
+    status = models.CharField(
+        max_length=20,
+        choices=ReviewStatus.choices,
+        default=ReviewStatus.PENDING,
+        db_index=True,
+    )
     accepted = models.BooleanField(default=False)
 
     class Meta:
         unique_together = ("product" , "user")
+
+    def save(self, *args, **kwargs):
+        self.accepted = self.status == ReviewStatus.APPROVED
+        if kwargs.get("update_fields") is not None:
+            kwargs["update_fields"] = set(kwargs["update_fields"]) | {"accepted"}
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return self.user.lastname

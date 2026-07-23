@@ -8,8 +8,12 @@ from cheatgame.api.pagination import get_paginated_response, LimitOffsetPaginati
 from cheatgame.product.models import DeliveryOption
 from cheatgame.product.permissions import ManagerPermission, CustomerPermission
 from cheatgame.shop.models import DiscountType, DiscountValueType, Discount, DeliverySide, DeliveryType, UserDiscount
-from cheatgame.shop.selectors.discount import discount_list_admin, check_discount_code, check_coupon_code, \
-    discount_list_user
+from cheatgame.shop.selectors.discount import (
+    discount_list_admin,
+    discount_list_user,
+    serialize_discount_validation,
+    validate_discount_code,
+)
 from cheatgame.shop.services.delivery_type import create_delivery_type
 from cheatgame.shop.services.discount import create_discount, update_discount, delete_discount
 
@@ -197,13 +201,12 @@ class CheckUserDiscountApi(ApiAuthMixin, APIView):
     def post(self, request):
         serializer = self.CheckDiscountInPutSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        try:
-            result = check_discount_code(code=serializer.validated_data.get("code"),
-                                         total_price=serializer.validated_data.get("total_price"),
-                                         user=request.user)
-            return Response({"message": result}, status=status.HTTP_200_OK)
-        except Exception as error:
-            return Response({"error": "مشکلی در استعلام کد تخفیف به وجود آمد"})
+        result = validate_discount_code(
+            code=serializer.validated_data.get("code"),
+            total_price=serializer.validated_data.get("total_price"),
+            user=request.user,
+        )
+        return Response(serialize_discount_validation(result), status=status.HTTP_200_OK)
 
 
 class CheckCouponApi(ApiAuthMixin, APIView):
@@ -217,9 +220,8 @@ class CheckCouponApi(ApiAuthMixin, APIView):
     def post(self, request):
         serializer = self.CheckCouponInPutSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        try:
-            result = check_coupon_code(code=serializer.validated_data.get("code"),
-                                       total_price=serializer.validated_data.get("total_price"))
-            return Response({"message": result}, status=status.HTTP_200_OK)
-        except Exception as error:
-            return Response({"error": "مشکلی در استعلام کد تخفیف به وجود آمد"})
+        result = validate_discount_code(
+            code=serializer.validated_data.get("code"),
+            total_price=serializer.validated_data.get("total_price"),
+        )
+        return Response(serialize_discount_validation(result), status=status.HTTP_200_OK)

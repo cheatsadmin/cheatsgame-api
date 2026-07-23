@@ -17,12 +17,23 @@ class CategoryAdminApi(ApiAuthMixin, APIView):
     class CategoryInPutSerializer(serializers.Serializer):
         category_type = serializers.ChoiceField(choices=CategoryType.choices())
         name = serializers.CharField(max_length=50, required=True)
-        parent = serializers.PrimaryKeyRelatedField(required=False, queryset=Category.objects.all())
+        slug = serializers.SlugField(max_length=50, required=False, allow_blank=True, allow_unicode=True)
+        parent = serializers.PrimaryKeyRelatedField(required=False, allow_null=True, queryset=Category.objects.all())
 
     class CategoryOutPutSerializer(serializers.ModelSerializer):
+        product_count = serializers.SerializerMethodField()
+        total_product_count = serializers.SerializerMethodField()
+
+        def get_product_count(self, obj):
+            return ProductCategory.objects.filter(category=obj).count()
+
+        def get_total_product_count(self, obj):
+            category_ids = obj.get_descendants(include_self=True).values_list("id", flat=True)
+            return ProductCategory.objects.filter(category_id__in=category_ids).count()
+
         class Meta:
             model = Category
-            fields = ("id", "name", "category_type", "parent",)
+            fields = ("id", "name", "slug", "category_type", "parent", "level", "product_count", "total_product_count",)
 
     @extend_schema(request=CategoryInPutSerializer, responses={status.HTTP_201_CREATED:CategoryOutPutSerializer})
     def post(self, request):
@@ -32,11 +43,12 @@ class CategoryAdminApi(ApiAuthMixin, APIView):
             category = create_category(
                 name=serializer.validated_data.get("name"),
                 category_type=serializer.validated_data.get("category_type"),
-                parent=serializer.validated_data.get("parent")
+                parent=serializer.validated_data.get("parent"),
+                slug=serializer.validated_data.get("slug", ""),
             )
             return Response(self.CategoryOutPutSerializer(category).data, status=status.HTTP_201_CREATED)
         except Exception as error:
-            return Response({"error": "مشکلی رخ داده است."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": str(error) or "مشکلی رخ داده است."}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class CategoryDetailApi(ApiAuthMixin, APIView):
@@ -45,12 +57,23 @@ class CategoryDetailApi(ApiAuthMixin, APIView):
     class CategoryDetailInPutSerializer(serializers.Serializer):
         category_type = serializers.ChoiceField(choices=CategoryType.choices())
         name = serializers.CharField(max_length=50, required=True)
-        parent = serializers.PrimaryKeyRelatedField(required=False, queryset=Category.objects.all())
+        slug = serializers.SlugField(max_length=50, required=False, allow_blank=True, allow_unicode=True)
+        parent = serializers.PrimaryKeyRelatedField(required=False, allow_null=True, queryset=Category.objects.all())
 
     class CategoryDetailOutPutSerializer(serializers.ModelSerializer):
+        product_count = serializers.SerializerMethodField()
+        total_product_count = serializers.SerializerMethodField()
+
+        def get_product_count(self, obj):
+            return ProductCategory.objects.filter(category=obj).count()
+
+        def get_total_product_count(self, obj):
+            category_ids = obj.get_descendants(include_self=True).values_list("id", flat=True)
+            return ProductCategory.objects.filter(category_id__in=category_ids).count()
+
         class Meta:
             model = Category
-            fields = ("id", "name", "category_type", "parent",)
+            fields = ("id", "name", "slug", "category_type", "parent", "level", "product_count", "total_product_count",)
 
     @extend_schema(request=CategoryDetailInPutSerializer,
                    responses={status.HTTP_200_OK: CategoryDetailOutPutSerializer})
@@ -62,11 +85,12 @@ class CategoryDetailApi(ApiAuthMixin, APIView):
                 category_id=id,
                 category_type=serializer.validated_data.get("category_type"),
                 parent=serializer.validated_data.get("parent"),
-                name=serializer.validated_data.get("name")
+                name=serializer.validated_data.get("name"),
+                slug=serializer.validated_data.get("slug", ""),
             )
             return Response(self.CategoryDetailOutPutSerializer(category).data, status=status.HTTP_200_OK)
         except Exception as error:
-            return Response({"error": "مشکلی رخ داده است."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": str(error) or "مشکلی رخ داده است."}, status=status.HTTP_400_BAD_REQUEST)
 
     @extend_schema(responses={status.HTTP_200_OK: dict})
     def delete(self, request, id: int):
@@ -74,20 +98,29 @@ class CategoryDetailApi(ApiAuthMixin, APIView):
             delete_category(category_id=id)
             return Response({"message": "آیتم مورد نظر با موفقیت حذف گردید."}, status=status.HTTP_200_OK)
         except Exception as error:
-            return Response({"error": "مشکلی رخ داده است."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": str(error) or "مشکلی رخ داده است."}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class CategoryListOutPutSerializer(serializers.ModelSerializer):
     children = serializers.SerializerMethodField()
+    product_count = serializers.SerializerMethodField()
+    total_product_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Category
-        fields = ("id", "name", "category_type", "parent", "children")
+        fields = ("id", "name", "slug", "category_type", "parent", "level", "product_count", "total_product_count", "children")
 
     def get_children(self, obj) -> dict :
-        children = Category.objects.filter(parent=obj)
+        children = obj.get_children()
         serializer = CategoryListOutPutSerializer(children, many=True)
         return serializer.data
+
+    def get_product_count(self, obj):
+        return ProductCategory.objects.filter(category=obj).count()
+
+    def get_total_product_count(self, obj):
+        category_ids = obj.get_descendants(include_self=True).values_list("id", flat=True)
+        return ProductCategory.objects.filter(category_id__in=category_ids).count()
 
 
 class CategoryListApi(APIView):
@@ -118,7 +151,7 @@ class ProductCategoryAdminApi(ApiAuthMixin, APIView):
     class ProductCategoryInPutSerializer(serializers.Serializer):
         product = serializers.PrimaryKeyRelatedField(required=True, queryset=Product.objects.all())
         category = serializers.PrimaryKeyRelatedField(required=True, queryset=Category.objects.filter(
-            category_type=CategoryType.PRODUCT))
+            category_type__in=(CategoryType.PRODUCT, CategoryType.GAME, CategoryType.GIFTCART)))
 
     @extend_schema(
         request=ProductCategoryInPutSerializer(many=True),
@@ -143,7 +176,7 @@ class ProductCategoryDetailApi(ApiAuthMixin, APIView):
     class ProductCategoryDetailInPutSerializer(serializers.Serializer):
         product = serializers.PrimaryKeyRelatedField(required=True, queryset=Product.objects.all())
         category = serializers.PrimaryKeyRelatedField(required=True, queryset=Category.objects.filter(
-            category_type=CategoryType.PRODUCT))
+            category_type__in=(CategoryType.PRODUCT, CategoryType.GAME, CategoryType.GIFTCART)))
 
     class ProuductCategoryDetailOutPutSerializer(serializers.ModelSerializer):
         class Meta:

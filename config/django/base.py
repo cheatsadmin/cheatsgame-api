@@ -8,7 +8,17 @@ FORGET_PASSWORD_PATTERN = env("FORGET_PASSWORD_PATTERN", default=None)
 PANEL_SMS_URL = env("PANEL_SMS_URL", default=None)
 PANEL_SMS_USER = env("PANEL_SMS_USER", default=None)
 PANEL_SMS_PASS = env("PANEL_SMS_PASS", default=None)
+PANEL_SMS_API_KEY = env("PANEL_SMS_API_KEY", default=None)
+PANEL_SMS_FROM = env("PANEL_SMS_FROM", default=None)
+PANEL_SMS_PATTERN_VARIABLE = env("PANEL_SMS_PATTERN_VARIABLE", default=None)
+PANEL_SMS_TIMEOUT_SECONDS = env.int("PANEL_SMS_TIMEOUT_SECONDS", default=15)
+COMMERCE_CHECKOUT_V2_ENABLED = env.bool("COMMERCE_CHECKOUT_V2_ENABLED", default=False)
+COMMERCE_CHECKOUT_TTL_SECONDS = env.int("COMMERCE_CHECKOUT_TTL_SECONDS", default=1800)
+COMMERCE_CHECKOUT_MAXIMUM_LIFETIME_SECONDS = env.int(
+    "COMMERCE_CHECKOUT_MAXIMUM_LIFETIME_SECONDS", default=7200
+)
 PAYMENT_GATEWAY_PROVIDER = env("PAYMENT_GATEWAY_PROVIDER", default="fake")
+PAYMENT_FAKE_PROVIDER_ENABLED = env.bool("PAYMENT_FAKE_PROVIDER_ENABLED", default=True)
 PAYMENT_SUCCESS_REDIRECT_URL = env("PAYMENT_SUCCESS_REDIRECT_URL", default="")
 PAYMENT_AMOUNT_UNIT = env("PAYMENT_AMOUNT_UNIT", default="IRT")
 ZARINPAL_MERCHANT_ID = env("ZARINPAL_MERCHANT_ID", default="")
@@ -25,6 +35,12 @@ ZARINPAL_STARTPAY_URL = env(
     "ZARINPAL_STARTPAY_URL",
     default="https://sandbox.zarinpal.com/pg/StartPay/{authority}",
 )
+BLOG_AI_PROVIDER = env("BLOG_AI_PROVIDER", default="openai_compatible")
+BLOG_AI_MODEL = env("BLOG_AI_MODEL", default="gpt-4o-mini")
+BLOG_AI_API_KEY = env("BLOG_AI_API_KEY", default="")
+BLOG_AI_API_URL = env("BLOG_AI_API_URL", default="https://api.openai.com/v1/chat/completions")
+BLOG_AI_MOCK_ENABLED = env.bool("BLOG_AI_MOCK_ENABLED", default=False)
+BLOG_AI_TIMEOUT_SECONDS = env.int("BLOG_AI_TIMEOUT_SECONDS", default=30)
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = '=ug_ucl@yi6^mrcjyz%(u0%&g2adt#bz3@yos%#@*t#t!ypx=a'
 
@@ -45,6 +61,8 @@ LOCAL_APPS = [
     'cheatgame.product.apps.ProductConfig',
     "cheatgame.general.apps.GeneralConfig",
     "cheatgame.shop.apps.ShopConfig",
+    "cheatgame.digital_products.apps.DigitalProductsConfig",
+    "cheatgame.financial_core.apps.FinancialCoreConfig",
     "cheatgame.issue.apps.IssueConfig",
 ]
 
@@ -182,6 +200,11 @@ REST_FRAMEWORK = {
         'password_reset_confirm': env('DRF_THROTTLE_PASSWORD_RESET_CONFIRM', default='10/min'),
         'checkout_write': env('DRF_THROTTLE_CHECKOUT_WRITE', default='60/min'),
         'payment_write': env('DRF_THROTTLE_PAYMENT_WRITE', default='60/min'),
+        'review_submit': env('DRF_THROTTLE_REVIEW_SUBMIT', default='10/min'),
+        # C2B1's callback view is intentionally not URL-wired. Keep the fixed
+        # boundary configured so direct validation cannot accidentally run
+        # without a conservative abuse-control policy.
+        'financial_callback': env('DRF_THROTTLE_FINANCIAL_CALLBACK', default='120/min'),
     },
 }
 

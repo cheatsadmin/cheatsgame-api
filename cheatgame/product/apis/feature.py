@@ -23,6 +23,12 @@ class FeatureAdminApi(ApiAuthMixin, APIView):
         category = serializers.PrimaryKeyRelatedField(required=True, queryset=Category.objects.filter(
             category_type=CategoryType.FEATURE))
 
+        def validate_name(self, value):
+            clean_value = value.strip()
+            if not clean_value:
+                raise serializers.ValidationError("عنوان ویژگی را وارد کنید.")
+            return clean_value
+
     class FeatureOutPutSerializer(serializers.ModelSerializer):
         class Meta:
             model = Feature
@@ -85,9 +91,14 @@ class ProductFeatureAdminApi(ApiAuthMixin, APIView):
     permission_classes = (AdminOrManagerPermission,)
 
     class ProductFeatureInPutSerializer(serializers.Serializer):
-        value = serializers.CharField(max_length=100)
+        value = serializers.CharField(max_length=100, trim_whitespace=True)
         product = serializers.PrimaryKeyRelatedField(required=True, queryset=Product.objects.all())
         feature = serializers.PrimaryKeyRelatedField(required=True, queryset=Feature.objects.all())
+
+        def validate_value(self, value):
+            if not value:
+                raise serializers.ValidationError("مقدار ویژگی محصول را وارد کنید.")
+            return value
 
     class ProductFeatureOutPutSerializer(serializers.ModelSerializer):
         class Meta:
@@ -137,9 +148,14 @@ class ProductFeatureDetailApi(ApiAuthMixin, APIView):
     permission_classes = (AdminOrManagerPermission,)
 
     class ProductFeatureDetailInPutSerializer(serializers.Serializer):
-        value = serializers.CharField(max_length=100)
+        value = serializers.CharField(max_length=100, trim_whitespace=True)
         product = serializers.PrimaryKeyRelatedField(required=True, queryset=Product.objects.all())
         feature = serializers.PrimaryKeyRelatedField(required=True, queryset=Feature.objects.all())
+
+        def validate_value(self, value):
+            if not value:
+                raise serializers.ValidationError("مقدار ویژگی محصول را وارد کنید.")
+            return value
 
     class ProductFeatureDetailOutPutSerializer(serializers.ModelSerializer):
         class Meta:

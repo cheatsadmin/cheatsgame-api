@@ -4,6 +4,8 @@ from django_filters import (
 
 )
 from django.contrib.postgres.search import SearchVector
+from django.db import connection
+from django.db.models import Q
 from django.utils import timezone
 
 from cheatgame.general.models import Blog
@@ -14,9 +16,14 @@ class BlogFilter(FilterSet):
     search = CharFilter(method="filter_search")
     created_at__range = CharFilter(method="filter_created_at__range")
     categories__in = CharFilter(method="filter_categories__in")
+    status = CharFilter(field_name="status")
 
     def filter_search(self, queryset, name, value):
-        return queryset.annotate(search=SearchVector("title")).filter(search=value)
+        if not value:
+            return queryset
+        if connection.vendor != "postgresql":
+            return queryset.filter(Q(title__icontains=value) | Q(slug__icontains=value))
+        return queryset.annotate(search=SearchVector("title", "slug")).filter(search=value)
 
     def filter_categories__in(self, queryset, name, value):
         limit = 10

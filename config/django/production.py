@@ -6,11 +6,22 @@ DEBUG = env.bool("DEBUG", default=False)
 if DEBUG:
     raise ImproperlyConfigured("DEBUG must be False in production.")
 
+PAYMENT_GATEWAY_PROVIDER = env("PAYMENT_GATEWAY_PROVIDER", default=PAYMENT_GATEWAY_PROVIDER)
+if PAYMENT_GATEWAY_PROVIDER.strip().lower() == "fake":
+    raise ImproperlyConfigured("The fake payment provider is forbidden in production.")
+PAYMENT_FAKE_PROVIDER_ENABLED = False
+
 SECRET_KEY = env('SECRET_KEY')
 
 ALLOWED_HOSTS = env.list('ALLOWED_HOSTS')
 if not ALLOWED_HOSTS or "*" in ALLOWED_HOSTS:
     raise ImproperlyConfigured("ALLOWED_HOSTS must be explicitly set in production.")
+ALLOWED_HOSTS = list(dict.fromkeys([
+    *ALLOWED_HOSTS,
+    "127.0.0.1",
+    "localhost",
+    "[::1]",
+]))
 
 CORS_ALLOW_ALL_ORIGINS = False
 CORS_ALLOWED_ORIGINS = env.list(
@@ -31,6 +42,11 @@ CSRF_COOKIE_SAMESITE = env('CSRF_COOKIE_SAMESITE', default='Lax')
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 # https://docs.djangoproject.com/en/dev/ref/settings/#secure-ssl-redirect
 SECURE_SSL_REDIRECT = env.bool("SECURE_SSL_REDIRECT", default=True)
+SECURE_REDIRECT_EXEMPT = list(dict.fromkeys([
+    *globals().get("SECURE_REDIRECT_EXEMPT", []),
+    r"^health/live/$",
+    r"^health/ready/$",
+]))
 SECURE_HSTS_SECONDS = env.int("SECURE_HSTS_SECONDS", default=31536000)
 SECURE_HSTS_INCLUDE_SUBDOMAINS = env.bool("SECURE_HSTS_INCLUDE_SUBDOMAINS", default=True)
 SECURE_HSTS_PRELOAD = env.bool("SECURE_HSTS_PRELOAD", default=True)
@@ -46,4 +62,4 @@ AWS_ACCESS_KEY_ID=  env('AWS_ACCESS_KEY_ID')
 AWS_SECRET_ACCESS_KEY= env('AWS_SECRET_ACCESS_KEY')
 AWS_STORAGE_BUCKET_NAME = env('AWS_STORAGE_BUCKET_NAME')
 AWS_S3_REGION_NAME = env('AWS_S3_REGION_NAME')
-
+AWS_S3_CUSTOM_DOMAIN = env('AWS_S3_CUSTOM_DOMAIN', default=None)

@@ -49,7 +49,10 @@ def authenticate_user(request, user_type):
         return Response({'error': 'رمز یا نام کاربری صحیح نمی باشد.'}, status=status.HTTP_401_UNAUTHORIZED)
 
     if not user.phone_verified:
-        return Response({'error': 'ابتدا شماره خود را تایید کنید.'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({
+            'error': 'ابتدا شماره خود را تایید کنید.',
+            'code': 'PHONE_NOT_VERIFIED',
+        }, status=status.HTTP_400_BAD_REQUEST)
 
 
     return user

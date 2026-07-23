@@ -22,7 +22,7 @@ class AttachmentAdminApi(ApiAuthMixin, APIView):
                                          decimal_places=0)
         is_force_attachment = serializers.BooleanField()
         product = serializers.PrimaryKeyRelatedField(required=True, queryset=Product.objects.all())
-        description = serializers.CharField(max_length=250 , required=False)
+        description = serializers.CharField(max_length=250, required=False, allow_blank=True, allow_null=True)
 
     class AttachmentOutPutSerializer(serializers.ModelSerializer):
         class Meta:
@@ -59,7 +59,7 @@ class AttachmentDetailApi(ApiAuthMixin, APIView):
                                          decimal_places=0)
         is_force_attachment = serializers.BooleanField()
         product = serializers.PrimaryKeyRelatedField(queryset=Product.objects.all())
-        description = serializers.CharField(max_length=250 , required=False)
+        description = serializers.CharField(max_length=250, required=False, allow_blank=True, allow_null=True)
 
     class AttachmentDetailOutPutSerializer(serializers.ModelSerializer):
         class Meta:
@@ -108,7 +108,7 @@ class AttachmentListProductApi(ApiAuthMixin, APIView):
     class AttachmentListOutPutSerializer(serializers.ModelSerializer):
         class Meta:
             model = Attachment
-            fields = ("id", "attachment_type", "title", "price", "is_force_attachment", "product")
+            fields = ("id", "attachment_type", "title", "price", "is_force_attachment", "product", "description")
 
     @extend_schema(responses=AttachmentListOutPutSerializer)
     def get(self, request, product_id):

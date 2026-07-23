@@ -276,6 +276,8 @@ class ZarinpalProvider(PaymentProvider):
 def get_payment_provider(*, provider: Optional[str] = None) -> PaymentProvider:
     provider_name = (provider or settings.PAYMENT_GATEWAY_PROVIDER or FakePaymentProvider.name).lower()
     if provider_name == FakePaymentProvider.name:
+        if not settings.PAYMENT_FAKE_PROVIDER_ENABLED:
+            raise PaymentProviderError("Fake payment provider is disabled.")
         return FakePaymentProvider()
     if provider_name == ZarinpalProvider.name:
         return ZarinpalProvider()

@@ -4,13 +4,29 @@ from cheatgame.shop.apis.cart import AddToCart, CartItemDetail, CartItemListApi,
     OrderListCustomerAPIView, GameListCustomerAPIView, OrderDetailUserApi, OrderDetailCustomerAPIView, SellReport, \
     OrderListAdminAPIView, OrderDetailAdminAPIView
 from cheatgame.shop.apis.delivery_schedule import DeliveryScheduleAdminApi, DeliveryScheduleDetailAdminApi, \
-    DeliveryScheduleList, DeliveryDataApi
+    DeliveryScheduleList, DeliveryDataApi, RepairDeliveryScheduleGeneratorAdminApi
 from cheatgame.shop.apis.delivery_type import DeliveryTypeAdminApi, DeliveryTypeDetailApi, DeliveryTypeListApi
 from cheatgame.shop.apis.discount import DiscountAdminApi, DiscountDetailSerializer, DiscountListAdmin, \
     CheckUserDiscountApi, CheckCouponApi, DiscountListUser
 from cheatgame.shop.apis.payment import CreatePaymentRequestApi, PaymentTransactionDetailApi, VerifyPaymentApi
+from cheatgame.shop.apis.checkout import (
+    ActiveCheckoutApi,
+    CheckoutAddressApi,
+    CheckoutCancelApi,
+    CheckoutCreateApi,
+    CheckoutDetailApi,
+    CheckoutScheduleApi,
+    CheckoutShippingApi,
+)
 
 urlpatterns = [
+    path("checkouts/", CheckoutCreateApi.as_view(), name="checkout-v2-create"),
+    path("checkout/active/", ActiveCheckoutApi.as_view(), name="checkout-v2-active"),
+    path("checkouts/<uuid:public_id>/", CheckoutDetailApi.as_view(), name="checkout-v2-detail"),
+    path("checkouts/<uuid:public_id>/address/", CheckoutAddressApi.as_view(), name="checkout-v2-address"),
+    path("checkouts/<uuid:public_id>/shipping/", CheckoutShippingApi.as_view(), name="checkout-v2-shipping"),
+    path("checkouts/<uuid:public_id>/schedule/", CheckoutScheduleApi.as_view(), name="checkout-v2-schedule"),
+    path("checkouts/<uuid:public_id>/cancel/", CheckoutCancelApi.as_view(), name="checkout-v2-cancel"),
     path("create-discount-code/", DiscountAdminApi.as_view(), name="create-discount"),
     path("discount-detail/<int:id>/", DiscountDetailSerializer.as_view(), name="discount-detail-manager"),
     path("discount-list-manager/", DiscountListAdmin.as_view(), name="discount-list-manager"),
@@ -24,6 +40,7 @@ urlpatterns = [
     path("udpate-cart-item/<int:id>/", CartItemDetail.as_view(), name="cart-item-detail"),
     path("cart-item-list/", CartItemListApi.as_view(), name="cart-item-list"),
     path("create-list-delivery-schedule/" , DeliveryScheduleAdminApi.as_view() , name = "create-delivery-schdule-list"),
+    path("repair-delivery-schedule-generator/" , RepairDeliveryScheduleGeneratorAdminApi.as_view() , name="repair-delivery-schedule-generator"),
     path("delivery-schedule-detail/<int:id>/" , DeliveryScheduleDetailAdminApi.as_view() , name="delivery-schdule-detail"),
     path("delivery-schedule-list/" , DeliveryScheduleList.as_view() , name="delivery-list"),
     path("book-time/" , DeliveryDataApi.as_view() , name="book-time"),

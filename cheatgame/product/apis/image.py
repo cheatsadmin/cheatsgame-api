@@ -39,6 +39,8 @@ class ImageAdminApi(ApiAuthMixin, APIView):
 
 
 class ImageDetailAdminApi(ApiAuthMixin, APIView):
+    parser_classes = (MultiPartParser, FormParser)
+
     class ImageDetailInPutSerializer(serializers.Serializer):
         product = serializers.PrimaryKeyRelatedField(required=True, queryset=Product.objects.all())
         image = serializers.FileField(read_only=True)

@@ -13,7 +13,7 @@ from cheatgame.product.apis.product import ProductAdminApi, ProudctApi, ProductN
     ProductNoteDetailApi, ProductDetailApi, ProductDetailAdminApi
 from cheatgame.product.apis.question import QuestionApi, QuestionDetailAdminApi, QuestionListAPIView
 from cheatgame.product.apis.rating import ReviewListAPIView
-from cheatgame.product.apis.reviews import ReviewsCreateAPIView
+from cheatgame.product.apis.reviews import ReviewsCreateAPIView, ReviewDetailAdminAPIView
 from cheatgame.product.apis.suggestion import SuggestionProductAdminApi, SuggestionProductDetailApi
 from cheatgame.shop.apis.cart import IsBoughtProductAPIView
 
@@ -62,6 +62,7 @@ urlpatterns = [
     path("product-note-detail/<int:id>/", ProductNoteDetailApi.as_view(), name="product-note-detail"),
     path("is-bought-product/" , IsBoughtProductAPIView.as_view() ,name="is-bought-product"),
     path("product-review/" ,ReviewsCreateAPIView.as_view() , name="product-review-create"),
+    path("review-detail-admin/<int:id>/" , ReviewDetailAdminAPIView.as_view() , name="review-detail-admin"),
     path("question-list-admin/" , QuestionListAPIView.as_view() , name="question-list-admin"),
     path("review-list-admin/" , ReviewListAPIView.as_view() , name="review-list-admin"),
 

@@ -2,19 +2,33 @@ from cheatgame.product.models import Category, Feature, Product, ValuesList
 
 
 def create_feature(*, name: str, feature_type: int, category: Category) -> Feature:
-    return Feature.objects.create(
-        name=name,
-        feature_type=feature_type,
-        category=category
+    feature, _ = Feature.objects.get_or_create(
+        name=name.strip(),
+        category=category,
+        defaults={"feature_type": feature_type},
     )
+    if feature.feature_type != feature_type:
+        feature.feature_type = feature_type
+        feature.save(update_fields=["feature_type"])
+    return feature
 
 
 def create_product_feature(*, value: str, product: Product, feature: Feature) -> ValuesList:
-    return ValuesList.objects.create(
-        value=value,
-        product=product,
-        feature=feature
-    )
+    clean_value = value.strip()
+    existing_values = ValuesList.objects.filter(product=product, feature=feature).order_by("id")
+    values_list = existing_values.first()
+
+    if values_list is None:
+        return ValuesList.objects.create(
+            value=clean_value,
+            product=product,
+            feature=feature
+        )
+
+    values_list.value = clean_value
+    values_list.save(update_fields=["value"])
+    existing_values.exclude(id=values_list.id).delete()
+    return values_list
 
 
 def update_feature(*, feature_id: int, name: str, feature_type: int, category: Category) -> Feature:

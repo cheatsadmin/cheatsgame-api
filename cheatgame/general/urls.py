@@ -2,7 +2,7 @@ from django.urls import path, register_converter
 from django.urls.converters import SlugConverter
 
 from cheatgame.general.apis import StoryAdminApi, StoryDetailApi, StoryListApi, SliderAdminApi, SliderListApi, \
-    SliderDetailApi, BannerAdminApi, BannerApi, BannerListApi, BlogAdminApi, BlogDetailApi, BlogListApi, \
+    SliderDetailApi, BannerAdminApi, BannerApi, BannerListApi, BlogAdminApi, BlogAiDraftAdminApi, BlogDetailApi, BlogListApi, \
     BlogDetailUserApi, BlogCategoryAdminApi, BlogCategoryDetailApi, UploadFileS3ApiView, HomePageReportApi, \
     CreateMessageAdminApi, MessageDetailAdminApi, CreateUserMessageList, MessageListUserOutPutSerializer, \
     UserMessageListApi, UserMessageSeenApi, MessageListApi, CommonQuestionAdminApi, CommonQuestionDetialAdminApi, \
@@ -25,6 +25,7 @@ urlpatterns = [
     path("banner/<int:id>/", BannerApi.as_view(), name="banner-change"),
     path("banner-list/", BannerListApi.as_view(), name="banner-list"),
     path("create-blog/", BlogAdminApi.as_view(), name="create-blog-admin"),
+    path("admin/blog-ai-draft/", BlogAiDraftAdminApi.as_view(), name="blog-ai-draft-admin"),
     path("blog-detail/<int:id>/", BlogDetailApi.as_view(), name="blog-detail-admin"),
     path("blog-list/", BlogListApi.as_view(), name="blog-list"),
     path("blog-detail/<custom_slug:slug>/", BlogDetailUserApi.as_view(), name="blog-detail"),

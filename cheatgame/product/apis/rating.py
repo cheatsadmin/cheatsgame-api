@@ -5,7 +5,7 @@ from rest_framework.views import APIView
 
 from cheatgame.api.mixins import ApiAuthMixin
 from cheatgame.api.pagination import LimitOffsetPagination, PaginatedSerializer, get_paginated_response
-from cheatgame.product.models import Reviews
+from cheatgame.product.models import Reviews, ReviewStatus
 from cheatgame.product.permissions import AdminOrManagerPermission
 from cheatgame.product.selectors.rating import review_list
 
@@ -22,7 +22,8 @@ class ReviewListAPIView(ApiAuthMixin, APIView):
         default_limit = 10
 
     class ReviewFilterSerializer(serializers.Serializer):
-        is_accepted = serializers.BooleanField(required=False)
+        is_accepted = serializers.CharField(required=False)
+        status = serializers.ChoiceField(choices=ReviewStatus.choices, required=False)
 
     class PaginationParameterSerializer(serializers.Serializer):
         limit = serializers.IntegerField(required=False)

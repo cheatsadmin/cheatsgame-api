@@ -182,6 +182,38 @@ class OtpSecurityTests(TestCase):
         self.assertEqual(stdout.getvalue(), "")
 
 
+class UserProfileTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = BaseUser.objects.create_user(
+            phone_number="09170000009",
+            firstname="Old",
+            lastname="Name",
+            password="StrongPass123!",
+        )
+        self.user.email = "old@example.com"
+        self.user.phone_verified = True
+        self.user.save(update_fields=["email", "phone_verified"])
+        self.client.force_authenticate(self.user)
+
+    def test_customer_can_update_profile_without_email(self):
+        response = self.client.put(
+            "/api/user/user/",
+            {
+                "firstname": "New",
+                "lastname": "Name",
+            },
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.firstname, "New")
+        self.assertEqual(self.user.lastname, "Name")
+        self.assertIsNone(self.user.email)
+        self.assertEqual(response.data["phone_number"], self.user.phone_number)
+
+
 class AddressOwnershipTests(TestCase):
     def setUp(self):
         self.client = APIClient()

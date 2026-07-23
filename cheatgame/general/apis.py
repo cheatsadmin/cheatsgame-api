@@ -1,15 +1,18 @@
 from drf_spectacular.utils import extend_schema
+from django.core.files.storage import default_storage
 from rest_framework import serializers, status
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from storages.backends.s3boto3 import S3Boto3Storage
 
 from cheatgame.api.mixins import ApiAuthMixin
 from cheatgame.api.pagination import LimitOffsetPagination, get_paginated_response, PaginatedSerializer
 from cheatgame.api.utils import inline_serializer
 from cheatgame.common.utils import reformat_url, safe_file_url
-from cheatgame.general.models import Story, Slider, BannerLocations, Banner, Blog, BlogCategory, Message, UserMessage, \
+from django.utils.text import slugify
+
+from cheatgame.general.blog_ai import BlogAiConfigurationError, BlogAiError, BlogAiValidationError, generate_blog_ai_draft
+from cheatgame.general.models import Story, Slider, BannerLocations, Banner, Blog, BlogCategory, BlogStatus, Message, UserMessage, \
     CommonQuestionLocation, CommonQuestion, Comment
 from cheatgame.general.selectors import get_stories, get_sliders, get_banners, blog_list, get_blog, \
     get_user_message_list, get_message_list, get_common_question_list, get_comment_list_blog
@@ -25,6 +28,30 @@ from cheatgame.users.models import BaseUser, UserTypes
 from cheatgame.users.selectors import customers_numbers
 
 
+def can_manage_blog(request) -> bool:
+    return (
+        request.user
+        and request.user.is_authenticated
+        and request.user.user_type in (UserTypes.ADMIN, UserTypes.MANAGER)
+    )
+
+
+def can_manage_homepage_content(request) -> bool:
+    return can_manage_blog(request)
+
+
+def validate_unique_blog_slug(value: str, *, blog_id: int = None):
+    if not value:
+        return value
+    normalized_slug = slugify(value, allow_unicode=True)
+    queryset = Blog.objects.filter(slug=normalized_slug)
+    if blog_id:
+        queryset = queryset.exclude(id=blog_id)
+    if queryset.exists():
+        raise serializers.ValidationError("این اسلاگ قبلا برای مقاله دیگری استفاده شده است.")
+    return normalized_slug
+
+
 class StoryAdminApi(ApiAuthMixin, APIView):
     permission_classes = (AdminOrManagerPermission,)
 
@@ -33,20 +60,23 @@ class StoryAdminApi(ApiAuthMixin, APIView):
         picture = serializers.FileField()
         link = serializers.URLField()
         content_picture = serializers.FileField()
+        is_active = serializers.BooleanField(required=False, default=True)
+        sort_order = serializers.IntegerField(required=False, min_value=0, default=0)
+        alt_text = serializers.CharField(max_length=200, required=False, allow_blank=True, default="")
 
     class StoryOutPutSerializer(serializers.ModelSerializer):
         picture = serializers.SerializerMethodField()
         content_picture = serializers.SerializerMethodField()
 
         def get_picture(self, obj):
-            return reformat_url(url = obj.content_picture.url)
+            return safe_file_url(file=obj.picture)
 
         def get_content_picture(self, obj):
-            return reformat_url(url = obj.content_picture.url)
+            return safe_file_url(file=obj.content_picture)
 
         class Meta:
             model = Story
-            fields = ("id", "title", "picture", "link", "content_picture",)
+            fields = ("id", "title", "picture", "link", "content_picture", "is_active", "sort_order", "alt_text")
 
     @extend_schema(request=StoryInPutSerializer, responses=StoryOutPutSerializer)
     def post(self, request):
@@ -58,6 +88,9 @@ class StoryAdminApi(ApiAuthMixin, APIView):
                 link=serializer.validated_data.get("link"),
                 picture=request.FILES.get("picture"),
                 content_picture=request.FILES.get("content_picture"),
+                is_active=serializer.validated_data.get("is_active", True),
+                sort_order=serializer.validated_data.get("sort_order", 0),
+                alt_text=serializer.validated_data.get("alt_text", ""),
             )
             return Response(self.StoryOutPutSerializer(story).data, status=status.HTTP_201_CREATED)
         except Exception as error:
@@ -70,18 +103,18 @@ class StoryListApi(APIView):
         content_picture = serializers.SerializerMethodField()
 
         def get_picture(self, obj):
-            return reformat_url(url = obj.picture.url)
+            return safe_file_url(file=obj.picture)
 
         def get_content_picture(self, obj):
-            return reformat_url(url = obj.content_picture.url)
+            return safe_file_url(file=obj.content_picture)
         class Meta:
             model = Story
-            fields = ("id", "title", "picture", "link", "content_picture",)
+            fields = ("id", "title", "picture", "link", "content_picture", "is_active", "sort_order", "alt_text")
 
     @extend_schema(responses=StoryListOutPutSerializer)
     def get(self, request):
         try:
-            stories = get_stories()
+            stories = get_stories(include_inactive=can_manage_homepage_content(request))
             return Response(self.StoryListOutPutSerializer(stories, many=True).data, status=status.HTTP_200_OK)
         except Exception as error:
             return Response({"دریافت لیست استوری با مشکل مواجهه شد."}, status=status.HTTP_400_BAD_REQUEST)
@@ -92,22 +125,25 @@ class StoryDetailApi(ApiAuthMixin, APIView):
 
     class StoryDetailInPutSerializer(serializers.Serializer):
         title = serializers.CharField(max_length=50)
-        picture = serializers.FileField()
+        picture = serializers.FileField(required=False)
         link = serializers.URLField()
-        content_picture = serializers.FileField()
+        content_picture = serializers.FileField(required=False)
+        is_active = serializers.BooleanField(required=False, default=True)
+        sort_order = serializers.IntegerField(required=False, min_value=0, default=0)
+        alt_text = serializers.CharField(max_length=200, required=False, allow_blank=True, default="")
 
     class StoryDetailOutPutSerializer(serializers.ModelSerializer):
         picture = serializers.SerializerMethodField()
         content_picture = serializers.SerializerMethodField()
 
         def get_picture(self, obj):
-            return reformat_url(url=obj.content_picture.url)
+            return safe_file_url(file=obj.picture)
 
         def get_content_picture(self, obj):
-            return reformat_url(url=obj.content_picture.url)
+            return safe_file_url(file=obj.content_picture)
         class Meta:
             model = Story
-            fields = ("id", "title", "picture", "link", "content_picture",)
+            fields = ("id", "title", "picture", "link", "content_picture", "is_active", "sort_order", "alt_text")
 
     @extend_schema(request=StoryDetailInPutSerializer, responses={status.HTTP_200_OK: StoryDetailOutPutSerializer})
     def put(self, request, id: int):
@@ -120,6 +156,9 @@ class StoryDetailApi(ApiAuthMixin, APIView):
                 link=serializer.validated_data.get("link"),
                 picture=request.FILES.get("picture", None),
                 content_picture=request.FILES.get("content_picture", None),
+                is_active=serializer.validated_data.get("is_active", True),
+                sort_order=serializer.validated_data.get("sort_order", 0),
+                alt_text=serializer.validated_data.get("alt_text", ""),
             )
             return Response(self.StoryDetailOutPutSerializer(story).data, status=status.HTTP_200_OK)
         except Exception as error:
@@ -138,27 +177,48 @@ class SliderAdminApi(ApiAuthMixin, APIView):
     permission_classes = (AdminOrManagerPermission,)
 
     class SliderInPutSerializer(serializers.Serializer):
-        laptop_picture = serializers.FileField()
-        middle_picture = serializers.FileField()
-        mobile_picture = serializers.FileField()
-        link = serializers.URLField()
+        laptop_picture = serializers.FileField(required=False, allow_null=True)
+        middle_picture = serializers.FileField(required=False)
+        mobile_picture = serializers.FileField(required=False)
+        link = serializers.CharField(max_length=300, required=False, allow_blank=True, default="")
+        is_active = serializers.BooleanField(required=False, default=True)
+        sort_order = serializers.IntegerField(required=False, min_value=0, default=0)
+        alt_text = serializers.CharField(max_length=200, required=False, allow_blank=True, default="")
+        hero_eyebrow = serializers.CharField(max_length=120, required=False, allow_blank=True, allow_null=True)
+        hero_headline = serializers.CharField(max_length=220, required=False, allow_blank=True, allow_null=True)
+        hero_highlight = serializers.CharField(max_length=120, required=False, allow_blank=True, allow_null=True)
+        hero_subtitle = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+        hero_primary_label = serializers.CharField(max_length=120, required=False, allow_blank=True, allow_null=True)
+        hero_primary_link = serializers.CharField(max_length=300, required=False, allow_blank=True, allow_null=True)
+        hero_secondary_label = serializers.CharField(max_length=120, required=False, allow_blank=True, allow_null=True)
+        hero_secondary_link = serializers.CharField(max_length=300, required=False, allow_blank=True, allow_null=True)
+        hero_artwork_image = serializers.FileField(required=False, allow_null=True)
 
     class SliderOutPutSerializer(serializers.ModelSerializer):
         laptop_picture = serializers.SerializerMethodField()
         middle_picture = serializers.SerializerMethodField()
         mobile_picture = serializers.SerializerMethodField()
+        hero_artwork_image = serializers.SerializerMethodField()
 
         def get_laptop_picture(self, obj):
-            return reformat_url(url=obj.laptop_picture.url)
+            return safe_file_url(file=obj.laptop_picture)
 
         def get_middle_picture(self, obj):
-            return reformat_url(url=obj.middle_picture.url)
+            return safe_file_url(file=obj.middle_picture)
 
         def get_mobile_picture(self, obj):
-            return reformat_url(url=obj.mobile_picture.url)
+            return safe_file_url(file=obj.mobile_picture)
+        
+        def get_hero_artwork_image(self, obj):
+            return safe_file_url(file=obj.hero_artwork_image)
         class Meta:
             model = Slider
-            fields = ("id", "laptop_picture", "link", "mobile_picture", "middle_picture")
+            fields = (
+                "id", "laptop_picture", "link", "mobile_picture", "middle_picture",
+                "is_active", "sort_order", "alt_text", "hero_eyebrow", "hero_headline",
+                "hero_highlight", "hero_subtitle", "hero_primary_label", "hero_primary_link",
+                "hero_secondary_label", "hero_secondary_link", "hero_artwork_image",
+            )
 
     @extend_schema(request=SliderInPutSerializer, responses=SliderOutPutSerializer)
     def post(self, request):
@@ -169,7 +229,19 @@ class SliderAdminApi(ApiAuthMixin, APIView):
                 link=serializer.validated_data.get("link"),
                 laptop_picture=request.FILES.get("laptop_picture"),
                 middle_picture=request.FILES.get("middle_picture"),
-                mobile_picture=request.FILES.get("mobile_picture")
+                mobile_picture=request.FILES.get("mobile_picture"),
+                is_active=serializer.validated_data.get("is_active", True),
+                sort_order=serializer.validated_data.get("sort_order", 0),
+                alt_text=serializer.validated_data.get("alt_text", ""),
+                hero_eyebrow=serializer.validated_data.get("hero_eyebrow"),
+                hero_headline=serializer.validated_data.get("hero_headline"),
+                hero_highlight=serializer.validated_data.get("hero_highlight"),
+                hero_subtitle=serializer.validated_data.get("hero_subtitle"),
+                hero_primary_label=serializer.validated_data.get("hero_primary_label"),
+                hero_primary_link=serializer.validated_data.get("hero_primary_link"),
+                hero_secondary_label=serializer.validated_data.get("hero_secondary_label"),
+                hero_secondary_link=serializer.validated_data.get("hero_secondary_link"),
+                hero_artwork_image=request.FILES.get("hero_artwork_image"),
             )
             return Response(self.SliderOutPutSerializer(slider).data, status=status.HTTP_201_CREATED)
         except Exception as error:
@@ -181,25 +253,34 @@ class SliderListApi(APIView):
         laptop_picture = serializers.SerializerMethodField()
         middle_picture = serializers.SerializerMethodField()
         mobile_picture = serializers.SerializerMethodField()
+        hero_artwork_image = serializers.SerializerMethodField()
 
 
         def get_laptop_picture(self, obj):
-            return reformat_url(url = obj.laptop_picture.url)
+            return safe_file_url(file=obj.laptop_picture)
 
         def get_middle_picture(self, obj):
-            return reformat_url(url=obj.middle_picture.url)
+            return safe_file_url(file=obj.middle_picture)
 
         def get_mobile_picture(self, obj):
-            return reformat_url(url=obj.mobile_picture.url)
+            return safe_file_url(file=obj.mobile_picture)
+        
+        def get_hero_artwork_image(self, obj):
+            return safe_file_url(file=obj.hero_artwork_image)
 
         class Meta:
             model = Slider
-            fields = ("id", "laptop_picture", "link", "middle_picture", "mobile_picture")
+            fields = (
+                "id", "laptop_picture", "link", "middle_picture", "mobile_picture",
+                "is_active", "sort_order", "alt_text", "hero_eyebrow", "hero_headline",
+                "hero_highlight", "hero_subtitle", "hero_primary_label", "hero_primary_link",
+                "hero_secondary_label", "hero_secondary_link", "hero_artwork_image",
+            )
 
     @extend_schema(responses=SliderListOutPutSerializer)
     def get(self, request):
         try:
-            sliders = get_sliders()
+            sliders = get_sliders(include_inactive=can_manage_homepage_content(request))
             return Response(self.SliderListOutPutSerializer(sliders, many=True).data, status=status.HTTP_200_OK)
         except Exception as error:
             return Response({"error": "خطایی رخ داده است."}, status=status.HTTP_400_BAD_REQUEST)
@@ -209,27 +290,48 @@ class SliderDetailApi(ApiAuthMixin, APIView):
     permission_classes = (AdminOrManagerPermission,)
 
     class SliderDetailInPutSerializer(serializers.Serializer):
-        laptop_picture = serializers.FileField()
-        middle_picture = serializers.FileField()
-        mobile_picture = serializers.FileField()
-        link = serializers.URLField()
+        laptop_picture = serializers.FileField(required=False)
+        middle_picture = serializers.FileField(required=False)
+        mobile_picture = serializers.FileField(required=False)
+        link = serializers.CharField(max_length=300, required=False, allow_blank=True, default="")
+        is_active = serializers.BooleanField(required=False, default=True)
+        sort_order = serializers.IntegerField(required=False, min_value=0, default=0)
+        alt_text = serializers.CharField(max_length=200, required=False, allow_blank=True, default="")
+        hero_eyebrow = serializers.CharField(max_length=120, required=False, allow_blank=True, allow_null=True)
+        hero_headline = serializers.CharField(max_length=220, required=False, allow_blank=True, allow_null=True)
+        hero_highlight = serializers.CharField(max_length=120, required=False, allow_blank=True, allow_null=True)
+        hero_subtitle = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+        hero_primary_label = serializers.CharField(max_length=120, required=False, allow_blank=True, allow_null=True)
+        hero_primary_link = serializers.CharField(max_length=300, required=False, allow_blank=True, allow_null=True)
+        hero_secondary_label = serializers.CharField(max_length=120, required=False, allow_blank=True, allow_null=True)
+        hero_secondary_link = serializers.CharField(max_length=300, required=False, allow_blank=True, allow_null=True)
+        hero_artwork_image = serializers.FileField(required=False, allow_null=True)
 
     class SliderDetailOutPutSerializer(serializers.ModelSerializer):
         laptop_picture = serializers.SerializerMethodField()
         middle_picture = serializers.SerializerMethodField()
         mobile_picture = serializers.SerializerMethodField()
+        hero_artwork_image = serializers.SerializerMethodField()
 
         def get_laptop_picture(self, obj):
-            return reformat_url(url=obj.laptop_picture.url)
+            return safe_file_url(file=obj.laptop_picture)
 
         def get_middle_picture(self, obj):
-            return reformat_url(url=obj.middle_picture.url)
+            return safe_file_url(file=obj.middle_picture)
 
         def get_mobile_picture(self, obj):
-            return reformat_url(url=obj.mobile_picture.url)
+            return safe_file_url(file=obj.mobile_picture)
+        
+        def get_hero_artwork_image(self, obj):
+            return safe_file_url(file=obj.hero_artwork_image)
         class Meta:
             model = Slider
-            fields = ("id", "laptop_picture", "link", "middle_picture", "mobile_picture")
+            fields = (
+                "id", "laptop_picture", "link", "middle_picture", "mobile_picture",
+                "is_active", "sort_order", "alt_text", "hero_eyebrow", "hero_headline",
+                "hero_highlight", "hero_subtitle", "hero_primary_label", "hero_primary_link",
+                "hero_secondary_label", "hero_secondary_link", "hero_artwork_image",
+            )
 
     @extend_schema(request=SliderDetailInPutSerializer, responses={status.HTTP_200_OK: SliderDetailOutPutSerializer})
     def put(self, request, id):
@@ -241,7 +343,19 @@ class SliderDetailApi(ApiAuthMixin, APIView):
                 link=serializer.validated_data.get("link"),
                 laptop_picture=serializer.validated_data.get("laptop_picture", None),
                 middle_picture=serializer.validated_data.get("middle_picture", None),
-                mobile_picture=serializer.validated_data.get("mobile_picture", None)
+                mobile_picture=serializer.validated_data.get("mobile_picture", None),
+                is_active=serializer.validated_data.get("is_active", True),
+                sort_order=serializer.validated_data.get("sort_order", 0),
+                alt_text=serializer.validated_data.get("alt_text", ""),
+                hero_eyebrow=serializer.validated_data.get("hero_eyebrow"),
+                hero_headline=serializer.validated_data.get("hero_headline"),
+                hero_highlight=serializer.validated_data.get("hero_highlight"),
+                hero_subtitle=serializer.validated_data.get("hero_subtitle"),
+                hero_primary_label=serializer.validated_data.get("hero_primary_label"),
+                hero_primary_link=serializer.validated_data.get("hero_primary_link"),
+                hero_secondary_label=serializer.validated_data.get("hero_secondary_label"),
+                hero_secondary_link=serializer.validated_data.get("hero_secondary_link"),
+                hero_artwork_image=request.FILES.get("hero_artwork_image"),
             )
             return Response(self.SliderDetailOutPutSerializer(slider).data, status=status.HTTP_200_OK)
         except Exception as error:
@@ -263,15 +377,18 @@ class BannerAdminApi(ApiAuthMixin, APIView):
         picture = serializers.FileField()
         link = serializers.URLField()
         location = serializers.ChoiceField(choices=BannerLocations.choices())
+        is_active = serializers.BooleanField(required=False, default=True)
+        sort_order = serializers.IntegerField(required=False, min_value=0, default=0)
+        alt_text = serializers.CharField(max_length=200, required=False, allow_blank=True, default="")
 
     class BannerOutPutSerializer(serializers.ModelSerializer):
         picture = serializers.SerializerMethodField()
 
         def get_picture(self, obj):
-            return reformat_url(url = obj.picture.url)
+            return safe_file_url(file=obj.picture)
         class Meta:
             model = Banner
-            fields = ("id", "picture", "link", "location")
+            fields = ("id", "picture", "link", "location", "is_active", "sort_order", "alt_text")
 
     @extend_schema(request=BannerInPutSerializer, responses=BannerOutPutSerializer)
     def post(self, request):
@@ -281,7 +398,10 @@ class BannerAdminApi(ApiAuthMixin, APIView):
             banner = create_banner(
                 link=serializer.validated_data.get("link"),
                 picture=request.FILES.get("picture"),
-                location=request.validated_data.get("location")
+                location=serializer.validated_data.get("location"),
+                is_active=serializer.validated_data.get("is_active", True),
+                sort_order=serializer.validated_data.get("sort_order", 0),
+                alt_text=serializer.validated_data.get("alt_text", ""),
             )
             return Response(self.BannerOutPutSerializer(banner).data, status=status.HTTP_201_CREATED)
         except Exception as error:
@@ -296,12 +416,12 @@ class BannerListApi(APIView):
             return safe_file_url(file=obj.picture)
         class Meta:
             model = Banner
-            fields = ("id", "picture", "link", "location")
+            fields = ("id", "picture", "link", "location", "is_active", "sort_order", "alt_text")
 
     @extend_schema(responses=BannerListOutPutSerializer)
     def get(self, request):
         try:
-            banners = get_banners()
+            banners = get_banners(include_inactive=can_manage_homepage_content(request))
             return Response(self.BannerListOutPutSerializer(banners, many=True).data, status=status.HTTP_200_OK)
         except Exception as error:
             return Response({"error": "خطایی رخ داده است."}, status=status.HTTP_400_BAD_REQUEST)
@@ -311,18 +431,21 @@ class BannerApi(ApiAuthMixin, APIView):
     permission_classes = (AdminOrManagerPermission,)
 
     class BannerChangeInPutSerializer(serializers.Serializer):
-        picture = serializers.FileField()
+        picture = serializers.FileField(required=False)
         link = serializers.URLField()
         location = serializers.ChoiceField(choices=BannerLocations.choices())
+        is_active = serializers.BooleanField(required=False, default=True)
+        sort_order = serializers.IntegerField(required=False, min_value=0, default=0)
+        alt_text = serializers.CharField(max_length=200, required=False, allow_blank=True, default="")
 
     class BannerChangeOutPutSerializer(serializers.ModelSerializer):
         picture = serializers.SerializerMethodField()
 
         def get_picture(self, obj):
-            return reformat_url(url=obj.picture.url)
+            return safe_file_url(file=obj.picture)
         class Meta:
             model = Banner
-            fields = ("id", "picture", "link", "location")
+            fields = ("id", "picture", "link", "location", "is_active", "sort_order", "alt_text")
 
     @extend_schema(request=BannerChangeInPutSerializer, responses={status.HTTP_200_OK: BannerChangeOutPutSerializer})
     def put(self, request, id):
@@ -333,7 +456,10 @@ class BannerApi(ApiAuthMixin, APIView):
                 banner_id=id,
                 link=serializer.validated_data.get("link"),
                 picture=request.FILES.get("picture", None),
-                location=serializer.validated_data.get("location")
+                location=serializer.validated_data.get("location"),
+                is_active=serializer.validated_data.get("is_active", True),
+                sort_order=serializer.validated_data.get("sort_order", 0),
+                alt_text=serializer.validated_data.get("alt_text", ""),
             )
             return Response(self.BannerChangeOutPutSerializer(banner).data, status=status.HTTP_200_OK)
         except Exception as error:
@@ -350,15 +476,25 @@ class BannerApi(ApiAuthMixin, APIView):
 
 class BlogAdminApi(ApiAuthMixin, APIView):
     permission_classes = (AdminOrManagerPermission,)
+    parser_classes = (MultiPartParser, FormParser)
 
     class BlogInPutSerializer(serializers.Serializer):
         picture = serializers.FileField()
         content = serializers.FileField()
         title = serializers.CharField(max_length=200)
+        slug = serializers.CharField(max_length=300, required=False, allow_blank=True)
+        status = serializers.ChoiceField(choices=BlogStatus.choices, required=False, default=BlogStatus.DRAFT)
+        seo_title = serializers.CharField(max_length=200, required=False, allow_blank=True)
+        meta_description = serializers.CharField(max_length=320, required=False, allow_blank=True)
+
+        def validate_slug(self, value):
+            return validate_unique_blog_slug(value)
 
     class BlogOutPutSerializer(serializers.ModelSerializer):
         picture = serializers.SerializerMethodField()
         content = serializers.SerializerMethodField()
+        status_display = serializers.CharField(source="get_status_display", read_only=True)
+        seo_title = serializers.SerializerMethodField()
 
         def get_picture(self, obj):
             return reformat_url(url=obj.picture.url)
@@ -366,9 +502,15 @@ class BlogAdminApi(ApiAuthMixin, APIView):
         def get_content(self, obj):
             return reformat_url(url=obj.content.url)
 
+        def get_seo_title(self, obj):
+            return obj.seo_title or obj.title
+
         class Meta:
             model = Blog
-            fields = ("id", "picture", "content", "title", "slug")
+            fields = (
+                "id", "picture", "content", "title", "slug", "status", "status_display",
+                "seo_title", "meta_description", "updated_at",
+            )
 
     @extend_schema(request=BlogInPutSerializer, responses=BlogOutPutSerializer)
     def post(self, request):
@@ -378,12 +520,47 @@ class BlogAdminApi(ApiAuthMixin, APIView):
             blog = create_blog(
                 picture=request.FILES.get("picture"),
                 content=request.FILES.get("content"),
-                title=serializer.validated_data.get("title")
+                title=serializer.validated_data.get("title"),
+                slug=serializer.validated_data.get("slug", ""),
+                status=serializer.validated_data.get("status", BlogStatus.DRAFT),
+                seo_title=serializer.validated_data.get("seo_title", ""),
+                meta_description=serializer.validated_data.get("meta_description", ""),
             )
             return Response(self.BlogOutPutSerializer(blog).data, status=status.HTTP_201_CREATED)
         except Exception as error:
             print(error)
             return Response({"error": "ساخت بلاگ با مشکل مواجه شد."}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class BlogAiDraftAdminApi(ApiAuthMixin, APIView):
+    permission_classes = (AdminOrManagerPermission,)
+
+    class BlogAiDraftInPutSerializer(serializers.Serializer):
+        topic = serializers.CharField(max_length=200)
+        primary_keyword = serializers.CharField(max_length=160)
+        secondary_keywords = serializers.ListField(
+            child=serializers.CharField(max_length=100),
+            required=False,
+            allow_empty=True,
+            default=list,
+        )
+        article_goal = serializers.CharField(max_length=300, required=False, allow_blank=True, default="")
+        tone = serializers.CharField(max_length=180, required=False, allow_blank=True, default="")
+        target_audience = serializers.CharField(max_length=240, required=False, allow_blank=True, default="")
+
+    @extend_schema(request=BlogAiDraftInPutSerializer, responses=dict)
+    def post(self, request):
+        serializer = self.BlogAiDraftInPutSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            draft = generate_blog_ai_draft(serializer.validated_data, user=request.user)
+            return Response(draft, status=status.HTTP_200_OK)
+        except BlogAiConfigurationError as error:
+            return Response({"error": error.user_message}, status=status.HTTP_400_BAD_REQUEST)
+        except BlogAiValidationError as error:
+            return Response({"error": error.user_message}, status=status.HTTP_400_BAD_REQUEST)
+        except BlogAiError as error:
+            return Response({"error": error.user_message}, status=status.HTTP_502_BAD_GATEWAY)
 
 
 class BlogCommentCreateApi(ApiAuthMixin, APIView):
@@ -467,15 +644,25 @@ class BlogCommentDetailApi(ApiAuthMixin, APIView):
 
 class BlogDetailApi(ApiAuthMixin, APIView):
     permission_classes = (AdminOrManagerPermission,)
+    parser_classes = (MultiPartParser, FormParser)
 
     class BlogDetailInPutSerializer(serializers.Serializer):
-        picture = serializers.FileField()
-        content = serializers.FileField()
+        picture = serializers.FileField(required=False)
+        content = serializers.FileField(required=False)
         title = serializers.CharField(max_length=200)
+        slug = serializers.CharField(max_length=300, required=False, allow_blank=True)
+        status = serializers.ChoiceField(choices=BlogStatus.choices, required=False)
+        seo_title = serializers.CharField(max_length=200, required=False, allow_blank=True)
+        meta_description = serializers.CharField(max_length=320, required=False, allow_blank=True)
+
+        def validate_slug(self, value):
+            return validate_unique_blog_slug(value, blog_id=self.context.get("blog_id"))
 
     class BlogDetailOutPutSerializer(serializers.ModelSerializer):
         picture = serializers.SerializerMethodField()
         content = serializers.SerializerMethodField()
+        status_display = serializers.CharField(source="get_status_display", read_only=True)
+        seo_title = serializers.SerializerMethodField()
 
         def get_picture(self, obj):
             return reformat_url(url=obj.picture.url)
@@ -483,13 +670,19 @@ class BlogDetailApi(ApiAuthMixin, APIView):
         def get_content(self, obj):
             return reformat_url(url=obj.content.url)
 
+        def get_seo_title(self, obj):
+            return obj.seo_title or obj.title
+
         class Meta:
             model = Blog
-            fields = ("id", "picture", "content", "title")
+            fields = (
+                "id", "picture", "content", "title", "slug", "status", "status_display",
+                "seo_title", "meta_description", "updated_at",
+            )
 
     @extend_schema(request=BlogDetailInPutSerializer, responses={status.HTTP_200_OK: BlogDetailOutPutSerializer})
     def put(self, request, id):
-        serializer = self.BlogDetailInPutSerializer(data=request.data)
+        serializer = self.BlogDetailInPutSerializer(data=request.data, context={"blog_id": id})
         serializer.is_valid(raise_exception=True)
         try:
             blog = update_blog(
@@ -497,6 +690,10 @@ class BlogDetailApi(ApiAuthMixin, APIView):
                 title=serializer.validated_data.get("title"),
                 picture=serializer.validated_data.get("picture", None),
                 content=serializer.validated_data.get("content", None),
+                slug=serializer.validated_data.get("slug", None),
+                status=serializer.validated_data.get("status", None),
+                seo_title=serializer.validated_data.get("seo_title", None),
+                meta_description=serializer.validated_data.get("meta_description", None),
             )
             return Response(self.BlogDetailOutPutSerializer(blog).data, status=status.HTTP_200_OK)
         except Exception as error:
@@ -514,9 +711,18 @@ class BlogDetailApi(ApiAuthMixin, APIView):
 class BlogListOutPutSerializer(serializers.ModelSerializer):
     comments_number = serializers.SerializerMethodField()
     picture = serializers.SerializerMethodField()
+    category_list = serializers.SerializerMethodField()
+    status_display = serializers.CharField(source="get_status_display", read_only=True)
+    seo_title = serializers.SerializerMethodField()
 
     def get_picture(self, obj):
         return reformat_url(url=obj.picture.url)
+
+    def get_category_list(self, obj):
+        return BlogCategoryOutPutSerializer(obj.categories.all(), many=True).data
+
+    def get_seo_title(self, obj):
+        return obj.seo_title or obj.title
 
 
     def get_comments_number(self, blog: Blog) -> int:
@@ -524,7 +730,10 @@ class BlogListOutPutSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Blog
-        fields = ("id", "slug", "title", "picture", "comments_number", "created_at")
+        fields = (
+            "id", "slug", "title", "picture", "comments_number", "created_at", "updated_at",
+            "status", "status_display", "seo_title", "meta_description", "category_list",
+        )
 
 
 class BlogListApi(APIView):
@@ -535,6 +744,7 @@ class BlogListApi(APIView):
         categories__in = serializers.CharField(required=False, max_length=200)
         search = serializers.CharField(required=False, max_length=100)
         created_at__range = serializers.CharField(required=False, max_length=100)
+        status = serializers.ChoiceField(choices=BlogStatus.choices, required=False)
 
     class PaginationParameterSerializer(serializers.Serializer):
         limit = serializers.IntegerField(required=False)
@@ -549,7 +759,10 @@ class BlogListApi(APIView):
         filters_serializer = self.FilterBlogSerializer(data=request.query_params)
         filters_serializer.is_valid(raise_exception=True)
         try:
-            query_set = blog_list(filters=filters_serializer.validated_data)
+            query_set = blog_list(
+                filters=filters_serializer.validated_data,
+                include_drafts=can_manage_blog(request),
+            )
         except Exception as error:
             return Response(
                 {"error": "مشکلی رخ داده است."}, status=status.HTTP_400_BAD_REQUEST)
@@ -574,12 +787,17 @@ class BlogDetailUserApi(APIView):
         comments = serializers.SerializerMethodField()
         picture = serializers.SerializerMethodField()
         content = serializers.SerializerMethodField()
+        status_display = serializers.CharField(source="get_status_display", read_only=True)
+        seo_title = serializers.SerializerMethodField()
 
         def get_picture(self, obj):
             return reformat_url(url=obj.picture.url)
 
         def get_content(self, obj):
             return reformat_url(url=obj.content.url)
+
+        def get_seo_title(self, obj):
+            return obj.seo_title or obj.title
 
         class BlogCommentOutPutSerializer(serializers.Serializer):
             user = inline_serializer(fields={
@@ -600,13 +818,19 @@ class BlogDetailUserApi(APIView):
 
         class Meta:
             model = Blog
-            fields = ("id", "title", "category_list", "slug", "content", "picture", "created_at", "comments")
+            fields = (
+                "id", "title", "category_list", "slug", "status", "status_display",
+                "seo_title", "meta_description", "content", "picture", "created_at", "updated_at", "comments",
+            )
 
     @extend_schema(responses=BlogDetailUserOutPutSerializer)
     def get(self, request, slug: str):
         try:
-            blog = get_blog(slug=slug)
+            blog = get_blog(slug=slug, include_drafts=can_manage_blog(request))
             return Response(self.BlogDetailUserOutPutSerializer(blog).data, status=status.HTTP_200_OK)
+        except Blog.DoesNotExist:
+            return Response(
+                {"error": "مقاله پیدا نشد."}, status=status.HTTP_404_NOT_FOUND)
         except Exception as error:
             return Response(
                 {"error": "مشکلی رخ داده است."}, status=status.HTTP_400_BAD_REQUEST)
@@ -658,7 +882,7 @@ class BlogCategoryDetailApi(ApiAuthMixin, APIView):
         try:
             blog_category = update_blog_category(
                 blog_category_id=id,
-                blog=serializer.validated_data.get("product"),
+                blog=serializer.validated_data.get("blog"),
                 category=serializer.validated_data.get("category")
             )
             return Response(self.BlogCategoryDetailOutPutSerializer(blog_category).data, status=status.HTTP_200_OK)
@@ -689,9 +913,8 @@ class UploadFileS3ApiView(ApiAuthMixin, APIView):
         serializer.is_valid(raise_exception=True)
         try:
             file = self.request.FILES.get("file")
-            storage = S3Boto3Storage()
-            file_path = storage.save(file.name, file)
-            file_url = storage.url(file_path)
+            file_path = default_storage.save(file.name, file)
+            file_url = default_storage.url(file_path)
             file_url = reformat_url(url = file_url)
             return Response({"url": file_url}, status=status.HTTP_201_CREATED)
         except Exception as error:

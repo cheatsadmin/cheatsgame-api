@@ -12,10 +12,11 @@ class BlogCategoryInLine(admin.TabularInline):
 
 
 class BlogAdmin(admin.ModelAdmin):
-    fields = ("title", "slug", "content", "picture")
-    search_fields = ("title", "slug")
+    fields = ("title", "slug", "status", "seo_title", "meta_description", "content", "picture")
+    search_fields = ("title", "slug", "seo_title")
+    list_filter = ("status",)
     list_display = (
-        "title", "slug", "content", "picture"
+        "title", "slug", "status", "updated_at", "content", "picture"
     )
     inlines = (
         BlogCategoryInLine,
@@ -59,4 +60,3 @@ class MessageAdmin(admin.ModelAdmin):
 class UserMessageAdmin(admin.ModelAdmin):
     fields = ("message"  , "user" , "is_seen")
     list_display = ("message" , "user" , "is_seen")
-
