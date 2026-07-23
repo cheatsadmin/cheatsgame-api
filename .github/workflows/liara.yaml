@@ -1,20 +1,18 @@
-name: CD-Liara
+name: Deploy Backend Staging to Liara
 on:
-  push:
-    branches:
-      - master
+  workflow_dispatch:
 jobs:
   deploy:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-node@v3
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
-          node-version: "18"
-      - name: update-liara
+          node-version: "20"
+      - name: Deploy backend staging
         env:
           LIARA_TOKEN: ${{ secrets.LIARA_API_TOKEN }}
         run: |
-          npm i -g @liara/cli@5
-          liara deploy --app="backend-cheatsgame" --api-token="$LIARA_TOKEN" --no-app-logs --port 7000
+          npm i -g @liara/cli@9
+          liara deploy --app="backend-cheatsgame-staging" --api-token="$LIARA_TOKEN" --no-app-logs --port 7000
