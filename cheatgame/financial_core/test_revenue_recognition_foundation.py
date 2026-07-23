@@ -145,7 +145,7 @@ class RevenueRecognitionFoundationTests(CommercialFinalizerFixture, TransactionT
             purpose=RevenueRecognitionWorkPurpose.RECOGNIZE_SATISFACTION,
             evidence_set_digest="d" * 64,
             recognition_policy_version=policy,
-            recognition_contract_version="revenue-recognition-v1",
+            recognition_contract_version="revenue-recognition-engine-v1",
             recognition_period_key="point-in-time",
             cumulative_target_amount=allocation.allocated_amount,
             deterministic_identity="e" * 64,
@@ -219,7 +219,7 @@ class RevenueRecognitionFoundationTests(CommercialFinalizerFixture, TransactionT
                 correlation_id=uuid4(),
             )
 
-    def test_recognition_record_has_exact_policy_allocation_work_and_journal_lineage(self):
+    def test_direct_recognition_without_completed_engine_work_is_rejected(self):
         _, _, policy, obligation, _, allocation, _, work = self._foundation_graph()
         recognition_public_id = uuid4()
         journal = post_balanced_journal_entry(
@@ -241,28 +241,25 @@ class RevenueRecognitionFoundationTests(CommercialFinalizerFixture, TransactionT
                 },
             ),
         )
-        recognition = RevenueRecognition.objects.create(
-            public_id=recognition_public_id,
-            obligation=obligation,
-            consideration_allocation=allocation,
-            work_item=work,
-            recognition_policy_version=policy,
-            journal_entry=journal,
-            effect=RevenueRecognitionEffect.EARN,
-            amount=allocation.allocated_amount,
-            cumulative_net_recognized_amount=allocation.allocated_amount,
-            evidence_set_digest=work.evidence_set_digest,
-            recognition_period_key=work.recognition_period_key,
-            command_contract_version="revenue-recognition-v1",
-            idempotency_key=uuid4(),
-            application_fingerprint="1" * 64,
-            actor_type=FinancialActorType.SYSTEM,
-            correlation_id=uuid4(),
-        )
-        with self.assertRaises(ValidationError):
-            recognition.delete()
-        with self.assertRaises(ValidationError):
-            recognition.save()
+        with self.assertRaises((ValidationError, DatabaseError)), transaction.atomic():
+            RevenueRecognition.objects.create(
+                public_id=recognition_public_id,
+                obligation=obligation,
+                consideration_allocation=allocation,
+                work_item=work,
+                recognition_policy_version=policy,
+                journal_entry=journal,
+                effect=RevenueRecognitionEffect.EARN,
+                amount=allocation.allocated_amount,
+                cumulative_net_recognized_amount=allocation.allocated_amount,
+                evidence_set_digest=work.evidence_set_digest,
+                recognition_period_key=work.recognition_period_key,
+                command_contract_version="revenue-recognition-engine-v1",
+                idempotency_key=uuid4(),
+                application_fingerprint="1" * 64,
+                actor_type=FinancialActorType.SYSTEM,
+                correlation_id=uuid4(),
+            )
 
     def test_postgresql_rejects_raw_ownership_forgery_and_mutation(self):
         _, _, _, obligation, _, allocation, _, _ = self._foundation_graph()

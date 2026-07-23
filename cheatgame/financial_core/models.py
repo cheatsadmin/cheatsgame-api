@@ -10,6 +10,7 @@ from cheatgame.common.models import BaseModel
 
 
 CANONICAL_CURRENCY = "IRR"
+REVENUE_RECOGNITION_ENGINE_CONTRACT = "revenue-recognition-engine-v1"
 
 
 class MoneyUnit(models.TextChoices):
@@ -2687,6 +2688,10 @@ class RevenueRecognitionWorkItem(BaseModel):
             models.CheckConstraint(check=~Q(evidence_set_digest=""), name="fin_rec_work_evidence_nonempty"),
             models.CheckConstraint(check=~Q(deterministic_identity=""), name="fin_rec_work_identity_nonempty"),
             models.CheckConstraint(check=~Q(recognition_contract_version=""), name="fin_rec_work_contract_nonempty"),
+            models.CheckConstraint(
+                check=Q(recognition_contract_version=REVENUE_RECOGNITION_ENGINE_CONTRACT),
+                name="fin_rec_work_engine_contract",
+            ),
             models.CheckConstraint(check=~Q(recognition_period_key=""), name="fin_rec_work_period_nonempty"),
             models.CheckConstraint(check=Q(cumulative_target_amount__gte=0), name="fin_rec_work_target_nonnegative"),
             models.CheckConstraint(check=Q(max_attempts__gt=0), name="fin_rec_work_attempts_positive"),
@@ -2728,6 +2733,10 @@ class RevenueRecognitionWorkItem(BaseModel):
 
     def clean(self):
         super().clean()
+        if self.recognition_contract_version != REVENUE_RECOGNITION_ENGINE_CONTRACT:
+            raise ValidationError(
+                {"recognition_contract_version": "Only the approved revenue-recognition engine contract is allowed."}
+            )
         obligation = getattr(self, "obligation", None)
         if obligation and self.recognition_policy_version_id != obligation.recognition_policy_version_id:
             raise ValidationError({"recognition_policy_version": "Work must preserve the obligation policy."})
@@ -2790,6 +2799,14 @@ class RevenueRecognition(AppendOnlyModel):
             models.CheckConstraint(check=Q(currency=CANONICAL_CURRENCY), name="fin_revenue_recognition_currency_irr"),
             models.CheckConstraint(check=~Q(evidence_set_digest=""), name="fin_revenue_recognition_evidence_nonempty"),
             models.CheckConstraint(check=~Q(command_contract_version=""), name="fin_revenue_recognition_contract_nonempty"),
+            models.CheckConstraint(
+                check=Q(command_contract_version=REVENUE_RECOGNITION_ENGINE_CONTRACT),
+                name="fin_revenue_engine_contract",
+            ),
+            models.UniqueConstraint(
+                fields=("consideration_allocation",),
+                name="fin_revenue_allocation_once",
+            ),
             models.CheckConstraint(check=~Q(application_fingerprint=""), name="fin_revenue_recognition_fingerprint_nonempty"),
             models.CheckConstraint(
                 check=(
@@ -2809,6 +2826,10 @@ class RevenueRecognition(AppendOnlyModel):
 
     def clean(self):
         super().clean()
+        if self.command_contract_version != REVENUE_RECOGNITION_ENGINE_CONTRACT:
+            raise ValidationError(
+                {"command_contract_version": "Revenue recognition requires the approved engine contract."}
+            )
         obligation = getattr(self, "obligation", None)
         allocation = getattr(self, "consideration_allocation", None)
         work = getattr(self, "work_item", None)

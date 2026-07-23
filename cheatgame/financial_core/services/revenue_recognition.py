@@ -26,6 +26,7 @@ from cheatgame.financial_core.models import (
     PerformanceObligationType,
     PostingDirection,
     RecognitionProgressMethod,
+    REVENUE_RECOGNITION_ENGINE_CONTRACT,
     RecognitionSatisfactionPattern,
     RevenueRecognition,
     RevenueRecognitionEffect,
@@ -50,7 +51,7 @@ from cheatgame.financial_core.services.satisfaction_evidence import (
 from cheatgame.shop.models import Order
 
 
-REVENUE_RECOGNITION_CONTRACT = "revenue-recognition-engine-v1"
+REVENUE_RECOGNITION_CONTRACT = REVENUE_RECOGNITION_ENGINE_CONTRACT
 REVENUE_RECOGNITION_PERIOD = "point-in-time"
 REVENUE_RECOGNITION_NAMESPACE = UUID("cc34c27a-467c-4520-8503-074020e69f0f")
 CLAIM_LEASE = timedelta(minutes=5)

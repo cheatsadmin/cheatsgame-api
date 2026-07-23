@@ -266,6 +266,120 @@ class RevenueRecognitionEngineTests(CommercialFinalizerFixture, TransactionTestC
                 actor_type="system", correlation_id=uuid4(),
             )
 
+    def test_unknown_legacy_and_forged_contracts_fail_closed_in_application(self):
+        _, _, _, _, work, token = self.claimed_graph()
+        recognition = self.recognize(work, token).recognition
+        for contract in (
+            "unknown-contract",
+            "revenue-recognition-v1",
+            "forged-contract",
+        ):
+            invalid_work = RevenueRecognitionWorkItem(
+                obligation=recognition.obligation,
+                purpose=RevenueRecognitionWorkPurpose.RECOGNIZE_SATISFACTION,
+                evidence_set_digest=uuid4().hex + uuid4().hex,
+                recognition_policy_version=recognition.recognition_policy_version,
+                recognition_contract_version=contract,
+                recognition_period_key="point-in-time",
+                cumulative_target_amount=recognition.amount,
+                deterministic_identity=uuid4().hex + uuid4().hex,
+                correlation_id=uuid4(),
+            )
+            with self.assertRaises(ValidationError):
+                invalid_work.save()
+
+            invalid_recognition = RevenueRecognition(
+                public_id=uuid4(),
+                obligation=recognition.obligation,
+                consideration_allocation=recognition.consideration_allocation,
+                work_item=recognition.work_item,
+                recognition_policy_version=recognition.recognition_policy_version,
+                journal_entry=recognition.journal_entry,
+                effect="earn",
+                amount=recognition.amount,
+                currency="IRR",
+                cumulative_net_recognized_amount=recognition.amount,
+                evidence_set_digest=recognition.evidence_set_digest,
+                recognition_period_key="point-in-time",
+                command_contract_version=contract,
+                idempotency_key=uuid4(),
+                application_fingerprint=uuid4().hex + uuid4().hex,
+                actor_type="system",
+                correlation_id=uuid4(),
+            )
+            with self.assertRaises(ValidationError):
+                invalid_recognition.save()
+
+    def test_postgresql_rejects_raw_contract_bypass_and_cross_contract_over_recognition(self):
+        if connection.vendor != "postgresql":
+            self.skipTest("PostgreSQL contract-admission proof")
+        _, _, _, _, work, token = self.claimed_graph()
+        recognition = self.recognize(work, token).recognition
+
+        for contract in (
+            "unknown-contract",
+            "revenue-recognition-v1",
+            "forged-contract",
+        ):
+            with self.assertRaises(DatabaseError), transaction.atomic():
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        INSERT INTO financial_core_revenuerecognitionworkitem
+                          (public_id,obligation_id,purpose,evidence_set_digest,
+                           recognition_policy_version_id,recognition_contract_version,
+                           recognition_period_key,cumulative_target_amount,
+                           deterministic_identity,status,attempt_count,max_attempts,
+                           next_attempt_at,claim_owner,claim_token,claimed_at,
+                           claim_expires_at,completed_at,failure_classification,safe_result,
+                           correlation_id,causation_id,version,created_at,updated_at)
+                        SELECT %s,obligation_id,purpose,%s,recognition_policy_version_id,%s,
+                               recognition_period_key,cumulative_target_amount,%s,
+                               'pending',0,max_attempts,NULL,'',NULL,NULL,NULL,NULL,'','{}',
+                               %s,NULL,1,now(),now()
+                          FROM financial_core_revenuerecognitionworkitem WHERE id=%s
+                        """,
+                        [
+                            str(uuid4()),
+                            uuid4().hex + uuid4().hex,
+                            contract,
+                            uuid4().hex + uuid4().hex,
+                            str(uuid4()),
+                            work.pk,
+                        ],
+                    )
+
+            for amount in (recognition.amount, recognition.amount + 1):
+                with self.assertRaises(DatabaseError), transaction.atomic():
+                    with connection.cursor() as cursor:
+                        cursor.execute(
+                            """
+                            INSERT INTO financial_core_revenuerecognition
+                              (public_id,obligation_id,consideration_allocation_id,
+                               work_item_id,recognition_policy_version_id,journal_entry_id,
+                               effect,amount,currency,cumulative_net_recognized_amount,
+                               evidence_set_digest,recognition_period_key,corrects_id,
+                               correction_reason,command_contract_version,idempotency_key,
+                               application_fingerprint,actor_type,actor_id,correlation_id,
+                               causation_id,recognized_at,created_at)
+                            SELECT %s,obligation_id,consideration_allocation_id,work_item_id,
+                                   recognition_policy_version_id,journal_entry_id,effect,%s,
+                                   currency,%s,evidence_set_digest,recognition_period_key,NULL,
+                                   '',%s,%s,%s,actor_type,actor_id,%s,causation_id,now(),now()
+                              FROM financial_core_revenuerecognition WHERE id=%s
+                            """,
+                            [
+                                str(uuid4()),
+                                amount,
+                                amount,
+                                contract,
+                                str(uuid4()),
+                                uuid4().hex + uuid4().hex,
+                                str(uuid4()),
+                                recognition.pk,
+                            ],
+                        )
+
     def test_concurrent_recognition_converges_on_one_result_and_journal(self):
         _, _, _, _, work, token = self.claimed_graph()
         barrier = Barrier(2)
