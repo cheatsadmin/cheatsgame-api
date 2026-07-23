@@ -13,10 +13,14 @@ def digital_fulfillment_queryset():
     return DigitalFulfillmentItem.objects.select_related(
         "assigned_operator",
         "obligation__order__user",
+        "obligation__order__checkout",
         "obligation__order_item__product",
         "obligation__checkout_line__digital_snapshot__delivered_version",
+        "obligation__checkout_line__digital_snapshot__inventory_pool",
         "obligation__finalization__payment",
         "entitlement",
+        "appointment__type",
+        "appointment__schedule",
     ).prefetch_related(
         Prefetch("activities", queryset=FulfillmentActivity.objects.select_related("actor").order_by("created_at", "pk")),
         Prefetch("installed_games", queryset=InstalledGameRecord.objects.select_related("game", "delivered_version", "operator").order_by("created_at", "pk")),
@@ -25,6 +29,10 @@ def digital_fulfillment_queryset():
 
 def admin_fulfillment_item(public_id):
     return digital_fulfillment_queryset().get(public_id=public_id)
+
+
+def admin_fulfillment_items():
+    return digital_fulfillment_queryset().order_by("created_at", "pk")
 
 
 def customer_fulfillment_items(customer):

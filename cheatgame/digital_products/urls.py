@@ -19,6 +19,13 @@ from cheatgame.digital_products.customer_payment_apis import (
     CustomerDigitalPaymentRequestApi,
     CustomerDigitalPaymentStatusApi,
 )
+from cheatgame.digital_products.admin_fulfillment_apis import (
+    AssignableOperatorDirectoryApi,
+    DigitalFulfillmentCommandApi,
+    DigitalFulfillmentDetailApi,
+    DigitalFulfillmentOptionsApi,
+    DigitalFulfillmentQueueApi,
+)
 
 
 app_name = "digital-products"
@@ -70,5 +77,30 @@ urlpatterns = [
         "customer/checkout/<uuid:checkout_id>/payment/",
         CustomerDigitalPaymentStatusApi.as_view(),
         name="customer-payment-status",
+    ),
+    path(
+        "admin/fulfillments/",
+        DigitalFulfillmentQueueApi.as_view(),
+        name="admin-fulfillment-queue",
+    ),
+    path(
+        "admin/fulfillments/<uuid:fulfillment_id>/",
+        DigitalFulfillmentDetailApi.as_view(),
+        name="admin-fulfillment-detail",
+    ),
+    path(
+        "admin/fulfillments/<uuid:fulfillment_id>/<str:command>/",
+        DigitalFulfillmentCommandApi.as_view(),
+        name="admin-fulfillment-command",
+    ),
+    path(
+        "admin/operators/",
+        AssignableOperatorDirectoryApi.as_view(),
+        name="admin-fulfillment-operators",
+    ),
+    path(
+        "admin/fulfillment-options/",
+        DigitalFulfillmentOptionsApi.as_view(),
+        name="admin-fulfillment-options",
     ),
 ]
