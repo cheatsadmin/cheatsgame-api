@@ -132,3 +132,27 @@ class ProductionSettingsTests(SimpleTestCase):
 
         with self.assertRaises(ImproperlyConfigured):
             self.import_production_settings(env)
+
+    @override_settings(
+        CORS_ALLOW_ALL_ORIGINS=False,
+        CORS_ALLOWED_ORIGINS=["https://admin-cheatsgame-staging.liara.run"],
+    )
+    def test_private_admin_staging_origin_is_allowed_exactly(self):
+        response = self.client.options(
+            "/health/live/",
+            HTTP_ORIGIN="https://admin-cheatsgame-staging.liara.run",
+            HTTP_ACCESS_CONTROL_REQUEST_METHOD="GET",
+        )
+
+        self.assertEqual(
+            response.headers["Access-Control-Allow-Origin"],
+            "https://admin-cheatsgame-staging.liara.run",
+        )
+
+        rejected = self.client.options(
+            "/health/live/",
+            HTTP_ORIGIN="https://untrusted.example",
+            HTTP_ACCESS_CONTROL_REQUEST_METHOD="GET",
+        )
+
+        self.assertNotIn("Access-Control-Allow-Origin", rejected.headers)
