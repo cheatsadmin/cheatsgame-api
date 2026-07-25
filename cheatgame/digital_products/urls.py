@@ -26,6 +26,20 @@ from cheatgame.digital_products.admin_fulfillment_apis import (
     DigitalFulfillmentOptionsApi,
     DigitalFulfillmentQueueApi,
 )
+from cheatgame.digital_products.admin_catalog_apis import (
+    ActivateDigitalProductApi,
+    AdjustOfferStockApi,
+    AdminCatalogGameDetailApi,
+    AdminCatalogGameListApi,
+    ArchiveDeliveredVersionApi,
+    ChangeOfferStateApi,
+    CreateDeliveredVersionApi,
+    CreateDigitalOfferApi,
+    DeactivateDigitalProductApi,
+    MakeOfferStockIndependentApi,
+    ShareOfferStockApi,
+    UpdateOfferPriceApi,
+)
 
 
 app_name = "digital-products"
@@ -77,6 +91,66 @@ urlpatterns = [
         "customer/checkout/<uuid:checkout_id>/payment/",
         CustomerDigitalPaymentStatusApi.as_view(),
         name="customer-payment-status",
+    ),
+    path(
+        "admin/catalog/games/",
+        AdminCatalogGameListApi.as_view(),
+        name="admin-catalog-game-list",
+    ),
+    path(
+        "admin/catalog/games/<int:product_id>/",
+        AdminCatalogGameDetailApi.as_view(),
+        name="admin-catalog-game-detail",
+    ),
+    path(
+        "admin/catalog/games/<int:product_id>/versions/",
+        CreateDeliveredVersionApi.as_view(),
+        name="admin-catalog-version-create",
+    ),
+    path(
+        "admin/catalog/versions/<int:version_id>/archive/",
+        ArchiveDeliveredVersionApi.as_view(),
+        name="admin-catalog-version-archive",
+    ),
+    path(
+        "admin/catalog/games/<int:product_id>/offers/",
+        CreateDigitalOfferApi.as_view(),
+        name="admin-catalog-offer-create",
+    ),
+    path(
+        "admin/catalog/offers/<int:offer_id>/price/",
+        UpdateOfferPriceApi.as_view(),
+        name="admin-catalog-offer-price",
+    ),
+    path(
+        "admin/catalog/offers/<int:offer_id>/state/",
+        ChangeOfferStateApi.as_view(),
+        name="admin-catalog-offer-state",
+    ),
+    path(
+        "admin/catalog/offers/<int:offer_id>/stock-adjustments/",
+        AdjustOfferStockApi.as_view(),
+        name="admin-catalog-offer-stock-adjustment",
+    ),
+    path(
+        "admin/catalog/offers/<int:offer_id>/share-stock/",
+        ShareOfferStockApi.as_view(),
+        name="admin-catalog-offer-share-stock",
+    ),
+    path(
+        "admin/catalog/offers/<int:offer_id>/independent-stock/",
+        MakeOfferStockIndependentApi.as_view(),
+        name="admin-catalog-offer-independent-stock",
+    ),
+    path(
+        "admin/catalog/games/<int:product_id>/activate-digital/",
+        ActivateDigitalProductApi.as_view(),
+        name="admin-catalog-activate-digital",
+    ),
+    path(
+        "admin/catalog/games/<int:product_id>/deactivate-digital/",
+        DeactivateDigitalProductApi.as_view(),
+        name="admin-catalog-deactivate-digital",
     ),
     path(
         "admin/fulfillments/",
