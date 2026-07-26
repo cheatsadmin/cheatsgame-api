@@ -8,7 +8,12 @@ from django.db.models import F, Q
 from django.utils import timezone
 
 from cheatgame.common.models import BaseModel
-from cheatgame.product.models import DeliveredVersion, NativeConsole, ProductCommerceAuthority
+from cheatgame.product.models import (
+    DeliveredVersion,
+    NativeConsole,
+    ProductCommerceAuthority,
+    ProductType,
+)
 
 
 class InventoryPoolStatus(models.TextChoices):
@@ -29,6 +34,15 @@ class DigitalOfferSaleState(models.TextChoices):
     PAUSED = "paused", "PAUSED"
     HIDDEN = "hidden", "HIDDEN"
     ARCHIVED = "archived", "ARCHIVED"
+
+
+class DigitalGameUpcomingStatus(models.TextChoices):
+    ANNOUNCED = "ANNOUNCED", "ANNOUNCED"
+    COMING_SOON = "COMING_SOON", "COMING_SOON"
+    PREORDER_OPEN = "PREORDER_OPEN", "PREORDER_OPEN"
+    RELEASED = "RELEASED", "RELEASED"
+    DELAYED = "DELAYED", "DELAYED"
+    CANCELLED = "CANCELLED", "CANCELLED"
 
 
 class PoolStockAdjustmentReason(models.TextChoices):
@@ -223,6 +237,77 @@ class InventoryPool(BaseModel):
         ]
 
 
+class DigitalGameReleaseMetadata(BaseModel):
+    """Authoritative release metadata; preorder commerce remains disabled."""
+
+    product = models.OneToOneField(
+        "product.Product",
+        on_delete=models.PROTECT,
+        related_name="digital_release_metadata",
+    )
+    release_date = models.DateField(null=True, blank=True)
+    upcoming_status = models.CharField(
+        max_length=20,
+        choices=DigitalGameUpcomingStatus.choices,
+        default=DigitalGameUpcomingStatus.ANNOUNCED,
+    )
+    preorder_enabled = models.BooleanField(default=False)
+    preorder_open_at = models.DateTimeField(null=True, blank=True)
+    preorder_close_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                check=Q(upcoming_status__in=DigitalGameUpcomingStatus.values),
+                name="digital_game_upcoming_status_valid",
+            ),
+            models.CheckConstraint(
+                check=Q(preorder_enabled=False),
+                name="digital_game_preorder_disabled_v1",
+            ),
+            models.CheckConstraint(
+                check=(
+                    Q(preorder_close_at__isnull=True)
+                    | Q(preorder_open_at__isnull=True)
+                    | Q(preorder_close_at__gt=F("preorder_open_at"))
+                ),
+                name="digital_game_preorder_window_order",
+            ),
+            models.CheckConstraint(
+                check=(
+                    ~Q(upcoming_status=DigitalGameUpcomingStatus.PREORDER_OPEN)
+                    | Q(preorder_enabled=True)
+                ),
+                name="digital_game_preorder_status_requires_enablement",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.product_id and self.product.product_type != ProductType.GAME.value:
+            raise ValidationError({"product": "Release metadata requires a GAME product."})
+        if self.preorder_enabled:
+            raise ValidationError(
+                {"preorder_enabled": "Preorder purchasing is not supported by the current commerce lifecycle."}
+            )
+        if self.upcoming_status == DigitalGameUpcomingStatus.PREORDER_OPEN:
+            raise ValidationError(
+                {"upcoming_status": "PREORDER_OPEN is unavailable until preorder commerce is approved."}
+            )
+        if (
+            self.preorder_open_at
+            and self.preorder_close_at
+            and self.preorder_close_at <= self.preorder_open_at
+        ):
+            raise ValidationError(
+                {"preorder_close_at": "Preorder close time must follow the open time."}
+            )
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+
 class DigitalOffer(BaseModel):
     delivered_version = models.ForeignKey(
         DeliveredVersion,
@@ -283,6 +368,19 @@ class DigitalOffer(BaseModel):
             != ProductCommerceAuthority.DIGITAL_PRODUCTS
         ):
             raise ValidationError({"sale_state": "Active Offers require DIGITAL_PRODUCTS authority."})
+        release_metadata = getattr(
+            self.delivered_version.product,
+            "digital_release_metadata",
+            None,
+        )
+        if (
+            self.sale_state == DigitalOfferSaleState.ACTIVE
+            and release_metadata is not None
+            and release_metadata.upcoming_status != DigitalGameUpcomingStatus.RELEASED
+        ):
+            raise ValidationError(
+                {"sale_state": "Upcoming games cannot expose an active purchasable Offer."}
+            )
         if self.inventory_pool_id:
             incompatible = DigitalOffer.objects.filter(inventory_pool_id=self.inventory_pool_id).exclude(pk=self.pk).exclude(
                 delivered_version_id=self.delivered_version_id,

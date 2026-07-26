@@ -4,6 +4,7 @@ from cheatgame.digital_products.models import (
     CompatibilityDisclosure,
     DigitalCartFulfillmentMethod,
     DigitalOfferCapacity,
+    DigitalGameUpcomingStatus,
 )
 from cheatgame.digital_products.public_catalog_selectors import prefetched_public_offers
 from cheatgame.product.models import NativeConsole
@@ -38,6 +39,15 @@ CAPACITY_DISCLOSURES = {
         "آنلاین و آفلاین — نصب حضوری یا ریموت"
     ),
     CapacityDisclosure.CAPACITY_3_ONLINE_FLEXIBLE_V1: "فقط آنلاین — نصب حضوری یا ریموت",
+}
+
+UPCOMING_STATUS_LABELS = {
+    DigitalGameUpcomingStatus.ANNOUNCED: "بزودی",
+    DigitalGameUpcomingStatus.COMING_SOON: "بزودی",
+    DigitalGameUpcomingStatus.PREORDER_OPEN: "پیش‌خرید فعال",
+    DigitalGameUpcomingStatus.RELEASED: "منتشر شده",
+    DigitalGameUpcomingStatus.DELAYED: "تأخیر در انتشار",
+    DigitalGameUpcomingStatus.CANCELLED: "لغو شده",
 }
 
 
@@ -131,3 +141,22 @@ def public_game_projection(product, *, detail=False):
             }
         )
     return result
+
+
+def public_upcoming_game_projection(product):
+    metadata = product.digital_release_metadata
+    versions = getattr(product, "public_upcoming_versions", ())
+    consoles = sorted({version.native_console for version in versions})
+    return {
+        "id": product.pk,
+        "title": product.title,
+        "slug": product.slug,
+        "main_image": safe_file_url(file=product.main_image),
+        "supported_customer_consoles": consoles,
+        "release_date": metadata.release_date,
+        "upcoming_status": metadata.upcoming_status,
+        "upcoming_status_label": UPCOMING_STATUS_LABELS[metadata.upcoming_status],
+        "preorder_available": False,
+        "preorder_price": None,
+        "currency": PUBLIC_DIGITAL_CURRENCY,
+    }

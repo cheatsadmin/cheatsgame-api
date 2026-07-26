@@ -1,6 +1,7 @@
 from rest_framework import serializers
 
 from cheatgame.digital_products.models import DigitalOfferCapacity
+from cheatgame.digital_products.models import DigitalGameUpcomingStatus
 from cheatgame.product.models import NativeConsole
 
 
@@ -18,6 +19,24 @@ class PublicDigitalGameFilterSerializer(serializers.Serializer):
         required=False,
         choices=(("newest", "newest"), ("title", "title"), ("minimum_price", "minimum_price")),
         default="newest",
+    )
+    limit = serializers.IntegerField(required=False, min_value=1, max_value=50)
+    offset = serializers.IntegerField(required=False, min_value=0)
+
+    def validate(self, attrs):
+        unknown = sorted(set(self.initial_data) - set(self.fields))
+        if unknown:
+            raise serializers.ValidationError(
+                {field: "This query parameter is not accepted." for field in unknown}
+            )
+        return attrs
+
+
+class PublicUpcomingGameFilterSerializer(serializers.Serializer):
+    console = serializers.ChoiceField(
+        required=False,
+        choices=NativeConsole.choices,
+        default="",
     )
     limit = serializers.IntegerField(required=False, min_value=1, max_value=50)
     offset = serializers.IntegerField(required=False, min_value=0)
@@ -87,3 +106,34 @@ class PaginatedPublicDigitalGameSerializer(serializers.Serializer):
     next = serializers.CharField(allow_null=True)
     previous = serializers.CharField(allow_null=True)
     results = PublicDigitalGameListItemSerializer(many=True)
+
+
+class PublicUpcomingGameListItemSerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    title = serializers.CharField()
+    slug = serializers.CharField()
+    main_image = serializers.CharField(allow_blank=True)
+    supported_customer_consoles = serializers.ListField(
+        child=serializers.ChoiceField(choices=NativeConsole.choices)
+    )
+    release_date = serializers.DateField(allow_null=True)
+    upcoming_status = serializers.ChoiceField(
+        choices=DigitalGameUpcomingStatus.choices
+    )
+    upcoming_status_label = serializers.CharField()
+    preorder_available = serializers.BooleanField()
+    preorder_price = serializers.DecimalField(
+        max_digits=15,
+        decimal_places=0,
+        allow_null=True,
+    )
+    currency = serializers.CharField()
+
+
+class PaginatedPublicUpcomingGameSerializer(serializers.Serializer):
+    limit = serializers.IntegerField()
+    offset = serializers.IntegerField()
+    count = serializers.IntegerField()
+    next = serializers.CharField(allow_null=True)
+    previous = serializers.CharField(allow_null=True)
+    results = PublicUpcomingGameListItemSerializer(many=True)

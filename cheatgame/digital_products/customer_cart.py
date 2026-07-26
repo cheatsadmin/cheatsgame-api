@@ -3,6 +3,7 @@ from cheatgame.digital_products.models import (
     DigitalCartFulfillmentMethod,
     DigitalOfferCapacity,
     DigitalOfferSaleState,
+    DigitalGameUpcomingStatus,
     InventoryPoolStatus,
 )
 from cheatgame.digital_products.public_catalog import (
@@ -70,6 +71,7 @@ def coherent_digital_selection(item):
 
 def _offer_is_currently_available(item, offer):
     product = offer.delivered_version.product
+    release_metadata = getattr(product, "digital_release_metadata", None)
     return bool(
         offer.sale_state == DigitalOfferSaleState.ACTIVE
         and offer.delivered_version.is_active
@@ -77,6 +79,11 @@ def _offer_is_currently_available(item, offer):
         and product.status == ProductStatus.PUBLISHED
         and product.product_type == ProductType.GAME
         and product.commerce_authority == ProductCommerceAuthority.DIGITAL_PRODUCTS
+        and (
+            release_metadata is None
+            or release_metadata.upcoming_status
+            == DigitalGameUpcomingStatus.RELEASED
+        )
         and (getattr(item, "digital_available_quantity", 0) or 0) > 0
     )
 

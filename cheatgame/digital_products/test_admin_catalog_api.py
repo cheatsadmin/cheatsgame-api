@@ -106,6 +106,7 @@ class AdminDigitalCatalogContractTests(TestCase):
                 "active_offer_count",
                 "configured_options",
                 "readiness",
+                "release_metadata",
                 "updated_at",
             },
         )

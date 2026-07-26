@@ -8,6 +8,7 @@ from cheatgame.digital_products.models import (
     DigitalOffer,
     DigitalOfferCapacity,
     DigitalOfferSaleState,
+    DigitalGameUpcomingStatus,
     InventoryPool,
     InventoryPoolStatus,
     PoolStockAdjustmentReason,
@@ -154,6 +155,18 @@ def _validate_activation(offer: DigitalOffer) -> None:
         raise OfferTransitionError("Delivered version must be active before Offer activation.")
     if offer.inventory_pool.status == InventoryPoolStatus.ARCHIVED:
         raise OfferTransitionError("An archived Inventory Pool cannot support an active Offer.")
+    release_metadata = getattr(
+        offer.delivered_version.product,
+        "digital_release_metadata",
+        None,
+    )
+    if (
+        release_metadata is not None
+        and release_metadata.upcoming_status != DigitalGameUpcomingStatus.RELEASED
+    ):
+        raise OfferTransitionError(
+            "Upcoming games cannot activate a purchasable Offer."
+        )
     try:
         offer.full_clean()
     except ValidationError as exc:

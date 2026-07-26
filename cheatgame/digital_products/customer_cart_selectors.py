@@ -23,7 +23,7 @@ def owned_customer_cart_items(*, user):
         .select_related(
             "cart",
             "product",
-            "digital_selection__offer__delivered_version__product",
+            "digital_selection__offer__delivered_version__product__digital_release_metadata",
             "digital_selection__offer__inventory_pool",
         )
         .annotate(

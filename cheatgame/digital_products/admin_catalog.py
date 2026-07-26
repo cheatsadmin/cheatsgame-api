@@ -1,6 +1,7 @@
 from django.db.models import Prefetch, Q
 
 from cheatgame.digital_products.models import (
+    DigitalGameUpcomingStatus,
     DigitalOffer,
     DigitalOfferSaleState,
 )
@@ -15,6 +16,7 @@ from cheatgame.product.models import (
     AttachmentType,
     Product,
     ProductCommerceAuthority,
+    ProductStatus,
     ProductType,
 )
 from cheatgame.users.models import UserTypes
@@ -35,6 +37,30 @@ def _commerce_authority(value):
     if value == ProductCommerceAuthority.DIGITAL_PRODUCTS:
         return "digital_game"
     return ProductCommerceAuthority.STANDARD_COMMERCE
+
+
+def _release_metadata_projection(product):
+    metadata = getattr(product, "digital_release_metadata", None)
+    return {
+        "configured": metadata is not None,
+        "release_date": metadata.release_date if metadata else None,
+        "upcoming_status": (
+            metadata.upcoming_status
+            if metadata
+            else DigitalGameUpcomingStatus.RELEASED
+        ),
+        "preorder_enabled": bool(
+            metadata and metadata.preorder_enabled
+        ),
+        "preorder_open_at": (
+            metadata.preorder_open_at if metadata else None
+        ),
+        "preorder_close_at": (
+            metadata.preorder_close_at if metadata else None
+        ),
+        "published": product.status == ProductStatus.PUBLISHED,
+        "preorder_commerce_supported": False,
+    }
 
 
 def readiness_result_projection(result):
@@ -67,6 +93,7 @@ def admin_catalog_games():
     ).order_by("pk")
     return (
         Product.objects.filter(product_type=ProductType.GAME.value)
+        .select_related("digital_release_metadata")
         .prefetch_related(
             "attachments",
             "delivered_versions",
@@ -146,6 +173,7 @@ def admin_catalog_game_list_projection(product):
             for offer in non_archived
         ],
         "readiness": _readiness_projection(product),
+        "release_metadata": _release_metadata_projection(product),
         "updated_at": product.updated_at,
     }
 
@@ -258,6 +286,7 @@ def admin_catalog_game_projection(product, *, actor):
             "legacy_quantity_present": bool(product.quantity),
             "updated_at": product.updated_at,
         },
+        "release_metadata": _release_metadata_projection(product),
         "readiness": _readiness_projection(product),
         "delivered_versions": versions,
         "offers": offer_rows,

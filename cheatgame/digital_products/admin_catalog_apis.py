@@ -16,6 +16,7 @@ from cheatgame.digital_products.admin_catalog import (
     readiness_result_projection,
 )
 from cheatgame.digital_products.models import (
+    DigitalGameUpcomingStatus,
     DigitalOffer,
     DigitalOfferCapacity,
     DigitalOfferSaleState,
@@ -39,6 +40,9 @@ from cheatgame.digital_products.services.offers import (
     move_offer_to_new_independent_pool,
     transition_offer_sale_state,
     update_offer_price,
+)
+from cheatgame.digital_products.services.upcoming_games import (
+    update_upcoming_game_metadata,
 )
 from cheatgame.product.models import (
     DeliveredVersion,
@@ -197,6 +201,17 @@ class PriceSerializer(serializers.Serializer):
     price = serializers.DecimalField(max_digits=15, decimal_places=0, min_value=0)
 
 
+class UpcomingGameMetadataSerializer(serializers.Serializer):
+    release_date = serializers.DateField(required=False, allow_null=True)
+    upcoming_status = serializers.ChoiceField(
+        choices=DigitalGameUpcomingStatus.choices
+    )
+    preorder_enabled = serializers.BooleanField(default=False)
+    preorder_open_at = serializers.DateTimeField(required=False, allow_null=True)
+    preorder_close_at = serializers.DateTimeField(required=False, allow_null=True)
+    publish = serializers.BooleanField()
+
+
 class OfferStateSerializer(serializers.Serializer):
     sale_state = serializers.ChoiceField(choices=DigitalOfferSaleState.values)
 
@@ -251,6 +266,23 @@ class CreateDeliveredVersionApi(_CatalogCommandApi):
         create_delivered_version(
             product_id=product_id,
             native_console=values["native_console"],
+            actor=request.user,
+        )
+        return product_id
+
+
+class UpdateUpcomingGameMetadataApi(_CatalogCommandApi):
+    input_serializer_class = UpcomingGameMetadataSerializer
+
+    def execute(self, request, values, product_id):
+        update_upcoming_game_metadata(
+            product_id=product_id,
+            release_date=values.get("release_date"),
+            upcoming_status=values["upcoming_status"],
+            preorder_enabled=values["preorder_enabled"],
+            preorder_open_at=values.get("preorder_open_at"),
+            preorder_close_at=values.get("preorder_close_at"),
+            publish=values["publish"],
             actor=request.user,
         )
         return product_id

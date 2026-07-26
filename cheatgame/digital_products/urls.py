@@ -3,6 +3,7 @@ from django.urls import path
 from cheatgame.digital_products.public_catalog_apis import (
     PublicDigitalGameDetailApi,
     PublicDigitalGameListApi,
+    PublicUpcomingGameListApi,
 )
 from cheatgame.digital_products.customer_cart_apis import (
     CustomerDigitalCartFulfillmentMethodApi,
@@ -39,6 +40,7 @@ from cheatgame.digital_products.admin_catalog_apis import (
     MakeOfferStockIndependentApi,
     ShareOfferStockApi,
     UpdateOfferPriceApi,
+    UpdateUpcomingGameMetadataApi,
 )
 
 
@@ -46,6 +48,11 @@ app_name = "digital-products"
 
 urlpatterns = [
     path("catalog/games/", PublicDigitalGameListApi.as_view(), name="public-game-list"),
+    path(
+        "catalog/upcoming-games/",
+        PublicUpcomingGameListApi.as_view(),
+        name="public-upcoming-game-list",
+    ),
     path("catalog/games/<str:slug>/", PublicDigitalGameDetailApi.as_view(), name="public-game-detail"),
     path(
         "customer/cart/items/",
@@ -106,6 +113,11 @@ urlpatterns = [
         "admin/catalog/games/<int:product_id>/versions/",
         CreateDeliveredVersionApi.as_view(),
         name="admin-catalog-version-create",
+    ),
+    path(
+        "admin/catalog/games/<int:product_id>/release-metadata/",
+        UpdateUpcomingGameMetadataApi.as_view(),
+        name="admin-catalog-release-metadata-update",
     ),
     path(
         "admin/catalog/versions/<int:version_id>/archive/",

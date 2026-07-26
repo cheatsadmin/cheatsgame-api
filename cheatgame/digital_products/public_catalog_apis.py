@@ -6,16 +6,22 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from cheatgame.api.pagination import LimitOffsetPagination
-from cheatgame.digital_products.public_catalog import public_game_projection
+from cheatgame.digital_products.public_catalog import (
+    public_game_projection,
+    public_upcoming_game_projection,
+)
 from cheatgame.digital_products.public_catalog_selectors import (
     public_digital_game_detail,
     public_digital_games,
+    public_upcoming_digital_games,
 )
 from cheatgame.digital_products.public_catalog_serializers import (
     DigitalApiErrorSerializer,
     PaginatedPublicDigitalGameSerializer,
+    PaginatedPublicUpcomingGameSerializer,
     PublicDigitalGameDetailSerializer,
     PublicDigitalGameFilterSerializer,
+    PublicUpcomingGameFilterSerializer,
 )
 
 
@@ -94,3 +100,36 @@ class PublicDigitalGameDetailApi(PublicDigitalReadOnlyAPIView):
                 http_status=status.HTTP_404_NOT_FOUND,
             )
         return Response(public_game_projection(product, detail=True))
+
+
+class PublicUpcomingGameListApi(PublicDigitalReadOnlyAPIView):
+    @extend_schema(
+        operation_id="digital_public_upcoming_game_list",
+        parameters=[PublicUpcomingGameFilterSerializer],
+        responses={
+            status.HTTP_200_OK: PaginatedPublicUpcomingGameSerializer,
+            status.HTTP_400_BAD_REQUEST: DigitalApiErrorSerializer,
+        },
+        description=(
+            "Public display-only upcoming Digital GAME catalog. "
+            "Preorder purchase authority is intentionally disabled."
+        ),
+    )
+    def get(self, request):
+        filters = PublicUpcomingGameFilterSerializer(data=request.query_params)
+        if not filters.is_valid():
+            return digital_api_error(
+                code="invalid_request",
+                detail="Upcoming game filters are invalid.",
+                fields=filters.errors,
+                http_status=status.HTTP_400_BAD_REQUEST,
+            )
+        values = dict(filters.validated_data)
+        values.pop("limit", None)
+        values.pop("offset", None)
+        queryset = public_upcoming_digital_games(**values)
+        paginator = LimitOffsetPagination()
+        page = paginator.paginate_queryset(queryset, request, view=self)
+        return paginator.get_paginated_response(
+            [public_upcoming_game_projection(product) for product in page]
+        )

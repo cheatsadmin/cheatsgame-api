@@ -12,6 +12,7 @@ from django.db.models import (
 from django.db.models.functions import Coalesce, Greatest
 
 from cheatgame.digital_products.models import (
+    DigitalGameUpcomingStatus,
     DigitalInventoryReservation,
     DigitalInventoryReservationState,
     DigitalOffer,
@@ -19,6 +20,7 @@ from cheatgame.digital_products.models import (
     InventoryPoolStatus,
 )
 from cheatgame.product.models import (
+    DeliveredVersion,
     NativeConsole,
     Product,
     ProductCommerceAuthority,
@@ -31,6 +33,12 @@ EFFECTIVE_PUBLIC_HOLD_STATES = (
     DigitalInventoryReservationState.ACTIVE,
     DigitalInventoryReservationState.PAYMENT_HOLD,
     DigitalInventoryReservationState.HELD_FOR_REVIEW,
+)
+
+PUBLIC_UPCOMING_STATUSES = (
+    DigitalGameUpcomingStatus.ANNOUNCED,
+    DigitalGameUpcomingStatus.COMING_SOON,
+    DigitalGameUpcomingStatus.DELAYED,
 )
 
 
@@ -55,6 +63,14 @@ def public_digital_offers():
             delivered_version__product__commerce_authority=ProductCommerceAuthority.DIGITAL_PRODUCTS,
         )
         .filter(
+            Q(delivered_version__product__digital_release_metadata__isnull=True)
+            | Q(
+                delivered_version__product__digital_release_metadata__upcoming_status=(
+                    DigitalGameUpcomingStatus.RELEASED
+                )
+            )
+        )
+        .filter(
             Q(customer_console=NativeConsole.PS5)
             | Q(customer_console=NativeConsole.PS4, delivered_version__native_console=NativeConsole.PS4)
         )
@@ -70,6 +86,38 @@ def public_digital_offers():
             ),
         )
         .order_by("customer_console", "capacity", "delivered_version__native_console", "pk")
+    )
+
+
+def public_upcoming_digital_games(*, console=""):
+    queryset = (
+        Product.objects.filter(
+            product_type=ProductType.GAME.value,
+            status=ProductStatus.PUBLISHED,
+            digital_release_metadata__upcoming_status__in=PUBLIC_UPCOMING_STATUSES,
+            delivered_versions__is_active=True,
+        )
+        .select_related("digital_release_metadata")
+        .prefetch_related(
+            Prefetch(
+                "delivered_versions",
+                queryset=DeliveredVersion.objects.filter(is_active=True).order_by(
+                    "native_console", "pk"
+                ),
+                to_attr="public_upcoming_versions",
+            )
+        )
+        .distinct()
+    )
+    if console:
+        queryset = queryset.filter(
+            delivered_versions__is_active=True,
+            delivered_versions__native_console=console,
+        )
+    return queryset.order_by(
+        F("digital_release_metadata__release_date").asc(nulls_last=True),
+        "title",
+        "pk",
     )
 
 
