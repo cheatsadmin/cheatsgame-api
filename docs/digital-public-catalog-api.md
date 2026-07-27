@@ -15,7 +15,7 @@ InventoryPool is the availability authority. Public availability is calculated a
 - `GET /api/digital-products/catalog/games/`
 - `GET /api/digital-products/catalog/games/<slug>/`
 
-List filters are `search`, `console`, `capacity`, `ordering`, `limit`, and `offset`. Ordering accepts `newest`, `title`, and `minimum_price`. Invalid or unknown parameters return the stable error shape `{code, detail, fields?}`.
+List filters are `search`, `console`, `capacity`, `availability`, `ordering`, `limit`, and `offset`. `availability` accepts `available` or `all`; omission is backward-compatible with `all`. `all` includes every otherwise eligible active Offer after Console and Capacity filtering, including Offers whose effective availability is currently zero. `available` requires at least one matching eligible active Offer whose InventoryPool quantity minus effective reservation holds is greater than zero. Neither value includes inactive, unpublished, or otherwise commercially ineligible Offers. Ordering accepts `newest`, `title`, and `minimum_price`. Invalid or unknown parameters return the stable error shape `{code, detail, fields?}`.
 
 The list returns limit/offset pagination and customer-safe game summaries. Detail returns the same game summary plus public description media and separate Offer rows for every console, capacity, and DeliveredVersion selection. Capacity 1 exposes only in-store fulfillment; capacities 2 and 3 expose the backend-approved in-store and remote methods.
 

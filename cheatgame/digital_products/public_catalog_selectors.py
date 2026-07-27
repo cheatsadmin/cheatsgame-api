@@ -121,12 +121,21 @@ def public_upcoming_digital_games(*, console=""):
     )
 
 
-def public_digital_games(*, search="", console="", capacity="", ordering="newest"):
+def public_digital_games(
+    *,
+    search="",
+    console="",
+    capacity="",
+    availability="all",
+    ordering="newest",
+):
     matching_offers = public_digital_offers().filter(delivered_version__product_id=OuterRef("pk"))
     if console:
         matching_offers = matching_offers.filter(customer_console=console)
     if capacity:
         matching_offers = matching_offers.filter(capacity=capacity)
+    if availability == "available":
+        matching_offers = matching_offers.filter(customer_available_quantity__gt=0)
 
     queryset = (
         Product.objects.filter(

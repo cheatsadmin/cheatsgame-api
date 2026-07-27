@@ -15,6 +15,17 @@ class PublicDigitalGameFilterSerializer(serializers.Serializer):
     search = serializers.CharField(required=False, allow_blank=True, max_length=100, default="")
     console = serializers.ChoiceField(required=False, choices=NativeConsole.choices, default="")
     capacity = serializers.ChoiceField(required=False, choices=DigitalOfferCapacity.choices, default="")
+    availability = serializers.ChoiceField(
+        required=False,
+        choices=(("available", "available"), ("all", "all")),
+        default="all",
+        help_text=(
+            "Omitted or `all` returns games with an otherwise eligible active Offer after "
+            "Console and Capacity filtering, including Offers with zero effective quantity. "
+            "`available` additionally requires InventoryPool quantity minus effective "
+            "reservation holds to be greater than zero."
+        ),
+    )
     ordering = serializers.ChoiceField(
         required=False,
         choices=(("newest", "newest"), ("title", "title"), ("minimum_price", "minimum_price")),
@@ -28,6 +39,13 @@ class PublicDigitalGameFilterSerializer(serializers.Serializer):
         if unknown:
             raise serializers.ValidationError(
                 {field: "This query parameter is not accepted." for field in unknown}
+            )
+        if (
+            "availability" in self.initial_data
+            and self.initial_data.get("availability") not in {"available", "all"}
+        ):
+            raise serializers.ValidationError(
+                {"availability": "This query parameter must be available or all."}
             )
         return attrs
 

@@ -274,9 +274,174 @@ class PublicDigitalCatalogApiTests(TestCase):
         self.assertEqual((paginated.data["limit"], paginated.data["offset"], paginated.data["count"]), (1, 1, 3))
         self.assertEqual(paginated.data["results"][0]["id"], beta.pk)
 
+    def test_availability_omission_and_all_are_backward_compatible(self):
+        available = self.product("Available Digital")
+        self.offer(available, quantity=2)
+        sold_out = self.product("Sold Out Digital")
+        self.offer(sold_out, quantity=0)
+
+        omitted = self.client.get(self.list_url)
+        explicit_all = self.client.get(self.list_url, {"availability": "all"})
+        available_only = self.client.get(
+            self.list_url,
+            {"availability": "available"},
+        )
+
+        self.assertEqual(omitted.status_code, 200)
+        self.assertEqual(omitted.data, explicit_all.data)
+        self.assertEqual(omitted.data["count"], 2)
+        self.assertEqual(
+            {row["id"] for row in omitted.data["results"]},
+            {available.pk, sold_out.pk},
+        )
+        self.assertEqual(available_only.data["count"], 1)
+        self.assertEqual(
+            [row["id"] for row in available_only.data["results"]],
+            [available.pk],
+        )
+        self.assertEqual(
+            set(available_only.data["results"][0]),
+            set(omitted.data["results"][0]),
+        )
+
+    def test_availability_is_applied_after_console_and_capacity(self):
+        matrix = self.product("Console Capacity Matrix")
+        self.offer(
+            matrix,
+            customer_console=NativeConsole.PS5,
+            capacity=DigitalOfferCapacity.CAPACITY_2,
+            quantity=0,
+        )
+        self.offer(
+            matrix,
+            customer_console=NativeConsole.PS5,
+            capacity=DigitalOfferCapacity.CAPACITY_3,
+            quantity=2,
+        )
+        self.offer(
+            matrix,
+            customer_console=NativeConsole.PS4,
+            capacity=DigitalOfferCapacity.CAPACITY_2,
+            quantity=2,
+        )
+
+        unavailable_combination = self.client.get(
+            self.list_url,
+            {
+                "console": "ps5",
+                "capacity": "capacity_2",
+                "availability": "available",
+            },
+        )
+        ps5_capacity_3 = self.client.get(
+            self.list_url,
+            {
+                "console": "ps5",
+                "capacity": "capacity_3",
+                "availability": "available",
+            },
+        )
+        ps4_capacity_2 = self.client.get(
+            self.list_url,
+            {
+                "console": "ps4",
+                "capacity": "capacity_2",
+                "availability": "available",
+            },
+        )
+        ps5_only = self.client.get(
+            self.list_url,
+            {"console": "ps5", "availability": "available"},
+        )
+        capacity_2_only = self.client.get(
+            self.list_url,
+            {"capacity": "capacity_2", "availability": "available"},
+        )
+
+        self.assertEqual(unavailable_combination.data["count"], 0)
+        self.assertEqual(
+            [row["id"] for row in ps5_capacity_3.data["results"]],
+            [matrix.pk],
+        )
+        self.assertEqual(
+            [row["id"] for row in ps4_capacity_2.data["results"]],
+            [matrix.pk],
+        )
+        self.assertEqual([row["id"] for row in ps5_only.data["results"]], [matrix.pk])
+        self.assertEqual(
+            [row["id"] for row in capacity_2_only.data["results"]],
+            [matrix.pk],
+        )
+
+    def test_availability_respects_reservations_before_count_ordering_and_pagination(self):
+        first = self.product("Filtered Alpha")
+        self.offer(first, quantity=2)
+        held = self.product("Filtered Bravo")
+        held_offer = self.offer(held, quantity=1)
+        self.reserve(
+            held_offer,
+            suffix=30,
+            state=DigitalInventoryReservationState.ACTIVE,
+        )
+        third = self.product("Filtered Charlie")
+        self.offer(third, quantity=2)
+
+        response = self.client.get(
+            self.list_url,
+            {
+                "search": "Filtered",
+                "availability": "available",
+                "ordering": "title",
+                "limit": 1,
+                "offset": 1,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 2)
+        self.assertEqual(response.data["limit"], 1)
+        self.assertEqual(response.data["offset"], 1)
+        self.assertEqual(
+            [row["id"] for row in response.data["results"]],
+            [third.pk],
+        )
+        self.assertNotIn(held.title, str(response.data))
+
+    def test_ineligible_offers_never_satisfy_either_availability_mode(self):
+        draft = self.product("Draft Availability")
+        self.offer(
+            draft,
+            quantity=5,
+            sale_state=DigitalOfferSaleState.DRAFT,
+        )
+        paused = self.product("Paused Availability")
+        paused_offer = self.offer(paused, quantity=5)
+        InventoryPool.objects.filter(pk=paused_offer.inventory_pool_id).update(
+            status=InventoryPoolStatus.PAUSED
+        )
+        no_offer = self.product("No Offer Availability")
+
+        for availability in ("all", "available"):
+            with self.subTest(availability=availability):
+                response = self.client.get(
+                    self.list_url,
+                    {"availability": availability},
+                )
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.data["results"], [])
+                self.assertEqual(response.data["count"], 0)
+                self.assertNotIn(
+                    no_offer.title,
+                    str(response.data),
+                )
+
     def test_invalid_filters_have_stable_errors(self):
         for parameters, field in (
             ({"console": "xbox"}, "console"),
+            ({"availability": "true"}, "availability"),
+            ({"availability": "1"}, "availability"),
+            ({"availability": "sold_out"}, "availability"),
+            ({"availability": ""}, "availability"),
             ({"ordering": "price_desc"}, "ordering"),
             ({"limit": 0}, "limit"),
             ({"unknown": "value"}, "unknown"),
@@ -327,7 +492,10 @@ class PublicDigitalCatalogApiTests(TestCase):
             self.offer(product, customer_console=NativeConsole.PS4, price=100 + index)
             self.offer(product, customer_console=NativeConsole.PS5, price=200 + index)
         with CaptureQueriesContext(connection) as queries:
-            response = self.client.get(self.list_url, {"limit": 10})
+            response = self.client.get(
+                self.list_url,
+                {"availability": "available", "limit": 10},
+            )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["count"], 4)
         data_queries = [
@@ -346,4 +514,14 @@ class PublicDigitalCatalogApiTests(TestCase):
         self.assertEqual(set(paths[list_path]), {"get"})
         self.assertEqual(set(paths[detail_path]), {"get"})
         parameter_names = {parameter["name"] for parameter in paths[list_path]["get"]["parameters"]}
-        self.assertTrue({"search", "console", "capacity", "ordering", "limit", "offset"}.issubset(parameter_names))
+        self.assertTrue(
+            {
+                "search",
+                "console",
+                "capacity",
+                "availability",
+                "ordering",
+                "limit",
+                "offset",
+            }.issubset(parameter_names)
+        )
