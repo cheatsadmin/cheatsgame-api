@@ -37,6 +37,7 @@ from cheatgame.digital_products.public_catalog_apis import (
 from cheatgame.digital_products.public_catalog_selectors import public_digital_offers
 from cheatgame.digital_products.services import (
     DigitalCartLockedError,
+    DigitalOfferPriceChangedError,
     DigitalOfferUnavailableError,
     DigitalProductsConflictError,
     DigitalProductsValidationError,
@@ -140,6 +141,13 @@ def _domain_error_response(exc):
             detail="Standard and Digital items cannot be combined in this Cart.",
             http_status=status.HTTP_409_CONFLICT,
         )
+    if isinstance(exc, DigitalOfferPriceChangedError):
+        return digital_api_error(
+            code="digital_offer_price_changed",
+            detail="The selected Digital Offer price changed.",
+            fields=exc.details,
+            http_status=status.HTTP_409_CONFLICT,
+        )
     if isinstance(exc, DigitalOfferUnavailableError):
         return digital_api_error(
             code="digital_offer_unavailable",
@@ -219,6 +227,7 @@ class CustomerDigitalCartItemCreateApi(CustomerDigitalCartAPIView):
                 offer=offer,
                 fulfillment_method=values["fulfillment_method"],
                 actor=request.user,
+                expected_unit_price=values.get("expected_unit_price"),
             )
             item = owned_customer_cart_item(user=request.user, cart_item_id=item.pk)
             return Response(digital_cart_item_projection(item), status=status.HTTP_201_CREATED)

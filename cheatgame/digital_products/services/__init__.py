@@ -46,6 +46,10 @@ class DigitalOfferUnavailableError(DigitalProductsValidationError):
     code = "DIGITAL_OFFER_UNAVAILABLE"
 
 
+class DigitalOfferPriceChangedError(DigitalProductsConflictError):
+    code = "DIGITAL_OFFER_PRICE_CHANGED"
+
+
 class DigitalReservationConflictError(DigitalProductsConflictError):
     code = "DIGITAL_RESERVATION_CONFLICT"
 

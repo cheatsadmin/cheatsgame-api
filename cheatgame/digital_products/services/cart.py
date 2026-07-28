@@ -10,8 +10,10 @@ from cheatgame.digital_products.models import (
     InventoryPool,
     InventoryPoolStatus,
 )
+from cheatgame.digital_products.public_catalog import PUBLIC_DIGITAL_CURRENCY
 from cheatgame.digital_products.services import (
     DigitalCartLockedError,
+    DigitalOfferPriceChangedError,
     DigitalOfferUnavailableError,
     DigitalProductsConflictError,
     DigitalProductsValidationError,
@@ -61,7 +63,14 @@ def _validate_offer(offer):
 
 
 @transaction.atomic
-def add_digital_offer_to_cart(*, cart, offer, fulfillment_method, actor):
+def add_digital_offer_to_cart(
+    *,
+    cart,
+    offer,
+    fulfillment_method,
+    actor,
+    expected_unit_price=None,
+):
     locked_cart = Cart.objects.select_for_update().get(pk=cart.pk)
     _require_actor(actor, locked_cart)
     _assert_open(locked_cart)
@@ -77,6 +86,14 @@ def add_digital_offer_to_cart(*, cart, offer, fulfillment_method, actor):
     pool = InventoryPool.objects.select_for_update().get(pk=locked_offer.inventory_pool_id)
     if get_available_quantity(pool_id=pool.pk) < 1:
         raise DigitalOfferUnavailableError("Digital Offer is unavailable.")
+    if expected_unit_price is not None and locked_offer.price != expected_unit_price:
+        raise DigitalOfferPriceChangedError(
+            "The displayed Digital Offer price changed.",
+            details={
+                "current_unit_price": str(locked_offer.price),
+                "currency": PUBLIC_DIGITAL_CURRENCY,
+            },
+        )
     if DigitalCartSelection.objects.filter(cart_item__cart=locked_cart, offer=locked_offer).exists():
         raise DigitalProductsConflictError("This Digital Offer is already selected.")
     item = CartItem.objects.create(

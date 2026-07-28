@@ -193,6 +193,65 @@ class CustomerDigitalCartApiTests(TestCase):
         offer.inventory_pool.refresh_from_db()
         self.assertEqual(offer.inventory_pool.sellable_quantity, 3)
 
+    def test_expected_unit_price_is_optional_and_matching_value_is_acknowledged_exactly(self):
+        offer = self.offer(
+            self.product("Acknowledged Price"),
+            price=Decimal("510000"),
+        )
+
+        backward_compatible = self.add(offer)
+        self.assertEqual(backward_compatible.status_code, 201, backward_compatible.data)
+        CartItem.objects.all().delete()
+
+        matching = self.add(offer, expected_unit_price="510000")
+        self.assertEqual(matching.status_code, 201, matching.data)
+        item = CartItem.objects.get(pk=matching.data["id"])
+        self.assertEqual(item.price, offer.price)
+        self.assertEqual(
+            Decimal(matching.data["digital_selection"]["unit_price"]),
+            offer.price,
+        )
+
+        CartItem.objects.all().delete()
+        fractional = self.add(offer, expected_unit_price="510000.5")
+        self.assertEqual(fractional.status_code, 400)
+        self.assertEqual(fractional.data["code"], "invalid_request")
+        self.assertIn("expected_unit_price", fractional.data["fields"])
+        self.assertFalse(CartItem.objects.exists())
+
+    def test_changed_expected_unit_price_is_atomic_and_returns_current_public_price(self):
+        offer = self.offer(
+            self.product("Changed Price"),
+            price=Decimal("510000"),
+        )
+        cart = Cart.objects.create(user=self.customer)
+        cart_before = (
+            cart.state,
+            cart.active_checkout_id,
+            cart.updated_at,
+        )
+
+        def change_price_then_run_locked_command(**kwargs):
+            DigitalOffer.objects.filter(pk=offer.pk).update(price=Decimal("520000"))
+            return add_digital_offer_to_cart(**kwargs)
+
+        with patch(
+            "cheatgame.digital_products.customer_cart_apis.add_digital_offer_to_cart",
+            side_effect=change_price_then_run_locked_command,
+        ):
+            response = self.add(offer, expected_unit_price="510000")
+
+        self.assertEqual(response.status_code, 409, response.data)
+        self.assertEqual(response.data["code"], "digital_offer_price_changed")
+        self.assertEqual(response.data["fields"]["current_unit_price"], "520000")
+        self.assertEqual(response.data["fields"]["currency"], "IRT")
+        self.assertFalse(CartItem.objects.exists())
+        cart.refresh_from_db()
+        self.assertEqual(
+            (cart.state, cart.active_checkout_id, cart.updated_at),
+            cart_before,
+        )
+
     def test_locked_add_revalidates_product_publication_after_public_lookup(self):
         product = self.product("Publication Drift")
         offer = self.offer(product)
@@ -286,6 +345,20 @@ class CustomerDigitalCartApiTests(TestCase):
         )
         self.assertEqual(invalid.status_code, 400)
         self.assertIn("fulfillment_method", invalid.data["fields"])
+        object_payload = self.client.post(
+            self.add_url,
+            {
+                "offer_id": offer.pk,
+                "fulfillment_method": {
+                    "code": "in_store",
+                    "label": "نصب در فروشگاه",
+                },
+            },
+            format="json",
+        )
+        self.assertEqual(object_payload.status_code, 400)
+        self.assertEqual(object_payload.data["code"], "invalid_request")
+        self.assertIn("fulfillment_method", object_payload.data["fields"])
         allowed = self.add(offer, DigitalCartFulfillmentMethod.IN_STORE)
         self.assertEqual(allowed.status_code, 201)
 

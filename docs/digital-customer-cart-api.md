@@ -13,7 +13,9 @@ Only an authenticated, active, phone-verified Customer may use the Digital mutat
 
 ## Selection and duplicate policy
 
-`offer_id` is an untrusted public selection reference, not commercial authority. Add accepts only `offer_id` and `fulfillment_method`. The adapter resolves the Offer through public eligibility rules and the domain command revalidates the locked Cart, Offer, DeliveredVersion, Pool, method, and effective availability.
+`offer_id` is an untrusted public selection reference, not commercial authority. Add accepts `offer_id`, `fulfillment_method`, and the optional backward-compatible `expected_unit_price`. The adapter resolves the Offer through public eligibility rules and the domain command revalidates the locked Cart, Offer, DeliveredVersion, Pool, method, and effective availability.
+
+`expected_unit_price` is the exact integer IRT price last displayed to the customer. It is only an acknowledgement: the server locks and re-resolves the Offer and remains the sole price authority. A mismatch creates or changes no CartItem and returns HTTP 409 with `digital_offer_price_changed`; `fields.current_unit_price` and `fields.currency` expose the refreshed public price context. Omitting the field preserves the existing request behavior.
 
 The locked command also revalidates that the Product is still published. A catalog lookup is therefore not final authority when publication changes concurrently with the mutation.
 

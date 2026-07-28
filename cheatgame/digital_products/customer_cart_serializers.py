@@ -22,6 +22,12 @@ class AddDigitalCartItemInputSerializer(StrictDigitalCartInputSerializer):
     fulfillment_method = serializers.ChoiceField(
         choices=DigitalCartFulfillmentMethod.choices
     )
+    expected_unit_price = serializers.DecimalField(
+        max_digits=15,
+        decimal_places=0,
+        min_value=0,
+        required=False,
+    )
 
 
 class ChangeDigitalFulfillmentMethodInputSerializer(StrictDigitalCartInputSerializer):
