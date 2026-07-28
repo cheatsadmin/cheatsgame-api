@@ -1,6 +1,7 @@
 from datetime import timedelta
 from decimal import Decimal
 from io import StringIO
+from types import SimpleNamespace
 from threading import Barrier, Thread
 from unittest import skipUnless
 from uuid import uuid4
@@ -8,7 +9,7 @@ from uuid import uuid4
 from django.core.exceptions import ValidationError
 from django.core.management import call_command
 from django.db import IntegrityError, close_old_connections, connection, transaction
-from django.test import TestCase, TransactionTestCase, override_settings
+from django.test import SimpleTestCase, TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 
 from cheatgame.digital_products.models import (
@@ -33,6 +34,11 @@ from cheatgame.digital_products.services import (
 from cheatgame.digital_products.services.cart import add_digital_offer_to_cart
 from cheatgame.digital_products.services.checkout_preparation import prepare_digital_checkout
 from cheatgame.digital_products.services.inventory import get_available_quantity
+from cheatgame.digital_products.services.reservations import (
+    CURRENT_DIGITAL_RESERVATION_STATES,
+    DigitalReservationCardinalityError,
+    classify_digital_reservations,
+)
 from cheatgame.product.models import (
     DeliveredVersion,
     NativeConsole,
@@ -59,6 +65,59 @@ from cheatgame.shop.services.cart import (
 )
 from cheatgame.shop.services.checkout import CheckoutServiceError, cancel_checkout, create_or_reuse_checkout
 from cheatgame.users.models import BaseUser, UserTypes
+
+
+class DigitalReservationCardinalityTests(SimpleTestCase):
+    def reservation(self, *, pk, line_id, state, original=True):
+        return SimpleNamespace(
+            pk=pk,
+            checkout_line_id=line_id,
+            state=state,
+            recovery_authorization_id=None if original else 99,
+        )
+
+    def test_current_authority_states_are_explicit(self):
+        self.assertEqual(
+            CURRENT_DIGITAL_RESERVATION_STATES,
+            {
+                DigitalInventoryReservationState.ACTIVE,
+                DigitalInventoryReservationState.PAYMENT_HOLD,
+                DigitalInventoryReservationState.HELD_FOR_REVIEW,
+            },
+        )
+
+    def test_history_and_one_current_are_classified_without_row_order_selection(self):
+        released = self.reservation(
+            pk=1,
+            line_id=10,
+            state=DigitalInventoryReservationState.RELEASED,
+        )
+        replacement = self.reservation(
+            pk=2,
+            line_id=10,
+            state=DigitalInventoryReservationState.PAYMENT_HOLD,
+            original=False,
+        )
+        lineage = classify_digital_reservations([replacement, released])
+        self.assertIs(lineage.original_by_line[10], released)
+        self.assertIs(lineage.current_by_line[10], replacement)
+
+    def test_duplicate_current_authority_fails_closed_in_any_row_order(self):
+        active = self.reservation(
+            pk=1,
+            line_id=10,
+            state=DigitalInventoryReservationState.ACTIVE,
+        )
+        held = self.reservation(
+            pk=2,
+            line_id=10,
+            state=DigitalInventoryReservationState.HELD_FOR_REVIEW,
+            original=False,
+        )
+        for rows in ([active, held], [held, active]):
+            with self.subTest(order=[row.pk for row in rows]):
+                with self.assertRaises(DigitalReservationCardinalityError):
+                    classify_digital_reservations(rows)
 
 
 class BatchBCheckoutTests(TestCase):
@@ -201,7 +260,7 @@ class BatchBCheckoutTests(TestCase):
         self.assertTrue(created)
         line = checkout.lines.get()
         snapshot = line.digital_snapshot
-        reservation = line.digital_inventory_reservation
+        reservation = line.digital_inventory_reservations.get(recovery_authorization__isnull=True)
         self.assertEqual((line.unit_payable_price, snapshot.unit_price), (self.offer.price, self.offer.price))
         self.assertEqual(snapshot.inventory_pool_id, self.pool.id)
         self.assertEqual(reservation.state, DigitalInventoryReservationState.ACTIVE)

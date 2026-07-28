@@ -22,7 +22,11 @@ Snapshots preserve the source Offer, Pool, DeliveredVersion, Product identity, c
 
 ## Reservations and availability
 
-`DigitalInventoryReservation` is one-to-one with an authoritative CheckoutLine and references its Checkout and Pool. Quantity is currently exactly one. Active and held-for-review reservations reduce availability:
+Each CheckoutLine has one original `DigitalInventoryReservation` and may retain immutable released,
+expired, or consumed history plus exact-authorized replacement history. At most one reservation per
+line may be current (`ACTIVE`, `PAYMENT_HOLD`, or `HELD_FOR_REVIEW`), and the final commercial
+obligation references the one consumed reservation. Each reservation references its Checkout and
+Pool, and quantity is currently exactly one. Current reservations reduce availability:
 
 `available = InventoryPool.sellable_quantity - active_or_held_DigitalInventoryReservation.quantity`
 

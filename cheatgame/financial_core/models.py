@@ -378,6 +378,24 @@ class ReviewCaseReason(models.TextChoices):
     COMMERCIAL_JOURNAL_FAILED = "commercial_journal_failed", "COMMERCIAL_JOURNAL_FAILED"
 
 
+class LatePaymentAdjudicationStatus(models.TextChoices):
+    OPEN = "open", "OPEN"
+    MAKER_APPROVED = "maker_approved", "MAKER_APPROVED"
+    APPROVED = "approved", "APPROVED"
+    REJECTED = "rejected", "REJECTED"
+    CANCELED = "canceled", "CANCELED"
+
+
+class LatePaymentAdjudicationDecision(models.TextChoices):
+    ACCEPT = "accept", "ACCEPT"
+    REJECT = "reject", "REJECT"
+
+
+class ExceptionalRecognitionAuthorizationStatus(models.TextChoices):
+    AUTHORIZED = "authorized", "AUTHORIZED"
+    APPLIED = "applied", "APPLIED"
+
+
 class IdempotencyStatus(models.TextChoices):
     IN_PROGRESS = "in_progress", "IN_PROGRESS"
     COMPLETED = "completed", "COMPLETED"
@@ -3099,6 +3117,302 @@ class ReviewAction(AppendOnlyModel):
         super().clean()
         if self.approved_by_id and self.approved_by_id == self.actor_id:
             raise ValidationError({"approved_by": "Maker and checker must be different users."})
+
+
+class LatePaymentAdjudication(BaseModel):
+    """Controlled maker/checker decision over contradictory terminal success evidence."""
+
+    IMMUTABLE_FIELDS = (
+        "public_id",
+        "review_case_id",
+        "verification_id",
+        "order_id",
+        "payment_id",
+        "attempt_id",
+        "transaction_id",
+        "idempotency_key",
+    )
+
+    public_id = models.UUIDField(default=uuid4, unique=True, editable=False)
+    review_case = models.OneToOneField(
+        ReviewCase,
+        on_delete=models.PROTECT,
+        related_name="late_payment_adjudication",
+    )
+    verification = models.OneToOneField(
+        Verification,
+        on_delete=models.PROTECT,
+        related_name="late_payment_adjudication",
+    )
+    order = models.ForeignKey(
+        "shop.Order",
+        on_delete=models.PROTECT,
+        related_name="late_payment_adjudications",
+    )
+    payment = models.ForeignKey(
+        Payment,
+        on_delete=models.PROTECT,
+        related_name="late_payment_adjudications",
+    )
+    attempt = models.ForeignKey(
+        PaymentAttempt,
+        on_delete=models.PROTECT,
+        related_name="late_payment_adjudications",
+    )
+    transaction = models.ForeignKey(
+        PaymentTransaction,
+        on_delete=models.PROTECT,
+        related_name="late_payment_adjudications",
+    )
+    status = models.CharField(
+        max_length=24,
+        choices=LatePaymentAdjudicationStatus.choices,
+        default=LatePaymentAdjudicationStatus.OPEN,
+        db_index=True,
+    )
+    proposed_decision = models.CharField(
+        max_length=16,
+        choices=LatePaymentAdjudicationDecision.choices,
+        blank=True,
+    )
+    proposal_version = models.PositiveIntegerField(default=0)
+    maker = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="made_late_payment_adjudications",
+    )
+    maker_at = models.DateTimeField(null=True, blank=True)
+    maker_rationale = models.CharField(max_length=1000, blank=True)
+    checker = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="checked_late_payment_adjudications",
+    )
+    checked_at = models.DateTimeField(null=True, blank=True)
+    checker_rationale = models.CharField(max_length=1000, blank=True)
+    decision = models.CharField(
+        max_length=16,
+        choices=LatePaymentAdjudicationDecision.choices,
+        blank=True,
+    )
+    idempotency_key = models.UUIDField(unique=True, editable=False)
+    version = models.PositiveIntegerField(default=1)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                check=Q(status__in=LatePaymentAdjudicationStatus.values),
+                name="fin_late_adj_status_valid",
+            ),
+            models.CheckConstraint(
+                check=Q(proposed_decision="") | Q(proposed_decision__in=LatePaymentAdjudicationDecision.values),
+                name="fin_late_adj_proposal_valid",
+            ),
+            models.CheckConstraint(
+                check=Q(decision="") | Q(decision__in=LatePaymentAdjudicationDecision.values),
+                name="fin_late_adj_decision_valid",
+            ),
+            models.CheckConstraint(
+                check=Q(checker__isnull=True) | ~Q(checker=F("maker")),
+                name="fin_late_adj_maker_checker_distinct",
+            ),
+            models.CheckConstraint(
+                check=(
+                    Q(
+                        status=LatePaymentAdjudicationStatus.OPEN,
+                        maker__isnull=True,
+                        maker_at__isnull=True,
+                        proposed_decision="",
+                        proposal_version=0,
+                        checker__isnull=True,
+                        checked_at__isnull=True,
+                        decision="",
+                    )
+                    | Q(
+                        status=LatePaymentAdjudicationStatus.MAKER_APPROVED,
+                        maker__isnull=False,
+                        maker_at__isnull=False,
+                        proposed_decision__in=LatePaymentAdjudicationDecision.values,
+                        proposal_version__gt=0,
+                        checker__isnull=True,
+                        checked_at__isnull=True,
+                        decision="",
+                    )
+                    | Q(
+                        status__in=(
+                            LatePaymentAdjudicationStatus.APPROVED,
+                            LatePaymentAdjudicationStatus.REJECTED,
+                        ),
+                        maker__isnull=False,
+                        maker_at__isnull=False,
+                        proposed_decision__in=LatePaymentAdjudicationDecision.values,
+                        proposal_version__gt=0,
+                        checker__isnull=False,
+                        checked_at__isnull=False,
+                        decision__in=LatePaymentAdjudicationDecision.values,
+                    )
+                    | Q(
+                        status=LatePaymentAdjudicationStatus.CANCELED,
+                        checked_at__isnull=False,
+                    )
+                ),
+                name="fin_late_adj_state_coherent",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=("status", "created_at"), name="fin_late_adj_queue"),
+            models.Index(fields=("payment", "status"), name="fin_late_adj_payment"),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.review_case_id and self.review_case.reason != ReviewCaseReason.LATE_PAYMENT:
+            raise ValidationError({"review_case": "Adjudication requires a LATE_PAYMENT ReviewCase."})
+        if self.verification_id and self.verification.transaction_id != self.transaction_id:
+            raise ValidationError({"verification": "Verification must belong to the terminal transaction."})
+        if self.transaction_id and self.transaction.attempt_id != self.attempt_id:
+            raise ValidationError({"transaction": "Transaction must belong to the adjudicated Attempt."})
+        if self.attempt_id and self.attempt.payment_id != self.payment_id:
+            raise ValidationError({"attempt": "Attempt must belong to the adjudicated Payment."})
+        if self.payment_id and self.payment.order_id != self.order_id:
+            raise ValidationError({"payment": "Payment must belong to the adjudicated Order."})
+        if self.maker_id and self.checker_id and self.maker_id == self.checker_id:
+            raise ValidationError({"checker": "Maker and checker must be different users."})
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            original = type(self).objects.filter(pk=self.pk).values(*self.IMMUTABLE_FIELDS).first()
+            if original and any(original[field] != getattr(self, field) for field in self.IMMUTABLE_FIELDS):
+                raise ValidationError("Late-payment adjudication ownership is immutable.")
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+
+class ExceptionalRecognitionAuthorization(BaseModel):
+    """Exact, single-use authority for recognition over immutable terminal rows."""
+
+    IMMUTABLE_FIELDS = (
+        "public_id",
+        "adjudication_id",
+        "verification_id",
+        "order_id",
+        "payment_id",
+        "attempt_id",
+        "transaction_id",
+        "merchant_account_version_id",
+        "provider_reference",
+        "amount",
+        "currency",
+        "expected_payment_version",
+        "evidence_hash",
+        "authorization_fingerprint",
+        "authorized_by_id",
+        "authorized_at",
+        "idempotency_key",
+    )
+
+    public_id = models.UUIDField(default=uuid4, unique=True, editable=False)
+    adjudication = models.OneToOneField(
+        LatePaymentAdjudication,
+        on_delete=models.PROTECT,
+        related_name="recognition_authorization",
+    )
+    verification = models.OneToOneField(
+        Verification,
+        on_delete=models.PROTECT,
+        related_name="exceptional_recognition_authorization",
+    )
+    order = models.ForeignKey("shop.Order", on_delete=models.PROTECT)
+    payment = models.ForeignKey(Payment, on_delete=models.PROTECT)
+    attempt = models.ForeignKey(PaymentAttempt, on_delete=models.PROTECT)
+    transaction = models.OneToOneField(PaymentTransaction, on_delete=models.PROTECT)
+    merchant_account_version = models.ForeignKey(MerchantAccountVersion, on_delete=models.PROTECT)
+    provider_reference = models.CharField(max_length=128)
+    amount = models.DecimalField(max_digits=20, decimal_places=0)
+    currency = models.CharField(max_length=3, default=CANONICAL_CURRENCY)
+    expected_payment_version = models.PositiveIntegerField()
+    evidence_hash = models.CharField(max_length=64)
+    authorization_fingerprint = models.CharField(max_length=64, unique=True)
+    status = models.CharField(
+        max_length=16,
+        choices=ExceptionalRecognitionAuthorizationStatus.choices,
+        default=ExceptionalRecognitionAuthorizationStatus.AUTHORIZED,
+        db_index=True,
+    )
+    authorized_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="authorized_exceptional_recognitions",
+    )
+    authorized_at = models.DateTimeField(default=timezone.now)
+    allocation = models.OneToOneField(
+        FinancialAllocation,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="exceptional_authorization",
+    )
+    applied_at = models.DateTimeField(null=True, blank=True)
+    idempotency_key = models.UUIDField(unique=True, editable=False)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(check=Q(amount__gt=0), name="fin_exception_auth_amount_positive"),
+            models.CheckConstraint(check=Q(currency=CANONICAL_CURRENCY), name="fin_exception_auth_currency_irr"),
+            models.CheckConstraint(check=~Q(provider_reference=""), name="fin_exception_auth_provider_ref"),
+            models.CheckConstraint(check=~Q(evidence_hash=""), name="fin_exception_auth_evidence_hash"),
+            models.CheckConstraint(check=~Q(authorization_fingerprint=""), name="fin_exception_auth_fingerprint"),
+            models.CheckConstraint(
+                check=Q(status__in=ExceptionalRecognitionAuthorizationStatus.values),
+                name="fin_exception_auth_status_valid",
+            ),
+            models.CheckConstraint(
+                check=(
+                    Q(
+                        status=ExceptionalRecognitionAuthorizationStatus.AUTHORIZED,
+                        allocation__isnull=True,
+                        applied_at__isnull=True,
+                    )
+                    | Q(
+                        status=ExceptionalRecognitionAuthorizationStatus.APPLIED,
+                        allocation__isnull=False,
+                        applied_at__isnull=False,
+                    )
+                ),
+                name="fin_exception_auth_application_coherent",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.adjudication_id and self.adjudication.status != LatePaymentAdjudicationStatus.APPROVED:
+            raise ValidationError({"adjudication": "Exceptional authorization requires approved adjudication."})
+        exact = (
+            self.adjudication.verification_id == self.verification_id
+            and self.verification.transaction_id == self.transaction_id
+            and self.transaction.attempt_id == self.attempt_id
+            and self.attempt.payment_id == self.payment_id
+            and self.payment.order_id == self.order_id
+            and self.verification.merchant_account_version_id == self.merchant_account_version_id
+            and self.verification.provider_reference == self.provider_reference
+            and self.verification.canonical_allocation_amount == self.amount
+            and self.verification.canonical_currency == self.currency
+            and self.verification.evidence_hash == self.evidence_hash
+        )
+        if not exact:
+            raise ValidationError("Exceptional authorization does not exactly match immutable evidence.")
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            original = type(self).objects.filter(pk=self.pk).values(*self.IMMUTABLE_FIELDS).first()
+            if original and any(original[field] != getattr(self, field) for field in self.IMMUTABLE_FIELDS):
+                raise ValidationError("Exceptional recognition authority is immutable.")
+        self.full_clean()
+        return super().save(*args, **kwargs)
 
 
 class FinancialEvent(AppendOnlyModel):

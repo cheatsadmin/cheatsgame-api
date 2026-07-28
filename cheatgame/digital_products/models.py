@@ -591,10 +591,10 @@ class DigitalInventoryReservation(BaseModel):
         on_delete=models.PROTECT,
         related_name="digital_inventory_reservations",
     )
-    checkout_line = models.OneToOneField(
+    checkout_line = models.ForeignKey(
         "shop.CheckoutLine",
         on_delete=models.PROTECT,
-        related_name="digital_inventory_reservation",
+        related_name="digital_inventory_reservations",
     )
     order = models.ForeignKey(
         "shop.Order",
@@ -618,6 +618,13 @@ class DigitalInventoryReservation(BaseModel):
     state_changed_at = models.DateTimeField(default=timezone.now)
     idempotency_key = models.UUIDField(unique=True, editable=False)
     resolution_reason = models.CharField(max_length=64, null=True, blank=True)
+    recovery_authorization = models.ForeignKey(
+        "financial_core.ExceptionalRecognitionAuthorization",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="replacement_inventory_reservations",
+    )
 
     class Meta:
         indexes = [
@@ -628,6 +635,27 @@ class DigitalInventoryReservation(BaseModel):
             models.CheckConstraint(check=Q(quantity=1), name="digital_res_quantity_one"),
             models.CheckConstraint(check=Q(state__in=DigitalInventoryReservationState.values), name="digital_res_state_valid"),
             models.CheckConstraint(check=Q(expires_at__gt=F("created_at")), name="digital_res_expiry_after_created"),
+            models.UniqueConstraint(
+                fields=("checkout_line",),
+                condition=Q(recovery_authorization__isnull=True),
+                name="digital_original_reservation_line_uniq",
+            ),
+            models.UniqueConstraint(
+                fields=("recovery_authorization", "checkout_line"),
+                condition=Q(recovery_authorization__isnull=False),
+                name="digital_recovery_auth_line_uniq",
+            ),
+            models.UniqueConstraint(
+                fields=("checkout_line",),
+                condition=Q(
+                    state__in=(
+                        DigitalInventoryReservationState.ACTIVE,
+                        DigitalInventoryReservationState.PAYMENT_HOLD,
+                        DigitalInventoryReservationState.HELD_FOR_REVIEW,
+                    )
+                ),
+                name="digital_current_reservation_line_uniq",
+            ),
         ]
 
     def clean(self):
@@ -644,6 +672,12 @@ class DigitalInventoryReservation(BaseModel):
             raise ValidationError({"inventory_pool": "Reservation Pool must match the snapshot."})
         if self.expires_at != self.checkout.expires_at:
             raise ValidationError({"expires_at": "Reservation expiry must match Checkout expiry."})
+        if self.recovery_authorization_id:
+            authorization = self.recovery_authorization
+            if authorization.payment.order_id != self.order_id:
+                raise ValidationError({"recovery_authorization": "Recovery authority must belong to the Order."})
+            if authorization.payment.order.checkout_id != self.checkout_id:
+                raise ValidationError({"recovery_authorization": "Recovery authority must belong to the Checkout."})
 
     def save(self, *args, **kwargs):
         self.full_clean()

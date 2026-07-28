@@ -12,6 +12,10 @@ from cheatgame.digital_products.public_catalog import (
     FULFILLMENT_METHOD_LABELS,
     PUBLIC_DIGITAL_CURRENCY,
 )
+from cheatgame.digital_products.services.reservations import (
+    DigitalReservationCardinalityError,
+    classify_digital_reservations,
+)
 from cheatgame.digital_products.services.checkout_preparation import COMMERCIAL_SNAPSHOT_REVISION
 from cheatgame.product.models import ProductCommerceAuthority
 from cheatgame.shop.models import CartState, CheckoutStatus
@@ -34,12 +38,10 @@ def _checkout_graph(checkout):
         raise DigitalCheckoutProjectionIntegrityError("Checkout authority is incoherent.")
     if checkout.stock_reservations.all():
         raise DigitalCheckoutProjectionIntegrityError("Digital Checkout has Standard reservations.")
-    if len(reservations) != len(lines):
-        raise DigitalCheckoutProjectionIntegrityError("Checkout reservations are incomplete.")
-
-    reservation_by_line = {reservation.checkout_line_id: reservation for reservation in reservations}
-    if len(reservation_by_line) != len(reservations):
-        raise DigitalCheckoutProjectionIntegrityError("Checkout reservations are duplicated.")
+    try:
+        lineage = classify_digital_reservations(reservations)
+    except DigitalReservationCardinalityError as exc:
+        raise DigitalCheckoutProjectionIntegrityError(str(exc)) from exc
 
     rows = []
     revisions = set()
@@ -48,9 +50,20 @@ def _checkout_graph(checkout):
             snapshot = line.digital_snapshot
         except ObjectDoesNotExist as exc:
             raise DigitalCheckoutProjectionIntegrityError("Checkout snapshot is incomplete.") from exc
-        reservation = reservation_by_line.get(line.pk)
+        reservation = (
+            lineage.current_by_line.get(line.pk)
+            or lineage.consumed_by_line.get(line.pk)
+            or lineage.original_by_line.get(line.pk)
+        )
         if reservation is None or reservation.inventory_pool_id != snapshot.inventory_pool_id:
             raise DigitalCheckoutProjectionIntegrityError("Checkout reservation ownership is incoherent.")
+        if (
+            line.pk not in lineage.current_by_line
+            and checkout.status == CheckoutStatus.CHECKOUT_DRAFT
+        ):
+            raise DigitalCheckoutProjectionIntegrityError(
+                "Active Checkout reservation authority is incomplete."
+            )
         revision = line.snapshot.get("commercial_revision")
         revisions.add(revision)
         rows.append((line, snapshot, reservation))

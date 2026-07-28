@@ -151,7 +151,7 @@ class CustomerDigitalCheckoutApiTests(TestCase):
         checkout = Checkout.objects.get(public_id=response.data["public_id"])
         line = checkout.lines.get()
         snapshot = line.digital_snapshot
-        reservation = line.digital_inventory_reservation
+        reservation = line.digital_inventory_reservations.get(recovery_authorization__isnull=True)
         self.cart.refresh_from_db()
         self.assertEqual(self.cart.state, CartState.LOCKED)
         self.assertEqual(self.cart.active_checkout_id, checkout.pk)

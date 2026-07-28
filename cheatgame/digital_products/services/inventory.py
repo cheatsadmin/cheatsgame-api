@@ -7,10 +7,12 @@ from django.db.models import Sum
 
 from cheatgame.digital_products.models import (
     DigitalInventoryReservation,
-    DigitalInventoryReservationState,
     InventoryPool,
     PoolStockAdjustment,
     PoolStockAdjustmentReason,
+)
+from cheatgame.digital_products.services.reservations import (
+    CURRENT_DIGITAL_RESERVATION_STATES,
 )
 from cheatgame.digital_products.services import (
     DigitalProductsValidationError,
@@ -61,11 +63,7 @@ def _resolve_existing_adjustment(*, adjustment, pool_id, delta, reason, actor_id
     raise StockIdempotencyConflictError("Stock idempotency key was reused with different command semantics.")
 
 
-EFFECTIVE_RESERVATION_STATES = (
-    DigitalInventoryReservationState.ACTIVE,
-    DigitalInventoryReservationState.PAYMENT_HOLD,
-    DigitalInventoryReservationState.HELD_FOR_REVIEW,
-)
+EFFECTIVE_RESERVATION_STATES = CURRENT_DIGITAL_RESERVATION_STATES
 
 
 def get_effective_held_quantity(*, pool_id: int) -> int:

@@ -787,7 +787,7 @@ def apply_verification_result(
             PaymentTransactionStatus.DECLINED,
             PaymentTransactionStatus.CANCELED,
             PaymentTransactionStatus.EXPIRED,
-        ):
+        ) and transaction_obj.completed_at is None:
             transaction_obj.completed_at = now
             tx_fields.append("completed_at")
         transaction_obj.save(update_fields=tuple(dict.fromkeys(tx_fields)))
@@ -815,6 +815,15 @@ def apply_verification_result(
                 summary="Provider verification evidence requires controlled financial follow-up.",
                 correlation_id=claim.correlation_id,
             )
+            if review_reason == ReviewCaseReason.LATE_PAYMENT:
+                from cheatgame.financial_core.services.late_payment_adjudication import (
+                    ensure_terminal_late_payment_adjudication,
+                )
+
+                ensure_terminal_late_payment_adjudication(
+                    verification=verification,
+                    review_case=review,
+                )
 
         if enqueue_apply_work:
             enqueue_verification_work(

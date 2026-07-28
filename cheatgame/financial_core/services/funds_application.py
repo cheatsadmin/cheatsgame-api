@@ -12,6 +12,8 @@ from django.utils import timezone
 from cheatgame.financial_core.models import (
     CANONICAL_CURRENCY,
     CommercialFinalizationWorkItem,
+    ExceptionalRecognitionAuthorization,
+    ExceptionalRecognitionAuthorizationStatus,
     FinancialActorType,
     FinancialAllocation,
     FinancialEvent,
@@ -68,7 +70,7 @@ from cheatgame.shop.models import Order
 
 APPLICATION_NAMESPACE = UUID("fe3600d3-e223-4263-85fd-f8aa8f55bed4")
 FINALIZER_VERSION = "commercial-finalizer-v1-dormant"
-RECOGNITION_CONTRACT_VERSION = "funds-recognition-v1"
+RECOGNITION_CONTRACT_VERSION = "funds-recognition-v2-exceptional-adjudication"
 RECEIPT_SOURCE_TYPE = "provider_receipt"
 
 
@@ -129,10 +131,19 @@ def _lock_graph(verification_id):
     attempt = next(item for item in attempts if item.pk == ref.transaction.attempt_id)
     transaction_obj = next(item for item in transactions if item.pk == ref.transaction_id)
     verification = next(item for item in verifications if item.pk == verification_id)
-    return order, payment, attempt, transaction_obj, verification
+    authorization_ref = ExceptionalRecognitionAuthorization.objects.filter(
+        verification_id=verification_id
+    ).values_list("pk", flat=True).first()
+    authorization = None
+    if authorization_ref is not None:
+        register_lock(LockRank.FINANCIAL_EVIDENCE, f"authorization:{authorization_ref:020d}")
+        authorization = ExceptionalRecognitionAuthorization.objects.select_for_update().select_related(
+            "adjudication"
+        ).get(pk=authorization_ref)
+    return order, payment, attempt, transaction_obj, verification, authorization
 
 
-def _validate_exact_success(*, payment, attempt, transaction_obj, verification):
+def _validate_exact_success(*, payment, attempt, transaction_obj, verification, authorization=None):
     interpretation = derive_current_verification_interpretation(transaction_id=transaction_obj.pk)
     if (
         interpretation.state != VerificationInterpretationState.ELIGIBLE_FINAL_PAID
@@ -216,14 +227,37 @@ def _validate_exact_success(*, payment, attempt, transaction_obj, verification):
             "Contradictory provider evidence requires review before recognition.",
             review_reason=ReviewCaseReason.FINANCIAL_INVARIANT_VIOLATION,
         )
-    if attempt.status == PaymentAttemptStatus.DEFINITIVE_FAILED or transaction_obj.status in (
+    terminal_contradiction = (
+        attempt.status == PaymentAttemptStatus.DEFINITIVE_FAILED
+        or transaction_obj.status in (
         PaymentTransactionStatus.DECLINED,
         PaymentTransactionStatus.CANCELED,
         PaymentTransactionStatus.EXPIRED,
-    ):
-        raise FundsApplicationBlocked("Late success evidence requires controlled review before recognition.")
+        )
+    )
+    if terminal_contradiction:
+        if authorization is None:
+            raise FundsApplicationBlocked("Late success evidence requires controlled review before recognition.")
+        exact_authority = (
+            authorization.status == ExceptionalRecognitionAuthorizationStatus.AUTHORIZED
+            and authorization.verification_id == verification.pk
+            and authorization.payment_id == payment.pk
+            and authorization.attempt_id == attempt.pk
+            and authorization.transaction_id == transaction_obj.pk
+            and authorization.merchant_account_version_id == verification.merchant_account_version_id
+            and authorization.provider_reference == verification.provider_reference
+            and authorization.amount == verification.canonical_allocation_amount
+            and authorization.currency == verification.canonical_currency
+            and authorization.evidence_hash == verification.evidence_hash
+            and authorization.adjudication.status == "approved"
+        )
+        if not exact_authority:
+            raise FundsApplicationBlocked("Exceptional recognition authorization is absent or mismatched.")
+    elif authorization is not None:
+        raise FundsApplicationBlocked("Exceptional authorization cannot alter ordinary recognition.")
     if payment.collection_status == PaymentCollectionStatus.CANCELED:
         raise FundsApplicationBlocked("Canceled Payment cannot be recognized automatically.")
+    return authorization
 
 
 def _active_policy(transaction_obj):
@@ -305,7 +339,7 @@ def _ensure_review_locked(*, order, payment, attempt, transaction_obj, reviews, 
 @transaction.atomic
 def _record_application_failure(*, verification_id, reason, correlation_id):
     with ordered_lock_scope():
-        order, payment, attempt, transaction_obj, verification = _lock_graph(verification_id)
+        order, payment, attempt, transaction_obj, verification, authorization = _lock_graph(verification_id)
         if FinancialAllocation.objects.filter(transaction=transaction_obj).exists():
             return
         reviews = _lock_reviews(payment)
@@ -333,7 +367,7 @@ def _apply_verified_funds_atomic(
     actor_id,
 ):
     with ordered_lock_scope():
-        order, payment, attempt, transaction_obj, verification = _lock_graph(verification_id)
+        order, payment, attempt, transaction_obj, verification, authorization = _lock_graph(verification_id)
         command_payload = {
             "contract_version": RECOGNITION_CONTRACT_VERSION,
             "verification_public_id": str(verification.public_id),
@@ -342,6 +376,9 @@ def _apply_verified_funds_atomic(
             "payment_id": payment.pk,
             "expected_payment_version": int(expected_payment_version),
             "actor_type": actor_type,
+            "exceptional_authorization": (
+                authorization.authorization_fingerprint if authorization is not None else ""
+            ),
         }
         application_fingerprint = canonical_request_hash(command_payload)
         if actor_type not in (FinancialActorType.SYSTEM, FinancialActorType.RECONCILIATION):
@@ -374,6 +411,7 @@ def _apply_verified_funds_atomic(
                     attempt=attempt,
                     transaction_obj=transaction_obj,
                     verification=verification,
+                    authorization=authorization,
                 )
             return FundsApplicationResult(existing_source, True)
         if payment.version != int(expected_payment_version):
@@ -388,6 +426,7 @@ def _apply_verified_funds_atomic(
             attempt=attempt,
             transaction_obj=transaction_obj,
             verification=verification,
+            authorization=authorization,
         )
         previous_allocated = FinancialAllocation.objects.filter(payment=payment).aggregate(total=Sum("amount"))["total"] or Decimal("0")
         if payment.confirmed_amount != previous_allocated:
@@ -461,21 +500,28 @@ def _apply_verified_funds_atomic(
             causation_id=causation_id or verification.public_id,
         )
 
-        assert_payment_transaction_transition(transaction_obj.status, PaymentTransactionStatus.SUCCEEDED)
-        assert_payment_attempt_transition(attempt.status, PaymentAttemptStatus.SUCCEEDED)
+        if authorization is None:
+            assert_payment_transaction_transition(transaction_obj.status, PaymentTransactionStatus.SUCCEEDED)
+            assert_payment_attempt_transition(attempt.status, PaymentAttemptStatus.SUCCEEDED)
         assert_payment_transition(payment.collection_status, PaymentCollectionStatus.PAID_PENDING_FINALIZATION)
         now = timezone.now()
-        transaction_obj.status = PaymentTransactionStatus.SUCCEEDED
-        transaction_obj.completed_at = now
-        transaction_obj.version += 1
-        transaction_obj.save(update_fields=("status", "completed_at", "version", "updated_at"))
-        attempt.status = PaymentAttemptStatus.SUCCEEDED
-        attempt.version += 1
-        attempt.save(update_fields=("status", "version", "updated_at"))
+        if authorization is None:
+            transaction_obj.status = PaymentTransactionStatus.SUCCEEDED
+            transaction_obj.completed_at = now
+            transaction_obj.version += 1
+            transaction_obj.save(update_fields=("status", "completed_at", "version", "updated_at"))
+            attempt.status = PaymentAttemptStatus.SUCCEEDED
+            attempt.version += 1
+            attempt.save(update_fields=("status", "version", "updated_at"))
         payment.confirmed_amount = projected_amount
         payment.collection_status = PaymentCollectionStatus.PAID_PENDING_FINALIZATION
         payment.version += 1
         payment.save(update_fields=("confirmed_amount", "collection_status", "version", "updated_at"))
+        if authorization is not None:
+            authorization.status = ExceptionalRecognitionAuthorizationStatus.APPLIED
+            authorization.allocation = allocation
+            authorization.applied_at = now
+            authorization.save(update_fields=("status", "allocation", "applied_at", "updated_at"))
 
         reviews = _lock_reviews(payment)
         blocking_reasons = {
@@ -533,12 +579,18 @@ def _apply_verified_funds_atomic(
             claimed_at=None,
             claim_expires_at=None,
         )
-        for aggregate, event_type, command_suffix in (
-            (transaction_obj, "provider_funds.applied", "transaction"),
-            (attempt, "payment_attempt.succeeded", "attempt"),
+        event_specs = [
             (payment, "payment.paid_pending_finalization", "payment"),
             (allocation, "financial_allocation.created", "allocation"),
-        ):
+        ]
+        if authorization is None:
+            event_specs.insert(0, (transaction_obj, "provider_funds.applied", "transaction"))
+            event_specs.insert(1, (attempt, "payment_attempt.succeeded", "attempt"))
+        else:
+            event_specs.append(
+                (authorization, "late_payment.exceptional_recognition_applied", "authorization")
+            )
+        for aggregate, event_type, command_suffix in event_specs:
             append_financial_event(
                 aggregate_type=aggregate._meta.label_lower,
                 aggregate_id=aggregate.public_id,

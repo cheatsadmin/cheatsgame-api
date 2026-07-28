@@ -14,10 +14,12 @@ from django.db.models.functions import Coalesce, Greatest
 from cheatgame.digital_products.models import (
     DigitalGameUpcomingStatus,
     DigitalInventoryReservation,
-    DigitalInventoryReservationState,
     DigitalOffer,
     DigitalOfferSaleState,
     InventoryPoolStatus,
+)
+from cheatgame.digital_products.services.reservations import (
+    CURRENT_DIGITAL_RESERVATION_STATES,
 )
 from cheatgame.product.models import (
     DeliveredVersion,
@@ -29,11 +31,7 @@ from cheatgame.product.models import (
 )
 
 
-EFFECTIVE_PUBLIC_HOLD_STATES = (
-    DigitalInventoryReservationState.ACTIVE,
-    DigitalInventoryReservationState.PAYMENT_HOLD,
-    DigitalInventoryReservationState.HELD_FOR_REVIEW,
-)
+EFFECTIVE_PUBLIC_HOLD_STATES = CURRENT_DIGITAL_RESERVATION_STATES
 
 PUBLIC_UPCOMING_STATUSES = (
     DigitalGameUpcomingStatus.ANNOUNCED,

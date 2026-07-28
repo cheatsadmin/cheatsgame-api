@@ -23,6 +23,8 @@ from cheatgame.financial_core.models import (
     ConsiderationAllocation,
     DigitalInventoryCommitment,
     DigitalFulfillmentObligation,
+    ExceptionalRecognitionAuthorization,
+    ExceptionalRecognitionAuthorizationStatus,
     FinancialActorType,
     FinancialAllocation,
     FinalizationWorkStatus,
@@ -235,6 +237,14 @@ def _lock_and_validate_recognized_funds(payment):
         prefix="30-allocation",
         pks=FinancialAllocation.objects.filter(payment=payment).values_list("pk", flat=True),
     )
+    authorizations = _lock_ranked_rows(
+        queryset=ExceptionalRecognitionAuthorization.objects.all(),
+        rank=LockRank.FINANCIAL_EVIDENCE,
+        prefix="35-exceptional-authorization",
+        pks=ExceptionalRecognitionAuthorization.objects.filter(
+            allocation_id__in=[item.pk for item in allocations]
+        ).values_list("pk", flat=True),
+    )
     policies = _lock_ranked_rows(
         queryset=ReceiptAccountingPolicyVersion.objects.all(),
         rank=LockRank.FINANCIAL_EVIDENCE,
@@ -253,6 +263,7 @@ def _lock_and_validate_recognized_funds(payment):
     reference_by_transaction = {item.transaction_id: item for item in references}
     policy_by_id = {item.pk: item for item in policies}
     journal_by_id = {item.pk: item for item in journals}
+    authorization_by_allocation = {item.allocation_id: item for item in authorizations}
     if not allocations or sum((item.amount for item in allocations), Decimal("0")) != payment.confirmed_amount:
         raise CommercialFinalizationBlocked("Confirmed Payment does not reconcile to immutable allocations.")
     for allocation in allocations:
@@ -262,6 +273,25 @@ def _lock_and_validate_recognized_funds(payment):
         reference = reference_by_transaction.get(allocation.transaction_id)
         policy = policy_by_id.get(allocation.accounting_policy_version_id)
         journal = journal_by_id.get(allocation.journal_entry_id)
+        authorization = authorization_by_allocation.get(allocation.pk)
+        ordinary_success = (
+            transaction_obj is not None
+            and attempt is not None
+            and transaction_obj.status == PaymentTransactionStatus.SUCCEEDED
+            and attempt.status == PaymentAttemptStatus.SUCCEEDED
+        )
+        exceptional_success = (
+            authorization is not None
+            and authorization.status == ExceptionalRecognitionAuthorizationStatus.APPLIED
+            and authorization.verification_id == allocation.verification_id
+            and authorization.payment_id == payment.pk
+            and authorization.attempt_id == allocation.attempt_id
+            and authorization.transaction_id == allocation.transaction_id
+            and authorization.merchant_account_version_id == allocation.merchant_account_version_id
+            and authorization.provider_reference == allocation.provider_reference
+            and authorization.amount == allocation.amount
+            and authorization.currency == allocation.currency
+        )
         if (
             transaction_obj is None
             or attempt is None
@@ -271,8 +301,7 @@ def _lock_and_validate_recognized_funds(payment):
             or journal is None
             or transaction_obj.attempt_id != attempt.pk
             or attempt.payment_id != payment.pk
-            or transaction_obj.status != PaymentTransactionStatus.SUCCEEDED
-            or attempt.status != PaymentAttemptStatus.SUCCEEDED
+            or not (ordinary_success or exceptional_success)
             or verification.transaction_id != transaction_obj.pk
             or reference.verification_id != verification.pk
             or reference.transaction_id != transaction_obj.pk
@@ -516,12 +545,21 @@ def finalize_paid_commerce(
             pool_ids = sorted({snapshot.digital_snapshot.inventory_pool_id for snapshot in snapshots.values()})
             pools = lock_many(queryset=InventoryPool.objects.all(), rank=LockRank.COMMERCIAL_RESOURCE, pks=pool_ids)
             pool_by_id = {item.pk: item for item in pools}
-            reservations = lock_many(
+            reservation_history = lock_many(
                 queryset=DigitalInventoryReservation.objects.all(),
                 rank=LockRank.RESERVATION,
                 pks=DigitalInventoryReservation.objects.filter(order=order).values_list("pk", flat=True),
             )
-            by_line = {item.checkout_line_id: item for item in reservations}
+            eligible_by_line = {}
+            for item in reservation_history:
+                if item.state == DigitalInventoryReservationState.PAYMENT_HOLD:
+                    if item.checkout_line_id in eligible_by_line:
+                        raise CommercialFinalizationBlocked(
+                            "Digital reservation set has duplicate active claims."
+                        )
+                    eligible_by_line[item.checkout_line_id] = item
+            reservations = list(eligible_by_line.values())
+            by_line = eligible_by_line
             if len(reservations) != len(lines) or len(snapshots) != len(lines) or set(by_line) != set(snapshots):
                 raise CommercialFinalizationBlocked("Digital reservation set is incomplete.")
             order_by_line = {line.pk: item for line, item in zip(lines, order_items)}
@@ -1042,6 +1080,23 @@ def _work_application_identity(
             "currency",
         )
     )
+    exceptional_authorizations = list(
+        ExceptionalRecognitionAuthorization.objects.filter(
+            payment=payment,
+            allocation_id__in=[item["pk"] for item in allocations],
+        )
+        .order_by("pk")
+        .values(
+            "pk",
+            "public_id",
+            "adjudication_id",
+            "verification_id",
+            "transaction_id",
+            "allocation_id",
+            "authorization_fingerprint",
+            "status",
+        )
+    )
     receipt_journal_ids = [item["journal_entry_id"] for item in allocations]
     receipt_journals = list(
         JournalEntry.objects.filter(pk__in=receipt_journal_ids)
@@ -1134,6 +1189,7 @@ def _work_application_identity(
         "order_items": items,
         "reservations": reservations,
         "recognized_financial_graph": allocations,
+        "exceptional_recognition_authorizations": exceptional_authorizations,
         "receipt_journals": receipt_journals,
         "receipt_postings": receipt_postings,
         "digital_snapshots": digital_snapshots,
