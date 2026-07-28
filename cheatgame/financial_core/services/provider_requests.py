@@ -42,7 +42,7 @@ from cheatgame.financial_core.services.state_machines import (
     assert_payment_transaction_transition,
     assert_payment_transition,
 )
-from cheatgame.shop.models import Order, StockReservation, StockReservationState
+from cheatgame.shop.models import Cart, Checkout, Order, StockReservation, StockReservationState
 
 
 C2A_ALLOWED_REQUEST_OUTCOMES = frozenset(
@@ -131,7 +131,29 @@ def _event(*, aggregate, event_type, command_key, actor_type, actor_id, metadata
 
 
 def _lock_payment_graph(*, payment_id, attempt_id=None, transaction_id=None):
-    payment_ref = Payment.objects.only("order_id").get(pk=payment_id)
+    payment_ref = Payment.objects.select_related("order__checkout", "obligation_source").only(
+        "order_id",
+        "order__checkout_id",
+        "order__checkout__cart_id",
+        "obligation_source__commerce_authority",
+    ).get(pk=payment_id)
+    source = getattr(payment_ref, "obligation_source", None)
+    if (
+        source is not None
+        and source.commerce_authority == "digital_products"
+        and payment_ref.order.checkout_id
+        and payment_ref.order.checkout.cart_id
+    ):
+        lock_one(
+            queryset=Cart.objects.all(),
+            rank=LockRank.CART,
+            pk=payment_ref.order.checkout.cart_id,
+        )
+        lock_one(
+            queryset=Checkout.objects.all(),
+            rank=LockRank.CHECKOUT,
+            pk=payment_ref.order.checkout_id,
+        )
     order = lock_one(queryset=Order.objects.all(), rank=LockRank.PAYABLE, pk=payment_ref.order_id)
     payment = lock_one(queryset=Payment.objects.all(), rank=LockRank.PAYMENT, pk=payment_id)
     attempts = lock_many(
@@ -247,6 +269,15 @@ def create_or_replay_payment_attempt(
             PaymentCollectionStatus.PARTIALLY_PAID,
         ):
             raise CollectionBlocked("Payment is not collectible.")
+        source = getattr(payment, "obligation_source", None)
+        if (
+            source is not None
+            and source.commerce_authority == "digital_products"
+            and any(attempt.status == PaymentAttemptStatus.DEFINITIVE_FAILED for attempt in attempts)
+        ):
+            raise CollectionBlocked(
+                "A definitive Digital failure terminates this Payment; retry requires a new Checkout."
+            )
         remaining = payment.amount_due - payment.confirmed_amount
         if remaining <= 0 or amount != remaining:
             raise CollectionBlocked("C2A requires the exact positive remaining Payment amount.")
@@ -630,7 +661,7 @@ def apply_provider_request_result(
         pk=transaction_id
     )
     with ordered_lock_scope():
-        _, payment, _, attempt, _, transaction_obj = _lock_payment_graph(
+        order, payment, _, attempt, _, transaction_obj = _lock_payment_graph(
             payment_id=transaction_ref.attempt.payment_id,
             attempt_id=transaction_ref.attempt_id,
             transaction_id=transaction_id,
@@ -762,6 +793,27 @@ def apply_provider_request_result(
             payment.collection_status = payment_target
             payment.version += 1
             payment.save(update_fields=("collection_status", "version", "updated_at"))
+
+        if (
+            attempt_target == PaymentAttemptStatus.DEFINITIVE_FAILED
+            and DigitalInventoryReservation.objects.filter(order=order).exists()
+        ):
+            from cheatgame.digital_products.services.payment_failures import (
+                terminate_locked_definitive_unpaid_digital_graph,
+            )
+
+            checkout = Checkout.objects.get(pk=order.checkout_id)
+            cart = Cart.objects.get(pk=checkout.cart_id)
+            terminate_locked_definitive_unpaid_digital_graph(
+                cart=cart,
+                checkout=checkout,
+                order=order,
+                payment=payment,
+                attempt=attempt,
+                transaction_obj=transaction_obj,
+                reason_code=reason_code or outcome,
+                idempotency_identity=result.idempotency_key,
+            )
 
         review = None
         if outcome in (

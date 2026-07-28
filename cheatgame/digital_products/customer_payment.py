@@ -7,6 +7,7 @@ from cheatgame.financial_core.models import (
     PaymentCollectionStatus,
     PaymentTransactionStatus,
 )
+from cheatgame.shop.models import CartState, CheckoutStatus
 
 
 BLOCKING_ATTEMPT_STATES = frozenset(
@@ -68,7 +69,12 @@ def digital_payment_projection(checkout, *, replayed=False, customer_action_url=
         payment
         and payment.collection_status == PaymentCollectionStatus.OPEN
         and not blocking
-        and (attempt is None or attempt.status == PaymentAttemptStatus.DEFINITIVE_FAILED)
+        and attempt
+        and attempt.status == PaymentAttemptStatus.DEFINITIVE_FAILED
+        and checkout.status == CheckoutStatus.CANCELED
+        and checkout.cart_id
+        and checkout.cart.state == CartState.OPEN
+        and checkout.cart.active_checkout_id is None
     )
     do_not_pay_again = bool(
         payment

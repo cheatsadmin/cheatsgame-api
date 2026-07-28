@@ -38,7 +38,7 @@ Canonical Payment, Attempt, and Transaction money remains IRR. Each request Tran
 
 ## Attempt, request Transaction, claim, and result boundaries
 
-Attempt creation locks Order, Payment, all Attempts, commercial holds, and unresolved ReviewCase blockers in the universal order. It requires a collectible positive remainder, an eligible versioned account, valid holds, and no live/success/unknown/review evidence. Every safe customer retry creates a new sequence; terminal attempts are never reset.
+Attempt creation locks Order, Payment, all Attempts, commercial holds, and unresolved ReviewCase blockers in the universal order. It requires a collectible positive remainder, an eligible versioned account, valid holds, and no live/success/unknown/review evidence. Terminal attempts are never reset. For Digital commerce, a definitive unpaid attempt terminates the complete commercial graph: `can_retry` permits preparation of a new Checkout and never creates another Attempt on the failed Payment. Nonterminal no-effect retry remains an idempotent retry of the unresolved provider operation.
 
 Request-operation creation records one immutable PaymentTransaction with deterministic merchant reference, versioned provider/account/adapter identity, canonical and provider money, provider idempotency reference where supported, request fingerprint, and correlation/causation identities. It creates no provider authority and cannot mark success.
 

@@ -24,7 +24,7 @@ from cheatgame.digital_products.models import (
     InventoryPool,
     InventoryPoolStatus,
 )
-from cheatgame.digital_products.services.cart import add_digital_offer_to_cart
+from cheatgame.digital_products.services.cart import add_digital_offer_to_cart, remove_digital_cart_item
 from cheatgame.digital_products.services.checkout_preparation import prepare_digital_checkout
 from cheatgame.digital_products.services.payment_adapter import request_digital_checkout_payment
 from cheatgame.financial_core.models import (
@@ -65,10 +65,12 @@ from cheatgame.product.models import (
 from cheatgame.shop.models import (
     Cart,
     CartItem,
+    CartState,
     Checkout,
     CheckoutStatus,
     Order,
     OrderItem,
+    OrderStatus,
     PaymentTransaction as LegacyPayment,
 )
 from cheatgame.users.models import BaseUser, UserTypes
@@ -558,7 +560,7 @@ class CustomerDigitalPaymentApiTests(TransactionTestCase):
         self.assertEqual(PaymentAttempt.objects.count(), 0)
         self.assertEqual(len(self.adapter.envelopes), 0)
 
-    def test_definitive_failure_allows_new_attempt(self):
+    def test_definitive_failure_terminates_graph_and_requires_new_checkout(self):
         self.adapter.result = NormalizedProviderResult(
             outcome=ProviderRequestOutcome.CONFIRMED_DECLINE,
             evidence_hash="b" * 64,
@@ -566,17 +568,72 @@ class CustomerDigitalPaymentApiTests(TransactionTestCase):
         )
         first = self.request(uuid4())
         self.assertEqual(first.status_code, 201)
+        self.assertTrue(first.data["can_retry"])
+        self.assertFalse(first.data["do_not_pay_again"])
+        old_order = Order.objects.get()
+        old_payment = Payment.objects.get()
+        old_reservation = DigitalInventoryReservation.objects.get()
+        self.checkout.refresh_from_db()
+        self.cart.refresh_from_db()
+        old_order.refresh_from_db()
+        self.assertEqual(self.checkout.status, CheckoutStatus.CANCELED)
+        self.assertEqual(old_order.payment_status, OrderStatus.FAIDED.value)
+        self.assertEqual(self.cart.state, CartState.OPEN)
+        self.assertIsNone(self.cart.active_checkout_id)
+        self.assertEqual(old_reservation.state, DigitalInventoryReservationState.RELEASED)
         self.assertEqual(PaymentAttempt.objects.get().status, PaymentAttemptStatus.DEFINITIVE_FAILED)
+
         self.adapter.result = NormalizedProviderResult(
             outcome=ProviderRequestOutcome.CUSTOMER_ACTION_REQUIRED,
             evidence_hash="c" * 64,
             customer_action_url="https://pay.test/authority-2",
         )
-        second = self.request(uuid4())
+        same_graph = self.request(uuid4())
+        self.assertEqual(
+            (same_graph.status_code, same_graph.data["code"]),
+            (409, "digital_checkout_not_payment_ready"),
+        )
+        self.assertEqual(PaymentAttempt.objects.count(), 1)
+
+        old_cart_item = CartItem.objects.get(cart=self.cart)
+        remove_digital_cart_item(cart_item_id=old_cart_item.pk, actor=self.customer)
+        self.offer.price = Decimal("475000")
+        self.offer.save(update_fields=("price", "updated_at"))
+        add_digital_offer_to_cart(
+            cart=self.cart,
+            offer=self.offer,
+            fulfillment_method=DigitalCartFulfillmentMethod.REMOTE,
+            expected_unit_price=Decimal("475000"),
+            actor=self.customer,
+        )
+        new_checkout = prepare_digital_checkout(actor=self.customer, client_checkout_uuid=uuid4())[0]
+        self.assertNotEqual(new_checkout.pk, self.checkout.pk)
+        second = self.request_for(
+            customer=self.customer,
+            checkout=new_checkout,
+            key=uuid4(),
+        )
         self.assertEqual(second.status_code, 201, second.data)
         self.assertEqual(PaymentAttempt.objects.count(), 2)
+        self.assertEqual(Order.objects.count(), 2)
+        self.assertEqual(Payment.objects.count(), 2)
+        new_order = Order.objects.exclude(pk=old_order.pk).get()
+        new_payment = Payment.objects.exclude(pk=old_payment.pk).get()
+        new_reservation = DigitalInventoryReservation.objects.exclude(pk=old_reservation.pk).get()
+        self.assertEqual(new_order.checkout_id, new_checkout.pk)
+        self.assertEqual(new_payment.order_id, new_order.pk)
+        self.assertEqual(new_reservation.checkout_id, new_checkout.pk)
+        self.assertEqual(new_reservation.state, DigitalInventoryReservationState.PAYMENT_HOLD)
+        self.assertEqual(new_checkout.lines.get().unit_payable_price, Decimal("475000"))
+        self.assertEqual(new_payment.amount_due, Decimal("4750000"))
+        old_payment.refresh_from_db()
+        old_order.refresh_from_db()
+        old_reservation.refresh_from_db()
+        self.assertEqual(old_payment.collection_status, "open")
+        self.assertEqual(old_order.payment_status, OrderStatus.FAIDED.value)
+        self.assertEqual(old_reservation.state, DigitalInventoryReservationState.RELEASED)
 
-    def test_retry_root_preserves_exact_preplacement_checkout_version(self):
+    def test_definitive_failure_cannot_create_a_retry_root_on_old_checkout(self):
         Checkout.objects.filter(pk=self.checkout.pk).update(version=3)
         self.checkout.refresh_from_db()
         first_key = uuid4()
@@ -587,7 +644,7 @@ class CustomerDigitalPaymentApiTests(TransactionTestCase):
         )
         self.assertEqual(self.request(first_key).status_code, 201)
         self.checkout.refresh_from_db()
-        self.assertEqual(self.checkout.version, 4)
+        self.assertEqual(self.checkout.status, CheckoutStatus.CANCELED)
 
         retry_key = uuid4()
         self.adapter.result = NormalizedProviderResult(
@@ -595,11 +652,21 @@ class CustomerDigitalPaymentApiTests(TransactionTestCase):
             evidence_hash="2" * 64,
             customer_action_url="https://pay.test/version-preserved",
         )
-        self.assertEqual(self.request(retry_key).status_code, 201)
+        retry = self.request(retry_key)
+        self.assertEqual(
+            (retry.status_code, retry.data["code"]),
+            (409, "digital_checkout_not_payment_ready"),
+        )
         self.assertEqual(self.root_identity(first_key)["placement_checkout_version"], 3)
-        self.assertEqual(self.root_identity(retry_key)["placement_checkout_version"], 3)
+        self.assertFalse(
+            IdempotencyRecord.objects.filter(
+                scope=f"digital_api:payment_request:{self.checkout.pk}",
+                key=str(retry_key),
+                status=IdempotencyStatus.COMPLETED,
+            ).exists()
+        )
 
-    def test_definitive_failure_retry_root_reuses_original_placement_identity(self):
+    def test_definitive_failure_new_checkout_has_new_commercial_identity(self):
         first_key = uuid4()
         self.adapter.result = NormalizedProviderResult(
             outcome=ProviderRequestOutcome.CONFIRMED_DECLINE,
@@ -609,18 +676,22 @@ class CustomerDigitalPaymentApiTests(TransactionTestCase):
         self.assertEqual(self.request(first_key).status_code, 201)
         original = self.root_identity(first_key)
 
-        retry_key = uuid4()
+        new_checkout = prepare_digital_checkout(actor=self.customer, client_checkout_uuid=uuid4())[0]
         self.adapter.result = NormalizedProviderResult(
             outcome=ProviderRequestOutcome.CUSTOMER_ACTION_REQUIRED,
             evidence_hash="4" * 64,
             customer_action_url="https://pay.test/definitive-retry",
         )
-        self.assertEqual(self.request(retry_key).status_code, 201)
-        retry = self.root_identity(retry_key)
-        self.assertEqual(retry["placement_checkout_version"], original["placement_checkout_version"])
-        self.assertEqual(retry["commercial_revision"], original["commercial_revision"])
-        self.assertEqual(retry["checkout_id"], original["checkout_id"])
-        self.assertEqual(retry["checkout_public_id"], original["checkout_public_id"])
+        retry_key = uuid4()
+        response = self.request_for(customer=self.customer, checkout=new_checkout, key=retry_key)
+        self.assertEqual(response.status_code, 201)
+        retry_record = IdempotencyRecord.objects.get(
+            scope=f"digital_api:payment_request:{new_checkout.pk}",
+            key=str(retry_key),
+        )
+        retry = retry_record.safe_response["request_identity"]
+        self.assertNotEqual(retry["checkout_id"], original["checkout_id"])
+        self.assertNotEqual(retry["checkout_public_id"], original["checkout_public_id"])
 
     def test_no_effect_retry_root_reuses_original_placement_identity(self):
         first_key = uuid4()
@@ -643,7 +714,7 @@ class CustomerDigitalPaymentApiTests(TransactionTestCase):
         self.assertEqual(retry["commercial_revision"], original["commercial_revision"])
         self.assertEqual(retry["checkout_id"], original["checkout_id"])
 
-    def test_retry_after_later_checkout_version_increments_keeps_original_version(self):
+    def test_definitive_failure_history_cannot_be_reopened_after_version_change(self):
         first_key = uuid4()
         self.adapter.result = NormalizedProviderResult(
             outcome=ProviderRequestOutcome.CONFIRMED_DECLINE,
@@ -660,11 +731,12 @@ class CustomerDigitalPaymentApiTests(TransactionTestCase):
             evidence_hash="8" * 64,
             customer_action_url="https://pay.test/later-version-retry",
         )
-        self.assertEqual(self.request(retry_key).status_code, 201)
+        response = self.request(retry_key)
         self.assertEqual(
-            self.root_identity(retry_key)["placement_checkout_version"],
-            original_version,
+            (response.status_code, response.data["code"]),
+            (409, "digital_checkout_not_payment_ready"),
         )
+        self.assertEqual(PaymentAttempt.objects.count(), 1)
 
     def test_no_effect_retry_reuses_attempt_and_transaction(self):
         self.adapter.result = NormalizedProviderResult(

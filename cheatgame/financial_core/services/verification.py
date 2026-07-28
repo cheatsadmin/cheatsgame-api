@@ -8,6 +8,7 @@ from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
+from cheatgame.digital_products.models import DigitalInventoryReservation
 from cheatgame.financial_core.models import (
     CANONICAL_CURRENCY,
     FinancialActorType,
@@ -49,7 +50,7 @@ from cheatgame.financial_core.services.state_machines import (
     assert_payment_transaction_transition,
     assert_payment_transition,
 )
-from cheatgame.shop.models import Order
+from cheatgame.shop.models import Cart, Checkout, Order
 
 
 VERIFICATION_NAMESPACE = UUID("7ee49c1b-3f36-47d9-87d2-90c2894943a1")
@@ -151,9 +152,34 @@ def enqueue_verification_work(
 
 
 def _lock_graph(transaction_id):
-    tx_ref = PaymentTransaction.objects.select_related("attempt__payment").only(
-        "attempt_id", "attempt__payment_id", "attempt__payment__order_id"
+    tx_ref = PaymentTransaction.objects.select_related(
+        "attempt__payment__order__checkout",
+        "attempt__payment__obligation_source",
+    ).only(
+        "attempt_id",
+        "attempt__payment_id",
+        "attempt__payment__order_id",
+        "attempt__payment__order__checkout_id",
+        "attempt__payment__order__checkout__cart_id",
+        "attempt__payment__obligation_source__commerce_authority",
     ).get(pk=transaction_id)
+    source = getattr(tx_ref.attempt.payment, "obligation_source", None)
+    if (
+        source is not None
+        and source.commerce_authority == "digital_products"
+        and tx_ref.attempt.payment.order.checkout_id
+        and tx_ref.attempt.payment.order.checkout.cart_id
+    ):
+        lock_one(
+            queryset=Cart.objects.all(),
+            rank=LockRank.CART,
+            pk=tx_ref.attempt.payment.order.checkout.cart_id,
+        )
+        lock_one(
+            queryset=Checkout.objects.all(),
+            rank=LockRank.CHECKOUT,
+            pk=tx_ref.attempt.payment.order.checkout_id,
+        )
     order = lock_one(
         queryset=Order.objects.all(),
         rank=LockRank.PAYABLE,
@@ -797,6 +823,27 @@ def apply_verification_result(
         payment.collection_status = payment_target
         payment.version += 1
         payment.save(update_fields=("collection_status", "version", "updated_at"))
+
+        if (
+            application_state == VerificationApplicationState.APPLIED_UNPAID
+            and DigitalInventoryReservation.objects.filter(order=order).exists()
+        ):
+            from cheatgame.digital_products.services.payment_failures import (
+                terminate_locked_definitive_unpaid_digital_graph,
+            )
+
+            checkout = Checkout.objects.get(pk=order.checkout_id)
+            cart = Cart.objects.get(pk=checkout.cart_id)
+            terminate_locked_definitive_unpaid_digital_graph(
+                cart=cart,
+                checkout=checkout,
+                order=order,
+                payment=payment,
+                attempt=attempt,
+                transaction_obj=transaction_obj,
+                reason_code=error_classification or outcome,
+                idempotency_identity=verification.result_idempotency_key,
+            )
 
         review = None
         review_created = False
