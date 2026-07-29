@@ -845,6 +845,39 @@ def apply_verification_result(
                 idempotency_identity=verification.result_idempotency_key,
             )
 
+        if (
+            application_state != VerificationApplicationState.APPLIED_UNPAID
+            and DigitalInventoryReservation.objects.filter(order=order).exists()
+        ):
+            from cheatgame.digital_products.services.payment_holds import (
+                retain_locked_digital_payment_hold,
+            )
+
+            checkout = Checkout.objects.get(pk=order.checkout_id)
+            cart = Cart.objects.get(pk=checkout.cart_id)
+            if (
+                outcome == VerificationOutcome.CONFIRMED_SUCCESS
+                and review_reason != ReviewCaseReason.LATE_PAYMENT
+            ):
+                hold_phase = "nominal_expiry_success"
+            elif outcome in (
+                VerificationOutcome.PENDING,
+                VerificationOutcome.NO_EFFECT_RETRYABLE,
+            ):
+                hold_phase = "verification_pending"
+            elif application_state == VerificationApplicationState.REVIEW_REQUIRED:
+                hold_phase = "review"
+            else:
+                hold_phase = None
+            if hold_phase is not None:
+                retain_locked_digital_payment_hold(
+                    cart=cart,
+                    checkout=checkout,
+                    order=order,
+                    phase=hold_phase,
+                    idempotency_identity=verification.result_idempotency_key,
+                )
+
         review = None
         review_created = False
         if review_reason:

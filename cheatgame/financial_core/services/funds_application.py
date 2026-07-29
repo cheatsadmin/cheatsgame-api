@@ -31,6 +31,7 @@ from cheatgame.financial_core.models import (
     ProviderReferenceAllocation,
     ReceiptAccountingPolicyVersion,
     ReviewCase,
+    ReviewAction,
     ReviewCaseReason,
     ReviewCaseSeverity,
     ReviewCaseStatus,
@@ -65,7 +66,7 @@ from cheatgame.financial_core.services.verification_worker import (
     VerificationInterpretationState,
     derive_current_verification_interpretation,
 )
-from cheatgame.shop.models import Order
+from cheatgame.shop.models import Cart, Checkout, Order
 
 
 APPLICATION_NAMESPACE = UUID("fe3600d3-e223-4263-85fd-f8aa8f55bed4")
@@ -97,12 +98,26 @@ def _fingerprint(payload):
 
 
 def _lock_graph(verification_id):
-    ref = Verification.objects.select_related("transaction__attempt__payment").only(
+    ref = Verification.objects.select_related(
+        "transaction__attempt__payment__order__checkout"
+    ).only(
         "transaction_id",
         "transaction__attempt_id",
         "transaction__attempt__payment_id",
         "transaction__attempt__payment__order_id",
+        "transaction__attempt__payment__order__checkout_id",
+        "transaction__attempt__payment__order__checkout__cart_id",
     ).get(pk=verification_id)
+    cart = lock_one(
+        queryset=Cart.objects.all(),
+        rank=LockRank.CART,
+        pk=ref.transaction.attempt.payment.order.checkout.cart_id,
+    )
+    checkout = lock_one(
+        queryset=Checkout.objects.all(),
+        rank=LockRank.CHECKOUT,
+        pk=ref.transaction.attempt.payment.order.checkout_id,
+    )
     order = lock_one(
         queryset=Order.objects.all(),
         rank=LockRank.PAYABLE,
@@ -140,7 +155,7 @@ def _lock_graph(verification_id):
         authorization = ExceptionalRecognitionAuthorization.objects.select_for_update().select_related(
             "adjudication"
         ).get(pk=authorization_ref)
-    return order, payment, attempt, transaction_obj, verification, authorization
+    return cart, checkout, order, payment, attempt, transaction_obj, verification, authorization
 
 
 def _validate_exact_success(*, payment, attempt, transaction_obj, verification, authorization=None):
@@ -339,7 +354,16 @@ def _ensure_review_locked(*, order, payment, attempt, transaction_obj, reviews, 
 @transaction.atomic
 def _record_application_failure(*, verification_id, reason, correlation_id):
     with ordered_lock_scope():
-        order, payment, attempt, transaction_obj, verification, authorization = _lock_graph(verification_id)
+        (
+            _,
+            _,
+            order,
+            payment,
+            attempt,
+            transaction_obj,
+            verification,
+            authorization,
+        ) = _lock_graph(verification_id)
         if FinancialAllocation.objects.filter(transaction=transaction_obj).exists():
             return
         reviews = _lock_reviews(payment)
@@ -367,7 +391,16 @@ def _apply_verified_funds_atomic(
     actor_id,
 ):
     with ordered_lock_scope():
-        order, payment, attempt, transaction_obj, verification, authorization = _lock_graph(verification_id)
+        (
+            cart,
+            checkout,
+            order,
+            payment,
+            attempt,
+            transaction_obj,
+            verification,
+            authorization,
+        ) = _lock_graph(verification_id)
         command_payload = {
             "contract_version": RECOGNITION_CONTRACT_VERSION,
             "verification_public_id": str(verification.public_id),
@@ -450,6 +483,20 @@ def _apply_verified_funds_atomic(
             raise FundsApplicationBlocked("Successful Attempt amount must equal the financial allocation.")
 
         policy = _active_policy(transaction_obj)
+        if authorization is None:
+            from cheatgame.digital_products.models import DigitalInventoryReservation
+            from cheatgame.digital_products.services.payment_holds import (
+                retain_locked_digital_payment_hold,
+            )
+
+            if DigitalInventoryReservation.objects.filter(order=order).exists():
+                retain_locked_digital_payment_hold(
+                    cart=cart,
+                    checkout=checkout,
+                    order=order,
+                    phase="nominal_expiry_success",
+                    idempotency_identity=verification.result_idempotency_key,
+                )
         allocation_public_id = uuid4()
         journal_idempotency_key = _deterministic_uuid(f"receipt-journal:{allocation_public_id}")
         try:
@@ -524,6 +571,42 @@ def _apply_verified_funds_atomic(
             authorization.save(update_fields=("status", "allocation", "applied_at", "updated_at"))
 
         reviews = _lock_reviews(payment)
+        for review in reviews:
+            if (
+                review.reason == ReviewCaseReason.PROVIDER_STATE_UNCLEAR
+                and review.status
+                in (
+                    ReviewCaseStatus.OPEN,
+                    ReviewCaseStatus.INVESTIGATING,
+                    ReviewCaseStatus.APPROVAL_PENDING,
+                )
+            ):
+                action_key = _deterministic_uuid(
+                    f"provider-uncertainty-resolved:{verification.public_id}:{review.public_id}"
+                )
+                ReviewAction.objects.get_or_create(
+                    idempotency_key=action_key,
+                    defaults={
+                        "review_case": review,
+                        "action_type": f"transition:{ReviewCaseStatus.RESOLVED}",
+                        "actor_type": FinancialActorType.SYSTEM,
+                        "reason_code": "authoritative_success_verified",
+                        "note": "Resolved by later authoritative non-contradictory success evidence.",
+                    },
+                )
+                review.status = ReviewCaseStatus.RESOLVED
+                review.resolution_code = "authoritative_success_verified"
+                review.resolved_at = now
+                review.version += 1
+                review.save(
+                    update_fields=(
+                        "status",
+                        "resolution_code",
+                        "resolved_at",
+                        "version",
+                        "updated_at",
+                    )
+                )
         blocking_reasons = {
             ReviewCaseReason.AMOUNT_MISMATCH,
             ReviewCaseReason.CURRENCY_MISMATCH,
@@ -571,7 +654,11 @@ def _apply_verified_funds_atomic(
         VerificationWorkItem.objects.filter(
             transaction=transaction_obj,
             work_type=VerificationWorkType.APPLY_VERIFIED_FUNDS,
-            status__in=(VerificationWorkStatus.PENDING, VerificationWorkStatus.WAITING),
+            status__in=(
+                VerificationWorkStatus.PENDING,
+                VerificationWorkStatus.WAITING,
+                VerificationWorkStatus.CLAIMED,
+            ),
         ).update(
             status=VerificationWorkStatus.COMPLETED,
             completed_at=now,

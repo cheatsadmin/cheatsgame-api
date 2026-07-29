@@ -12,6 +12,7 @@ from django.utils import timezone
 from cheatgame.digital_products.models import (
     DigitalCheckoutLineSnapshot,
     DigitalFulfillmentItem,
+    DigitalInventoryReservation,
     Entitlement,
     InventoryPool,
     InventoryPoolStatus,
@@ -118,6 +119,64 @@ class CommercialFinalizerApi08Tests(CommercialFinalizerFixture, TransactionTestC
         self.assertEqual(outbox.safe_payload["commerce_authority"], "digital_products")
         self.assertFalse(DigitalFulfillmentItem.objects.exists())
         self.assertFalse(Entitlement.objects.exists())
+
+    def test_nominal_expiry_success_renews_original_digital_hold_and_finalizes(self):
+        placement, _ = self.ready_digital(expire_before_funds=True)
+        reservation = placement.order.digital_inventory_reservations.get()
+        placement.order.checkout.refresh_from_db()
+        self.assertEqual(
+            reservation.state,
+            "payment_hold",
+        )
+        self.assertGreater(reservation.expires_at, timezone.now())
+        self.assertEqual(
+            reservation.expires_at,
+            placement.order.checkout.expires_at,
+        )
+        result = self.run_work(placement)
+        reservation.refresh_from_db()
+        self.assertEqual(reservation.state, "consumed")
+        self.assertIsNotNone(result.finalization)
+
+    def test_retryable_digital_finalization_failure_retains_claim_and_backs_off(self):
+        placement, _ = self.ready_digital()
+        before = timezone.now()
+        with patch(
+            "cheatgame.financial_core.services.commercial_finalization.post_balanced_journal_entry_under_lock",
+            side_effect=ValidationError("synthetic retryable journal failure"),
+        ):
+            with self.assertRaises(ValidationError):
+                self.run_work(placement)
+        work = CommercialFinalizationWorkItem.objects.get(payment=placement.payment)
+        reservation = placement.order.digital_inventory_reservations.get()
+        placement.order.checkout.cart.refresh_from_db()
+        self.assertEqual(work.status, FinalizationWorkStatus.PENDING)
+        self.assertGreater(work.next_attempt_at, before)
+        self.assertEqual(reservation.state, "payment_hold")
+        self.assertEqual(placement.order.checkout.cart.state, CartState.LOCKED)
+
+    def test_terminal_digital_finalization_failure_opens_review_and_never_unlocks(self):
+        placement, _ = self.ready_digital()
+        reservation = placement.order.digital_inventory_reservations.get()
+        DigitalInventoryReservation.objects.filter(pk=reservation.pk).update(
+            state="released",
+            state_changed_at=timezone.now(),
+            resolution_reason="synthetic_inventory_loss",
+        )
+        with self.assertRaises(CommercialFinalizationBlocked):
+            self.run_work(placement)
+        work = CommercialFinalizationWorkItem.objects.get(payment=placement.payment)
+        placement.order.checkout.cart.refresh_from_db()
+        self.assertEqual(work.status, FinalizationWorkStatus.CANCELED)
+        self.assertEqual(placement.order.checkout.cart.state, CartState.LOCKED)
+        self.assertTrue(
+            ReviewCase.objects.filter(
+                payment=placement.payment,
+                reason=ReviewCaseReason.COMMERCIAL_FINALIZATION_FAILED,
+                status=ReviewCaseStatus.OPEN,
+            ).exists()
+        )
+        self.assertFalse(CommercialFinalization.objects.exists())
 
     def test_completed_response_loss_replays_without_duplicate_effect(self):
         placement, _ = self.ready_standard()

@@ -1292,7 +1292,23 @@ def _record_finalization_failure(*, work_id, claim_token, classification, termin
     work.claimed_at = None
     work.claim_expires_at = None
     work.last_error_classification = str(classification)[:64]
-    work.next_attempt_at = now
+    policy = None
+    if not terminal:
+        from cheatgame.digital_products.services.payment_hold_policy import (
+            get_digital_payment_hold_policy,
+        )
+
+        policy = get_digital_payment_hold_policy()
+    delay_seconds = (
+        0
+        if terminal
+        else min(
+            policy.finalization_retry_seconds
+            * (2 ** max(work.attempt_count - 1, 0)),
+            policy.finalization_retry_max_seconds,
+        )
+    )
+    work.next_attempt_at = now + timedelta(seconds=delay_seconds)
     work.completed_at = now if terminal else None
     work.version += 1
     work.save(
@@ -1331,6 +1347,26 @@ def finalize_commercial_work_item(
     work_ref = CommercialFinalizationWorkItem.objects.select_related("payment__order__checkout").get(
         public_id=work_public_id
     )
+    if (
+        work_ref.status != FinalizationWorkStatus.CANCELED
+        and DigitalInventoryReservation.objects.filter(order=work_ref.payment.order).exists()
+        and work_ref.payment.collection_status == PaymentCollectionStatus.PAID_PENDING_FINALIZATION
+    ):
+        from cheatgame.digital_products.services.payment_holds import (
+            DigitalPaymentHoldConflict,
+            renew_paid_finalization_hold,
+        )
+
+        try:
+            renew_paid_finalization_hold(
+                payment_id=work_ref.payment_id,
+                identity=f"finalization-attempt:{work_ref.public_id}:{work_ref.attempt_count + 1}",
+            )
+        except DigitalPaymentHoldConflict:
+            # Let the authoritative finalizer classify a missing/incoherent
+            # inventory claim and persist the terminal review boundary.
+            pass
+        work_ref.refresh_from_db()
     existing = CommercialFinalization.objects.filter(payment=work_ref.payment).first()
     if existing is not None:
         persisted_contract = existing.recognition_accounting_contract or FINALIZER_CONTRACT_VERSION
@@ -1401,7 +1437,15 @@ def finalize_commercial_work_item(
     except Exception as exc:
         terminal = isinstance(exc, CommercialFinalizationBlocked) and any(
             fragment in str(exc).lower()
-            for fragment in ("unsupported", "canceled", "released", "mixed", "expired")
+            for fragment in (
+                "unsupported",
+                "canceled",
+                "released",
+                "mixed",
+                "expired",
+                "incomplete",
+                "insufficient",
+            )
         )
         try:
             _record_finalization_failure(
@@ -1410,6 +1454,28 @@ def finalize_commercial_work_item(
                 classification=type(exc).__name__,
                 terminal=terminal,
             )
+            if DigitalInventoryReservation.objects.filter(
+                order_id=work.payment.order_id
+            ).exists():
+                if terminal:
+                    from cheatgame.digital_products.services.payment_holds import (
+                        escalate_terminal_finalization_failure,
+                    )
+
+                    escalate_terminal_finalization_failure(
+                        payment_id=work.payment_id,
+                        classification=type(exc).__name__,
+                        identity=f"terminal-finalization:{work.public_id}",
+                    )
+                else:
+                    from cheatgame.digital_products.services.payment_holds import (
+                        renew_paid_finalization_hold,
+                    )
+
+                    renew_paid_finalization_hold(
+                        payment_id=work.payment_id,
+                        identity=f"retryable-finalization:{work.public_id}:{work.attempt_count}",
+                    )
         except DatabaseError:
             pass
         raise

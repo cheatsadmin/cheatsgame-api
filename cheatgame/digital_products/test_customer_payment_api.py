@@ -1,4 +1,5 @@
 from dataclasses import FrozenInstanceError
+from datetime import timedelta
 from decimal import Decimal
 from threading import Barrier, Lock, Thread
 from unittest.mock import patch
@@ -7,6 +8,7 @@ from uuid import uuid4
 from django.db import close_old_connections, connection
 from django.test import TransactionTestCase, override_settings
 from django.test.utils import CaptureQueriesContext
+from django.utils import timezone
 from drf_spectacular.generators import SchemaGenerator
 from rest_framework.test import APIClient
 
@@ -27,6 +29,11 @@ from cheatgame.digital_products.models import (
 from cheatgame.digital_products.services.cart import add_digital_offer_to_cart, remove_digital_cart_item
 from cheatgame.digital_products.services.checkout_preparation import prepare_digital_checkout
 from cheatgame.digital_products.services.payment_adapter import request_digital_checkout_payment
+from cheatgame.digital_products.services.payment_holds import (
+    DigitalPaymentHoldConflict,
+    escalate_overdue_uncertain_payment,
+    expire_abandoned_payment_hold,
+)
 from cheatgame.financial_core.models import (
     CommercialFinalization,
     DigitalFulfillmentObligation,
@@ -48,6 +55,7 @@ from cheatgame.financial_core.models import (
     ProviderRequestOutcome,
     ProviderRequestResult,
     ReviewCase,
+    ReviewCaseReason,
 )
 from cheatgame.financial_core.services.adapters import (
     ADAPTER_CONTRACT_VERSION,
@@ -65,6 +73,7 @@ from cheatgame.product.models import (
 from cheatgame.shop.models import (
     Cart,
     CartItem,
+    CartLockReason,
     CartState,
     Checkout,
     CheckoutStatus,
@@ -762,6 +771,123 @@ class CustomerDigitalPaymentApiTests(TransactionTestCase):
         self.assertEqual(timeout.data["attempt_status"], PaymentAttemptStatus.OUTCOME_UNKNOWN)
         self.assertEqual(ReviewCase.objects.count(), 1)
         self.assertNotIn("sensitive", str(timeout.data))
+        reservation = DigitalInventoryReservation.objects.get()
+        self.cart.refresh_from_db()
+        self.checkout.refresh_from_db()
+        self.assertEqual(
+            reservation.state,
+            DigitalInventoryReservationState.HELD_FOR_REVIEW,
+        )
+        self.assertEqual(self.cart.state, CartState.LOCKED)
+        self.assertEqual(self.cart.lock_reason, CartLockReason.MANUAL_REVIEW)
+        self.assertGreater(reservation.expires_at, timezone.now())
+        self.assertEqual(reservation.expires_at, self.checkout.expires_at)
+
+    @override_settings(DIGITAL_PAYMENT_PROVIDER_PENDING_HOLD_SECONDS=900)
+    def test_provider_pending_renews_one_authoritative_hold_without_unlocking(self):
+        before = timezone.now()
+        self.assertEqual(self.request(uuid4()).status_code, 201)
+        reservation = DigitalInventoryReservation.objects.get()
+        self.cart.refresh_from_db()
+        self.checkout.refresh_from_db()
+        self.assertEqual(
+            reservation.state,
+            DigitalInventoryReservationState.PAYMENT_HOLD,
+        )
+        self.assertGreaterEqual(
+            reservation.expires_at,
+            before + timedelta(seconds=899),
+        )
+        self.assertEqual(reservation.expires_at, self.checkout.expires_at)
+        self.assertEqual(self.cart.state, CartState.LOCKED)
+        self.assertEqual(self.cart.lock_reason, CartLockReason.PAYMENT_IN_PROGRESS)
+
+    @override_settings(
+        DIGITAL_PAYMENT_PROVIDER_PENDING_HOLD_SECONDS=60,
+        DIGITAL_PAYMENT_REVIEW_HOLD_SECONDS=600,
+    )
+    def test_prolonged_provider_uncertainty_escalates_once_and_retains_inventory(self):
+        self.assertEqual(self.request(uuid4()).status_code, 201)
+        payment = Payment.objects.get()
+        transaction_obj = PaymentTransaction.objects.get()
+        aged_at = timezone.now() - timedelta(seconds=61)
+        PaymentTransaction.objects.filter(pk=transaction_obj.pk).update(
+            updated_at=aged_at
+        )
+        first = escalate_overdue_uncertain_payment(
+            payment_id=payment.pk,
+            now=timezone.now(),
+        )
+        second = escalate_overdue_uncertain_payment(
+            payment_id=payment.pk,
+            now=timezone.now(),
+        )
+        reservation = DigitalInventoryReservation.objects.get()
+        self.cart.refresh_from_db()
+        self.assertEqual(
+            reservation.state,
+            DigitalInventoryReservationState.HELD_FOR_REVIEW,
+        )
+        self.assertEqual(self.cart.state, CartState.LOCKED)
+        self.assertEqual(self.cart.lock_reason, CartLockReason.MANUAL_REVIEW)
+        self.assertEqual(
+            ReviewCase.objects.filter(
+                payment=payment,
+                reason=ReviewCaseReason.PROVIDER_STATE_UNCLEAR,
+            ).count(),
+            1,
+        )
+        self.assertTrue(first[2])
+        self.assertFalse(second[2])
+
+    @override_settings(DIGITAL_PAYMENT_ABANDONMENT_SECONDS=60)
+    def test_authoritative_abandonment_releases_once_and_browser_silence_does_not(self):
+        self.assertEqual(self.request(uuid4()).status_code, 201)
+        payment = Payment.objects.get()
+        attempt = PaymentAttempt.objects.get()
+        transaction_obj = PaymentTransaction.objects.get()
+        completed_at = timezone.now()
+        PaymentAttempt.objects.filter(pk=attempt.pk).update(
+            status=PaymentAttemptStatus.DEFINITIVE_FAILED
+        )
+        Payment.objects.filter(pk=payment.pk).update(
+            collection_status="open"
+        )
+        PaymentTransaction.objects.filter(pk=transaction_obj.pk).update(
+            status=PaymentTransactionStatus.EXPIRED,
+            completed_at=completed_at,
+        )
+        with self.assertRaises(DigitalPaymentHoldConflict):
+            expire_abandoned_payment_hold(
+                payment_id=payment.pk,
+                now=completed_at + timedelta(seconds=59),
+            )
+        reservation = DigitalInventoryReservation.objects.get()
+        reservation.refresh_from_db()
+        self.assertEqual(
+            reservation.state,
+            DigitalInventoryReservationState.PAYMENT_HOLD,
+        )
+        first = expire_abandoned_payment_hold(
+            payment_id=payment.pk,
+            now=completed_at + timedelta(seconds=61),
+        )
+        second = expire_abandoned_payment_hold(
+            payment_id=payment.pk,
+            now=completed_at + timedelta(seconds=120),
+        )
+        self.assertFalse(first.replayed)
+        self.assertTrue(second.replayed)
+        reservation.refresh_from_db()
+        self.cart.refresh_from_db()
+        self.checkout.refresh_from_db()
+        self.assertEqual(
+            reservation.state,
+            DigitalInventoryReservationState.RELEASED,
+        )
+        self.assertEqual(self.checkout.status, CheckoutStatus.CANCELED)
+        self.assertEqual(self.cart.state, CartState.OPEN)
+        self.assertIsNone(self.cart.active_checkout_id)
 
     def test_result_and_root_handoff_persistence_roll_back_together(self):
         with patch(

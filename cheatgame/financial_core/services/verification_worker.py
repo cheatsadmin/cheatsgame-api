@@ -235,6 +235,7 @@ def execute_verification_work_item(
     adapter_registry=PRODUCTION_ADAPTER_REGISTRY,
     lease_seconds=60,
     retry_after_seconds=None,
+    apply_projection=False,
 ):
     """Execute one dormant Financial Truth Verification unit without recognizing funds."""
     if trigger_source not in VerificationTriggerSource.values:
@@ -360,13 +361,25 @@ def execute_verification_work_item(
         result=normalized,
         result_idempotency_key=result_key,
         trigger_source=trigger_source,
-        truth_only=True,
+        truth_only=not apply_projection,
         retry_after_seconds=(
             retry_after_seconds
             if retry_after_seconds is not None
             else int(getattr(settings, "FINANCIAL_VERIFICATION_RETRY_DELAY_SECONDS", 300))
         ),
     )
+    from cheatgame.digital_products.models import DigitalInventoryReservation
+    from cheatgame.digital_products.services.payment_holds import (
+        apply_verification_hold_policy,
+    )
+
+    if (
+        not apply_projection
+        and DigitalInventoryReservation.objects.filter(
+            order=transaction_obj.attempt.payment.order
+        ).exists()
+    ):
+        apply_verification_hold_policy(verification_id=verification.pk)
     return VerificationWorkerResult(
         verification=verification,
         replayed=False,

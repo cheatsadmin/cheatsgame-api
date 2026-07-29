@@ -80,6 +80,7 @@ def terminate_locked_definitive_unpaid_digital_graph(
     transaction_obj,
     reason_code,
     idempotency_identity,
+    locked_reservations=None,
 ):
     """
     Terminate one already-locked Digital commercial attempt.
@@ -108,12 +109,19 @@ def terminate_locked_definitive_unpaid_digital_graph(
     ):
         raise DefinitiveDigitalPaymentFailureConflict("PaymentTransaction is not authoritatively terminal unpaid.")
 
-    reservation_ids = DigitalInventoryReservation.objects.filter(order=order).values_list("pk", flat=True)
-    reservations = lock_many(
-        queryset=DigitalInventoryReservation.objects.all(),
-        rank=LockRank.RESERVATION,
-        pks=reservation_ids,
-    )
+    if locked_reservations is None:
+        reservation_ids = DigitalInventoryReservation.objects.filter(order=order).values_list("pk", flat=True)
+        reservations = lock_many(
+            queryset=DigitalInventoryReservation.objects.all(),
+            rank=LockRank.RESERVATION,
+            pks=reservation_ids,
+        )
+    else:
+        reservations = list(locked_reservations)
+        if any(reservation.order_id != order.pk for reservation in reservations):
+            raise DefinitiveDigitalPaymentFailureConflict(
+                "Prelocked reservation ownership is inconsistent."
+            )
     if not reservations:
         return DefinitiveDigitalPaymentFailureResult((), False)
     try:

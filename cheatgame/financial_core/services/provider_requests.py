@@ -815,6 +815,40 @@ def apply_provider_request_result(
                 idempotency_identity=result.idempotency_key,
             )
 
+        if (
+            attempt_target != PaymentAttemptStatus.DEFINITIVE_FAILED
+            and DigitalInventoryReservation.objects.filter(order=order).exists()
+        ):
+            from cheatgame.digital_products.services.payment_holds import (
+                retain_locked_digital_payment_hold,
+            )
+
+            checkout = Checkout.objects.get(pk=order.checkout_id)
+            cart = Cart.objects.get(pk=checkout.cart_id)
+            if outcome in (
+                ProviderRequestOutcome.CUSTOMER_ACTION_REQUIRED,
+                ProviderRequestOutcome.ACCEPTED_PENDING,
+                ProviderRequestOutcome.NO_EFFECT_RETRYABLE,
+            ):
+                hold_phase = "provider_pending"
+            elif outcome in (
+                ProviderRequestOutcome.OUTCOME_UNKNOWN,
+                ProviderRequestOutcome.SECURITY_FAILURE,
+                ProviderRequestOutcome.CONFIGURATION_FAILURE,
+                ProviderRequestOutcome.PROTOCOL_FAILURE,
+            ):
+                hold_phase = "review"
+            else:
+                hold_phase = None
+            if hold_phase is not None:
+                retain_locked_digital_payment_hold(
+                    cart=cart,
+                    checkout=checkout,
+                    order=order,
+                    phase=hold_phase,
+                    idempotency_identity=result.idempotency_key,
+                )
+
         review = None
         if outcome in (
             ProviderRequestOutcome.OUTCOME_UNKNOWN,

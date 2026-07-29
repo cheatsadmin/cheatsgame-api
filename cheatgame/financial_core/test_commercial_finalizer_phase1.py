@@ -1,4 +1,5 @@
 from threading import Barrier, Thread
+from datetime import timedelta
 from unittest import skipUnless
 from unittest.mock import patch
 from uuid import uuid4
@@ -6,6 +7,7 @@ from uuid import uuid4
 from django.core.exceptions import ValidationError
 from django.db import DatabaseError, close_old_connections, connection, transaction
 from django.test import TransactionTestCase
+from django.utils import timezone
 
 from cheatgame.financial_core.models import (
     CommercialAccountingPolicyVersion,
@@ -78,7 +80,7 @@ class CommercialFinalizerFixture(ProviderExecutionPhase1Fixture):
         )
         return placement, policy
 
-    def ready_digital(self):
+    def ready_digital(self, *, expire_before_funds=False):
         user = self.make_user()
         product = self.make_product(authority=ProductCommerceAuthority.DIGITAL_PRODUCTS, price=9000)
         version = DeliveredVersion.objects.create(product=product, native_console=NativeConsole.PS4)
@@ -139,6 +141,14 @@ class CommercialFinalizerFixture(ProviderExecutionPhase1Fixture):
         )
         _, _, liability = self.accounting_policy(account)
         placement.payment.refresh_from_db()
+        if expire_before_funds:
+            expired_at = timezone.now() - timedelta(microseconds=1)
+            placement.order.checkout.expires_at = expired_at
+            placement.order.checkout.save(update_fields=("expires_at", "updated_at"))
+            DigitalInventoryReservation.objects.filter(order=placement.order).update(
+                expires_at=expired_at,
+                updated_at=timezone.now(),
+            )
         apply_verified_funds(
             verification_id=verification.pk,
             idempotency_key=uuid4(),
