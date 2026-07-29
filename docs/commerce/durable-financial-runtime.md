@@ -67,8 +67,17 @@ No work row is deleted.
 
 The command emits structured application logs with work identifiers,
 classification, outcome, and replay state. It never logs provider payloads,
-credentials, secrets, or customer data. `stats` exposes pending counts, retry
-counts, oldest pending age, canceled work, and open review totals.
+credentials, secrets, or customer data. `stats` exposes each stage's pending,
+waiting, claimed, due, completed, canceled and retry-classified counts, oldest
+pending age, aggregate retry count, and open review totals.
+
+Mutating commands retain their result JSON and append a
+`summary={...}` line. An empty queue, a successful replay, and lease contention
+exit zero. A retry scheduled because processing failed, or work escalated to
+manual review during the invocation, exits non-zero after emitting the result
+and summary. Invalid configuration and unsafe execution conflicts also exit
+non-zero. This makes the bounded command suitable for an external supervisor
+without changing durable work semantics.
 
 ## Deployment boundary
 

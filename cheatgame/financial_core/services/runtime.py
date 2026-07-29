@@ -6,7 +6,7 @@ from uuid import UUID, uuid5
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured, ValidationError
 from django.db import DatabaseError, transaction
-from django.db.models import Min, Sum
+from django.db.models import Min, Q, Sum
 from django.utils import timezone
 
 from cheatgame.financial_core.models import (
@@ -832,11 +832,22 @@ def runtime_stats(*, now=None):
     recognition = _recognition_queryset()
     finalization = _finalization_queryset()
 
-    def pending_stats(queryset, statuses):
+    def pending_stats(queryset, statuses, *, claimed_status, waiting_status=None):
         rows = queryset.filter(status__in=statuses)
         aggregate = rows.aggregate(
             oldest=Min("created_at"),
             retries=Sum("attempt_count"),
+        )
+        due_filter = Q(
+            status__in=tuple(
+                status
+                for status in statuses
+                if status != claimed_status
+            ),
+            next_attempt_at__lte=now,
+        ) | Q(
+            status=claimed_status,
+            claim_expires_at__lte=now,
         )
         return {
             "count": rows.count(),
@@ -846,9 +857,45 @@ def runtime_stats(*, now=None):
                 else 0
             ),
             "retry_count": int(aggregate["retries"] or 0),
+            "due_count": rows.filter(due_filter).count(),
+            "claimed_count": rows.filter(status=claimed_status).count(),
+            "retryable_failure_count": rows.exclude(
+                last_error_classification=""
+            ).count(),
+            "completed_count": queryset.filter(
+                status=(
+                    VerificationWorkStatus.COMPLETED
+                    if waiting_status is not None
+                    else FinalizationWorkStatus.COMPLETED
+                )
+            ).count(),
+            "canceled_count": queryset.filter(
+                status=(
+                    VerificationWorkStatus.CANCELED
+                    if waiting_status is not None
+                    else FinalizationWorkStatus.CANCELED
+                )
+            ).count(),
+            **(
+                {
+                    "pending_count": rows.filter(
+                        status=VerificationWorkStatus.PENDING
+                    ).count(),
+                    "waiting_count": rows.filter(
+                        status=waiting_status
+                    ).count(),
+                }
+                if waiting_status is not None
+                else {
+                    "pending_count": rows.filter(
+                        status=FinalizationWorkStatus.PENDING
+                    ).count(),
+                    "waiting_count": 0,
+                }
+            ),
         }
 
-    return {
+    result = {
         "verification": pending_stats(
             verification,
             (
@@ -856,6 +903,8 @@ def runtime_stats(*, now=None):
                 VerificationWorkStatus.WAITING,
                 VerificationWorkStatus.CLAIMED,
             ),
+            claimed_status=VerificationWorkStatus.CLAIMED,
+            waiting_status=VerificationWorkStatus.WAITING,
         ),
         "recognition": pending_stats(
             recognition,
@@ -864,6 +913,8 @@ def runtime_stats(*, now=None):
                 VerificationWorkStatus.WAITING,
                 VerificationWorkStatus.CLAIMED,
             ),
+            claimed_status=VerificationWorkStatus.CLAIMED,
+            waiting_status=VerificationWorkStatus.WAITING,
         ),
         "finalization": pending_stats(
             finalization,
@@ -871,6 +922,7 @@ def runtime_stats(*, now=None):
                 FinalizationWorkStatus.PENDING,
                 FinalizationWorkStatus.CLAIMED,
             ),
+            claimed_status=FinalizationWorkStatus.CLAIMED,
         ),
         "failed_work": (
             verification.filter(status=VerificationWorkStatus.CANCELED).count()
@@ -882,3 +934,13 @@ def runtime_stats(*, now=None):
             status__in=OPEN_REVIEW_STATES,
         ).count(),
     }
+    result["pending_total"] = sum(
+        result[stage]["count"] for stage in RUNTIME_STAGES
+    )
+    result["claimed_total"] = sum(
+        result[stage]["claimed_count"] for stage in RUNTIME_STAGES
+    )
+    result["retryable_failure_total"] = sum(
+        result[stage]["retryable_failure_count"] for stage in RUNTIME_STAGES
+    )
+    return result

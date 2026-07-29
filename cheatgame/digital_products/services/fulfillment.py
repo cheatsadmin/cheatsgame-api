@@ -2,6 +2,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 
 from django.core.exceptions import ObjectDoesNotExist, PermissionDenied
 from django.db import IntegrityError, transaction
+from django.db.models import Min
 from django.utils import timezone
 
 from cheatgame.digital_products.models import (
@@ -26,9 +27,13 @@ from cheatgame.digital_products.models import (
 )
 from cheatgame.financial_core.models import (
     DigitalFulfillmentObligation,
+    FinancialOutboxMessage,
     IdempotencyRecord,
     IdempotencyStatus,
     PaymentCollectionStatus,
+)
+from cheatgame.financial_core.services.commercial_finalization import (
+    FULFILLMENT_OUTBOX_TOPIC,
 )
 from cheatgame.financial_core.services.idempotency import canonical_request_hash
 from cheatgame.financial_core.services.locks import (
@@ -51,6 +56,9 @@ class DigitalFulfillmentConflict(DigitalFulfillmentError):
 
 class DigitalFulfillmentValidationError(DigitalFulfillmentError):
     code = "invalid_digital_fulfillment_command"
+
+
+FULFILLMENT_INTAKE_NAMESPACE = UUID("fb262523-d68a-4450-9f92-a585d6847ae3")
 
 
 def _uuid(value):
@@ -244,7 +252,7 @@ def _current_purchased(item, *, lock=False):
 
 @transaction.atomic
 def provision_digital_fulfillment_obligation(*, obligation_public_id, idempotency_key):
-    """Dormant explicit intake. No signal, task, API, or finalizer hook invokes it."""
+    """Create the operational execution for one finalized Digital obligation."""
     key = _uuid(idempotency_key)
     with ordered_lock_scope():
         try:
@@ -328,6 +336,96 @@ def provision_digital_fulfillment_obligation(*, obligation_public_id, idempotenc
         record.completed_at = timezone.now()
         record.save(update_fields=("status", "result_type", "result_id", "safe_response", "completed_at", "updated_at"))
         return item
+
+
+def pending_digital_fulfillment_obligation_ids(*, limit):
+    """Return one bounded, deterministic intake batch without mutating it."""
+    limit = max(1, min(int(limit), 1000))
+    return list(
+        DigitalFulfillmentObligation.objects.filter(execution__isnull=True)
+        .order_by("created_at", "pk")
+        .values_list("public_id", flat=True)[:limit]
+    )
+
+
+def digital_fulfillment_activation_stats(*, now=None):
+    """Return machine-readable intake and resulting queue supervision data."""
+    now = now or timezone.now()
+    eligible = DigitalFulfillmentObligation.objects.filter(
+        execution__isnull=True
+    )
+    oldest = eligible.aggregate(oldest=Min("created_at"))["oldest"]
+    eligible_count = eligible.count()
+    return {
+        "pending_intake": eligible_count,
+        "eligible_obligations": eligible_count,
+        "oldest_eligible_age_seconds": (
+            max(0, int((now - oldest).total_seconds()))
+            if oldest
+            else 0
+        ),
+        "provisioned_obligations": DigitalFulfillmentObligation.objects.filter(
+            execution__isnull=False
+        ).count(),
+        "queued": DigitalFulfillmentItem.objects.filter(
+            status=DigitalFulfillmentStatus.QUEUED
+        ).count(),
+        "pending_entitlements": DigitalFulfillmentItem.objects.filter(
+            entitlement__status=DigitalEntitlementStatus.PENDING_FULFILLMENT
+        ).count(),
+    }
+
+
+def _fulfillment_intake_event(obligation):
+    events = list(
+        FinancialOutboxMessage.objects.filter(
+            topic=FULFILLMENT_OUTBOX_TOPIC,
+            aggregate_type=obligation.finalization._meta.label_lower,
+            aggregate_id=str(obligation.finalization.public_id),
+            available_at__lte=timezone.now(),
+        ).order_by("created_at", "pk")[:2]
+    )
+    if len(events) != 1:
+        raise DigitalFulfillmentConflict(
+            "Exactly one due fulfillment-requested outbox event is required."
+        )
+    event = events[0]
+    payload = event.safe_payload
+    expected = {
+        "event_type": FULFILLMENT_OUTBOX_TOPIC,
+        "commercial_finalization_public_id": str(
+            obligation.finalization.public_id
+        ),
+        "commerce_authority": obligation.finalization.commerce_authority,
+    }
+    if not isinstance(payload, dict) or any(
+        payload.get(key) != value for key, value in expected.items()
+    ):
+        raise DigitalFulfillmentConflict(
+            "The fulfillment-requested outbox event is incoherent."
+        )
+    return event
+
+
+def activate_digital_fulfillment_obligation(*, obligation_public_id):
+    """Explicit outbox intake that delegates all mutation to provisioning."""
+    try:
+        obligation = DigitalFulfillmentObligation.objects.select_related(
+            "finalization"
+        ).get(public_id=_uuid(obligation_public_id))
+    except DigitalFulfillmentObligation.DoesNotExist as exc:
+        raise DigitalFulfillmentValidationError(
+            "Digital fulfillment obligation was not found."
+        ) from exc
+    event = _fulfillment_intake_event(obligation)
+    idempotency_key = uuid5(
+        FULFILLMENT_INTAKE_NAMESPACE,
+        f"{event.public_id}:{obligation.public_id}",
+    )
+    return provision_digital_fulfillment_obligation(
+        obligation_public_id=obligation.public_id,
+        idempotency_key=idempotency_key,
+    )
 
 
 def _transition(item, *, status, waiting, actor, actor_type, actor_authority, key, request_fingerprint):

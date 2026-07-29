@@ -8,7 +8,9 @@ from cheatgame.digital_products.models import (
     FulfillmentActivityVisibility,
     InstalledGameRecordState,
     InstalledGameClassification,
+    InstalledGameCompletionSource,
 )
+from cheatgame.digital_products.public_catalog import COMPATIBILITY_DISCLOSURES
 from cheatgame.users.models import UserTypes
 
 
@@ -283,22 +285,249 @@ def admin_fulfillment_projection(item, *, actor=None):
     return result
 
 
-def customer_fulfillment_projection(item):
-    return {
+_CUSTOMER_STATUS = {
+    DigitalFulfillmentStatus.QUEUED: ("PAYMENT_RECEIVED", "پرداخت شما ثبت شد"),
+    DigitalFulfillmentStatus.READY_FOR_STAFF: ("PREPARING_ORDER", "در حال آماده‌سازی سفارش"),
+    DigitalFulfillmentStatus.IN_PROGRESS: (
+        "INSTALLATION_IN_PROGRESS",
+        "نصب بازی در حال انجام است",
+    ),
+    DigitalFulfillmentStatus.WAITING_CONFIRMATION: (
+        "WAITING_FOR_CONFIRMATION",
+        "منتظر تأیید شما",
+    ),
+    DigitalFulfillmentStatus.COMPLETED: ("COMPLETED", "تکمیل‌شده"),
+    DigitalFulfillmentStatus.EXCEPTION: (
+        "SUPPORT_REVIEW",
+        "در حال بررسی توسط پشتیبانی",
+    ),
+}
+
+_CUSTOMER_WAITING_STATUS = {
+    None: ("WE_WILL_CONTACT_YOU", "به‌زودی با شما تماس می‌گیریم"),
+    "contact_required": ("WE_WILL_CONTACT_YOU", "به‌زودی با شما تماس می‌گیریم"),
+    "method_confirmation_required": ("ACTION_REQUIRED", "نیازمند اقدام شما"),
+    "appointment_required": (
+        "APPOINTMENT_REQUIRED",
+        "انتخاب زمان مراجعه لازم است",
+    ),
+    "waiting_for_console": ("WAITING_FOR_CONSOLE", "منتظر دریافت کنسول شما"),
+    "remote_customer_action_required": (
+        "REMOTE_SETUP_READY",
+        "مراحل نصب ریموت آماده است",
+    ),
+    "customer_confirmation_required": (
+        "WAITING_FOR_CONFIRMATION",
+        "منتظر تأیید شما",
+    ),
+    "additional_information_required": (
+        "ACTION_REQUIRED",
+        "نیازمند اقدام شما",
+    ),
+}
+
+_CUSTOMER_ACTION = {
+    None: ("NONE", "اقدامی لازم نیست"),
+    "contact_required": ("WAIT_FOR_CONTACT", "منتظر تماس ما باشید"),
+    "method_confirmation_required": (
+        "CHOOSE_METHOD",
+        "روش انجام سفارش را مشخص کنید",
+    ),
+    "appointment_required": ("BOOK_APPOINTMENT", "زمان مراجعه را انتخاب کنید"),
+    "waiting_for_console": (
+        "BRING_OR_SEND_CONSOLE",
+        "کنسول را به چیتس گیم تحویل دهید",
+    ),
+    "remote_customer_action_required": (
+        "COMPLETE_REMOTE_SETUP",
+        "مراحل نصب ریموت را انجام دهید",
+    ),
+    "customer_confirmation_required": (
+        "CONFIRM_REMOTE_COMPLETION",
+        "تکمیل نصب را تأیید کنید",
+    ),
+    "additional_information_required": (
+        "CONTACT_SUPPORT",
+        "با پشتیبانی تماس بگیرید",
+    ),
+}
+
+_CUSTOMER_ACTIVITY_LABELS = {
+    FulfillmentActivityType.PROVISIONED: "سفارش نصب برای انجام آماده شد",
+    FulfillmentActivityType.CUSTOMER_CONTACTED: "هماهنگی با شما انجام شد",
+    FulfillmentActivityType.METHOD_CHANGED: "روش انجام سفارش به‌روزرسانی شد",
+    FulfillmentActivityType.CONSOLE_RECEIVED: "کنسول شما دریافت شد",
+    FulfillmentActivityType.WORK_STARTED: "انجام سفارش آغاز شد",
+    FulfillmentActivityType.INSTALLATION_PERFORMED: "نصب بازی ثبت شد",
+    FulfillmentActivityType.REMOTE_HANDLING_PERFORMED: "مراحل نصب ریموت انجام شد",
+    FulfillmentActivityType.CUSTOMER_ACTION_REQUESTED: "اقدام شما موردنیاز است",
+    FulfillmentActivityType.CUSTOMER_CONFIRMED: "تکمیل نصب را تأیید کردید",
+    FulfillmentActivityType.STAFF_VERIFIED: "تکمیل سفارش تأیید شد",
+    FulfillmentActivityType.FAILURE_RECORDED: "سفارش برای بررسی پشتیبانی ثبت شد",
+    FulfillmentActivityType.RETRY_STARTED: "رسیدگی به سفارش دوباره آغاز شد",
+    FulfillmentActivityType.BONUS_RECORDED: "بازی هدیه ثبت شد",
+    FulfillmentActivityType.STATUS_CHANGED: "وضعیت سفارش به‌روزرسانی شد",
+}
+
+_INSTALLED_CLASSIFICATION_LABELS = {
+    InstalledGameClassification.PURCHASED: "بازی خریداری‌شده",
+    InstalledGameClassification.BONUS: "بازی هدیه",
+}
+
+_INSTALLED_SOURCE_LABELS = {
+    InstalledGameCompletionSource.STAFF_INSTALLED: "نصب توسط چیتس گیم",
+    InstalledGameCompletionSource.CUSTOMER_CONFIRMED: "تأیید توسط شما",
+    InstalledGameCompletionSource.STAFF_VERIFIED_REMOTE: "تأیید نصب ریموت",
+}
+
+
+def _customer_status(item):
+    if item.status == DigitalFulfillmentStatus.WAITING_CUSTOMER:
+        code, label = _CUSTOMER_WAITING_STATUS[item.waiting_reason]
+    else:
+        code, label = _CUSTOMER_STATUS[item.status]
+    return {"code": code, "label": label}
+
+
+def _customer_action(item):
+    if item.status in (
+        DigitalFulfillmentStatus.COMPLETED,
+        DigitalFulfillmentStatus.IN_PROGRESS,
+        DigitalFulfillmentStatus.READY_FOR_STAFF,
+        DigitalFulfillmentStatus.QUEUED,
+    ):
+        code, label = _CUSTOMER_ACTION[None]
+    elif item.status == DigitalFulfillmentStatus.EXCEPTION:
+        code, label = _CUSTOMER_ACTION["additional_information_required"]
+    else:
+        code, label = _CUSTOMER_ACTION[item.waiting_reason]
+    return {"code": code, "label": label}
+
+
+def _customer_timeline(item, *, limit=50):
+    activities = [
+        activity
+        for activity in item.activities.all()
+        if activity.visibility == FulfillmentActivityVisibility.CUSTOMER_SAFE
+    ]
+    selected = activities[-limit:]
+    return (
+        [
+            {
+                "code": activity.activity_type.upper(),
+                "label": _CUSTOMER_ACTIVITY_LABELS.get(
+                    activity.activity_type,
+                    "وضعیت سفارش به‌روزرسانی شد",
+                ),
+                "created_at": activity.created_at,
+            }
+            for activity in selected
+        ],
+        len(activities) > limit,
+    )
+
+
+def _customer_installed_games(item):
+    entitlement_active = item.entitlement.status == "active"
+    records = list(item.installed_games.all())
+    superseded_ids = {record.corrects_id for record in records if record.corrects_id}
+    result = {"purchased": [], "bonus": []}
+    for record in records:
+        if record.pk in superseded_ids or record.state != InstalledGameRecordState.RECORDED:
+            continue
+        value = {
+            "title": record.game.title if record.game_id else record.fallback_title,
+            "delivered_version": (
+                record.delivered_version.native_console
+                if record.delivered_version_id
+                else None
+            ),
+            "classification": record.classification.upper(),
+            "classification_label": _INSTALLED_CLASSIFICATION_LABELS[record.classification],
+            "completion_source": record.completion_source.upper(),
+            "completion_source_label": _INSTALLED_SOURCE_LABELS[record.completion_source],
+            "installed_at": record.installed_at,
+            "permanent_ownership": entitlement_active,
+        }
+        bucket = "purchased" if record.classification == InstalledGameClassification.PURCHASED else "bonus"
+        result[bucket].append(value)
+    return result
+
+
+def customer_fulfillment_projection(item, *, include_detail=True):
+    obligation = item.obligation
+    order = obligation.order
+    checkout = order.checkout
+    line = obligation.checkout_line
+    snapshot = line.digital_snapshot
+    payment = obligation.finalization.payment
+    activities = [
+        activity
+        for activity in item.activities.all()
+        if activity.visibility == FulfillmentActivityVisibility.CUSTOMER_SAFE
+    ]
+    last_update = activities[-1].created_at if activities else item.updated_at
+    can_confirm = (
+        item.status == DigitalFulfillmentStatus.WAITING_CONFIRMATION
+        and item.waiting_reason == "customer_confirmation_required"
+        and item.current_fulfillment_method == DigitalCartFulfillmentMethod.REMOTE
+    )
+    entitlement_active = item.entitlement.status == "active"
+    result = {
         "id": str(item.public_id),
-        "selection": _selection(item),
-        "payment_received": item.obligation.finalization.payment.collection_status == "paid",
-        "status": item.status,
-        "required_action": item.waiting_reason,
-        "entitlement_status": item.entitlement.status,
-        "installed_games": _installed(item, include_audit=False),
-        "timeline": _timeline(item, customer_safe=True),
-        "remote_confirmation_eligible": (
-            item.status == DigitalFulfillmentStatus.WAITING_CONFIRMATION
-            and item.current_fulfillment_method == DigitalCartFulfillmentMethod.REMOTE
-        ),
+        "order_tracking_code": order.public_tracking_code,
+        "created_at": item.created_at,
+        "updated_at": item.updated_at,
+        "last_meaningful_update_at": last_update,
+        "game": {
+            "title": snapshot.product_name,
+            "slug": obligation.order_item.product.slug,
+        },
+        "selection": {
+            "customer_console": snapshot.customer_console,
+            "capacity": snapshot.capacity,
+            "delivered_version": snapshot.version_label,
+            "native_console": snapshot.native_console,
+            "compatibility": {
+                "code": snapshot.compatibility_disclosure,
+                "label": COMPATIBILITY_DISCLOSURES[snapshot.compatibility_disclosure],
+            },
+            "purchased_fulfillment_method": obligation.fulfillment_method,
+            "current_fulfillment_method": item.current_fulfillment_method,
+        },
+        "commercial": {
+            "payment_status": payment.collection_status.upper(),
+            "paid_at": checkout.paid_at,
+            "accepted_line_price": line.line_payable_total,
+        },
+        "status": _customer_status(item),
+        "required_action": _customer_action(item),
         "completed_at": item.completed_at,
+        "entitlement": {
+            "status": item.entitlement.status.upper(),
+            "label": "مالکیت دائمی فعال" if entitlement_active else "در انتظار تکمیل نصب",
+            "permanent_ownership": entitlement_active,
+            "message": (
+                "مالکیت دائمی این بازی برای شما فعال است."
+                if entitlement_active
+                else "مالکیت دائمی پس از تکمیل و تأیید نصب فعال می‌شود."
+            ),
+            "created_at": item.entitlement.created_at,
+            "activated_at": item.entitlement.activated_at,
+        },
+        "can_confirm_remote_completion": can_confirm,
     }
+    if include_detail:
+        timeline, truncated = _customer_timeline(item)
+        result.update(
+            {
+                "timeline": timeline,
+                "timeline_truncated": truncated,
+                "timeline_limit": 50,
+                "installed_games": _customer_installed_games(item),
+            }
+        )
+    return result
 
 
 class AdminOrderSummarySerializer(serializers.Serializer):
@@ -481,6 +710,94 @@ class AdminDigitalFulfillmentProjectionSerializer(
         )
 
 
-class CustomerDigitalFulfillmentProjectionSerializer(serializers.Serializer):
+class CustomerCodeLabelSerializer(serializers.Serializer):
+    code = serializers.CharField()
+    label = serializers.CharField()
+
+
+class CustomerGameSummarySerializer(serializers.Serializer):
+    title = serializers.CharField()
+    slug = serializers.CharField(allow_null=True)
+
+
+class CustomerSelectionSummarySerializer(serializers.Serializer):
+    customer_console = serializers.CharField()
+    capacity = serializers.CharField()
+    delivered_version = serializers.CharField()
+    native_console = serializers.CharField()
+    compatibility = CustomerCodeLabelSerializer()
+    purchased_fulfillment_method = serializers.CharField()
+    current_fulfillment_method = serializers.CharField()
+
+
+class CustomerCommercialSummarySerializer(serializers.Serializer):
+    payment_status = serializers.CharField()
+    paid_at = serializers.DateTimeField(allow_null=True)
+    accepted_line_price = serializers.DecimalField(max_digits=18, decimal_places=0)
+
+
+class CustomerEntitlementSerializer(serializers.Serializer):
+    status = serializers.CharField()
+    label = serializers.CharField()
+    permanent_ownership = serializers.BooleanField()
+    message = serializers.CharField()
+    created_at = serializers.DateTimeField()
+    activated_at = serializers.DateTimeField(allow_null=True)
+
+
+class CustomerDigitalFulfillmentListSerializer(serializers.Serializer):
+    id = serializers.UUIDField()
+    order_tracking_code = serializers.CharField()
+    created_at = serializers.DateTimeField()
+    updated_at = serializers.DateTimeField()
+    last_meaningful_update_at = serializers.DateTimeField()
+    game = CustomerGameSummarySerializer()
+    selection = CustomerSelectionSummarySerializer()
+    commercial = CustomerCommercialSummarySerializer()
+    status = CustomerCodeLabelSerializer()
+    required_action = CustomerCodeLabelSerializer()
+    completed_at = serializers.DateTimeField(allow_null=True)
+    entitlement = CustomerEntitlementSerializer()
+    can_confirm_remote_completion = serializers.BooleanField()
+
     def to_representation(self, instance):
-        return customer_fulfillment_projection(instance)
+        return super().to_representation(
+            customer_fulfillment_projection(instance, include_detail=False)
+        )
+
+
+class CustomerTimelineEventSerializer(serializers.Serializer):
+    code = serializers.CharField()
+    label = serializers.CharField()
+    created_at = serializers.DateTimeField()
+
+
+class CustomerInstalledGameSerializer(serializers.Serializer):
+    title = serializers.CharField()
+    delivered_version = serializers.CharField(allow_null=True)
+    classification = serializers.CharField()
+    classification_label = serializers.CharField()
+    completion_source = serializers.CharField()
+    completion_source_label = serializers.CharField()
+    installed_at = serializers.DateTimeField()
+    permanent_ownership = serializers.BooleanField()
+
+
+class CustomerInstalledGamesSerializer(serializers.Serializer):
+    purchased = CustomerInstalledGameSerializer(many=True)
+    bonus = CustomerInstalledGameSerializer(many=True)
+
+
+class CustomerDigitalFulfillmentProjectionSerializer(
+    CustomerDigitalFulfillmentListSerializer
+):
+    timeline = CustomerTimelineEventSerializer(many=True)
+    timeline_truncated = serializers.BooleanField()
+    timeline_limit = serializers.IntegerField()
+    installed_games = CustomerInstalledGamesSerializer()
+
+    def to_representation(self, instance):
+        return serializers.Serializer.to_representation(
+            self,
+            customer_fulfillment_projection(instance, include_detail=True),
+        )

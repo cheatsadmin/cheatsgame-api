@@ -20,6 +20,11 @@ from cheatgame.digital_products.customer_payment_apis import (
     CustomerDigitalPaymentRequestApi,
     CustomerDigitalPaymentStatusApi,
 )
+from cheatgame.digital_products.customer_fulfillment_apis import (
+    CustomerFulfillmentConfirmRemoteCompletionApi,
+    CustomerFulfillmentDetailApi,
+    CustomerFulfillmentListApi,
+)
 from cheatgame.digital_products.admin_fulfillment_apis import (
     AssignableOperatorDirectoryApi,
     DigitalFulfillmentCommandApi,
@@ -98,6 +103,21 @@ urlpatterns = [
         "customer/checkout/<uuid:checkout_id>/payment/",
         CustomerDigitalPaymentStatusApi.as_view(),
         name="customer-payment-status",
+    ),
+    path(
+        "customer/fulfillments/",
+        CustomerFulfillmentListApi.as_view(),
+        name="customer-fulfillment-list",
+    ),
+    path(
+        "customer/fulfillments/<uuid:fulfillment_id>/",
+        CustomerFulfillmentDetailApi.as_view(),
+        name="customer-fulfillment-detail",
+    ),
+    path(
+        "customer/fulfillments/<uuid:fulfillment_id>/confirm-remote-completion/",
+        CustomerFulfillmentConfirmRemoteCompletionApi.as_view(),
+        name="customer-fulfillment-confirm-remote-completion",
     ),
     path(
         "admin/catalog/games/",

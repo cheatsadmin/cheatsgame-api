@@ -36,6 +36,31 @@ class Command(BaseCommand):
                     f"{action} requires one explicit --stage and --work-id."
                 )
 
+    def _write_execution_summary(self, results):
+        summary = {
+            "processed": len(results),
+            "completed": sum(item.outcome == "completed" for item in results),
+            "replayed": sum(item.outcome == "replayed" for item in results),
+            "retry_scheduled": sum(
+                item.outcome == "retry_scheduled" for item in results
+            ),
+            "review_required": sum(
+                item.outcome == "review_required" for item in results
+            ),
+            "skipped": sum(item.outcome == "skipped" for item in results),
+        }
+        summary["succeeded"] = summary["completed"] + summary["replayed"]
+        summary["failed"] = (
+            summary["retry_scheduled"] + summary["review_required"]
+        )
+        self.stdout.write(
+            f"summary={json.dumps(summary, sort_keys=True)}"
+        )
+        if summary["failed"]:
+            raise CommandError(
+                "Financial Runtime completed with unresolved processing failures."
+            )
+
     def handle(self, *args, **options):
         action = options["action"]
         stage = options["stage"]
@@ -79,6 +104,7 @@ class Command(BaseCommand):
                     sort_keys=True,
                 )
             )
+            self._write_execution_summary(result.results)
             return
 
         if not apply:
@@ -90,3 +116,4 @@ class Command(BaseCommand):
             make_runtime_work_due(stage=stage, work_id=work_id)
         result = execute_runtime_work(stage=stage, work_id=work_id)
         self.stdout.write(json.dumps(result.__dict__, sort_keys=True))
+        self._write_execution_summary((result,))

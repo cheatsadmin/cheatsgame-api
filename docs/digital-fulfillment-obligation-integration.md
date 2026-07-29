@@ -18,7 +18,7 @@ The operational layer does not recognize funds, consume reservations, decrement 
 Order, or write financial/commercial Journals. Those frozen responsibilities remain in Financial
 Core and the Commercial Finalizer.
 
-## Dormant intake
+## Explicit bounded intake
 
 `provision_digital_fulfillment_obligation` is an explicit internal transaction. It locks and
 validates a finalized, paid obligation and atomically creates exactly one queued execution, one
@@ -29,8 +29,31 @@ idempotency record fails closed; it is not silently treated as success. Database
 deferred graph guards require exactly one provisioning activity. Contradictory partial state fails
 closed.
 
-There is intentionally no URL, signal, task, worker, scheduler, or read-side provisioning hook in
-this phase. Merely listing an obligation cannot create operational records.
+Commercial Finalization already appends one `commercial.fulfillment.requested` outbox event. The
+explicit `activate_digital_fulfillment` management command validates that exact event and delegates
+all mutation to `provision_digital_fulfillment_obligation` with a deterministic idempotency key.
+It supports bounded inspection, stats, one-obligation activation, and one bounded batch. Mutation
+requires `--apply`.
+
+`stats` reports eligible and provisioned obligation counts, the oldest eligible
+age, resulting queued executions, and pending Entitlements. Applied commands
+emit one JSON object with activated rows, isolated failures, and an invocation
+summary. Empty and fully successful batches exit zero; any isolated activation
+failure is printed and makes the command exit non-zero after healthy rows in
+the same batch have been allowed to commit.
+
+There remains no URL, signal, task, worker, scheduler, startup hook, daemon, or read-side
+provisioning hook. Merely listing an obligation cannot create operational records. Deployment may
+invoke the bounded command explicitly; this document does not activate scheduling.
+
+Examples:
+
+```shell
+python manage.py activate_digital_fulfillment inspect --limit 25
+python manage.py activate_digital_fulfillment run-one --obligation-id <uuid> --apply
+python manage.py activate_digital_fulfillment run-batch --limit 25 --apply
+python manage.py activate_digital_fulfillment stats
+```
 
 ## Execution and entitlement
 
@@ -106,7 +129,7 @@ internal-only activities to customers. Notes reject credential-like content.
 
 ## Deferred work
 
-Admin and Storefront URLs/UI, automatic intake workers, scheduling integration, and any production
-activation remain deferred. ReviewCase integration, source accounts, credentials, providers,
-payment callbacks, refunds, revocation, replacement, cancellation, and support workflows are
-outside this operational phase.
+Automatic intake workers, scheduling integration, and production deployment
+activation remain deferred. ReviewCase integration, source accounts,
+credentials, providers, refunds, revocation, replacement, cancellation, and
+support workflows are outside this operational phase.

@@ -1,9 +1,12 @@
 from datetime import timedelta
+from io import StringIO
 from threading import Barrier, Lock, Thread
 from unittest.mock import patch
 from uuid import uuid4
 
 from django.db import DatabaseError, close_old_connections
+from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.test import TransactionTestCase, override_settings
 from django.utils import timezone
 
@@ -323,8 +326,38 @@ class DurableFinancialRuntimeTests(CommercialFinalizerFixture, TransactionTestCa
         stats = runtime_stats(now=timezone.now() + timedelta(seconds=5))
         self.assertEqual(stats["verification"]["count"], 1)
         self.assertEqual(stats["verification"]["retry_count"], 1)
+        self.assertEqual(stats["verification"]["pending_count"], 1)
+        self.assertEqual(stats["verification"]["claimed_count"], 0)
+        self.assertEqual(stats["verification"]["due_count"], 1)
+        self.assertEqual(stats["verification"]["retryable_failure_count"], 0)
         self.assertGreaterEqual(stats["verification"]["oldest_age_seconds"], 5)
         self.assertEqual(stats["recognition"]["count"], 0)
         self.assertEqual(stats["finalization"]["count"], 0)
         self.assertEqual(stats["failed_work"], 0)
         self.assertEqual(stats["review_required"], 0)
+        self.assertEqual(stats["pending_total"], 1)
+        self.assertEqual(stats["claimed_total"], 0)
+
+    def test_command_returns_nonzero_for_unresolved_processing_failure(self):
+        _, _, verification_work = self.make_digital_runtime_graph()
+        self.run_verification(verification_work)
+        work = self.recognition_work()
+        output = StringIO()
+
+        with patch(
+            "cheatgame.financial_core.services.runtime.recognize_verified_funds",
+            side_effect=DatabaseError("synthetic supervised failure"),
+        ), self.assertRaises(CommandError):
+            call_command(
+                "financial_runtime",
+                "run-one",
+                "--stage",
+                "recognition",
+                "--work-id",
+                str(work.pk),
+                "--apply",
+                stdout=output,
+            )
+
+        self.assertIn('"retry_scheduled": 1', output.getvalue())
+        self.assertIn('"failed": 1', output.getvalue())
