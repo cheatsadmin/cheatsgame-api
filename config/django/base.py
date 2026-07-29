@@ -59,18 +59,49 @@ PAYMENT_SUCCESS_REDIRECT_URL = env("PAYMENT_SUCCESS_REDIRECT_URL", default="")
 PAYMENT_AMOUNT_UNIT = env("PAYMENT_AMOUNT_UNIT", default="IRT")
 ZARINPAL_MERCHANT_ID = env("ZARINPAL_MERCHANT_ID", default="")
 ZARINPAL_SANDBOX = env.bool("ZARINPAL_SANDBOX", default=True)
+FINANCIAL_ZARINPAL_ENABLED = env.bool("FINANCIAL_ZARINPAL_ENABLED", default=False)
+FINANCIAL_ZARINPAL_ACCOUNT_KEY = env(
+    "FINANCIAL_ZARINPAL_ACCOUNT_KEY",
+    default="zarinpal-launch",
+)
+FINANCIAL_ZARINPAL_OWNER_KEY = env(
+    "FINANCIAL_ZARINPAL_OWNER_KEY",
+    default="cheats-game",
+)
+FINANCIAL_ZARINPAL_AUTHORITY_EXPIRY_SECONDS = env.int(
+    "FINANCIAL_ZARINPAL_AUTHORITY_EXPIRY_SECONDS",
+    default=1800,
+)
+FINANCIAL_ZARINPAL_FINALITY_WINDOW_SECONDS = env.int(
+    "FINANCIAL_ZARINPAL_FINALITY_WINDOW_SECONDS",
+    default=86400,
+)
+_ZARINPAL_HOST = "sandbox.zarinpal.com" if ZARINPAL_SANDBOX else "payment.zarinpal.com"
 ZARINPAL_REQUEST_URL = env(
     "ZARINPAL_REQUEST_URL",
-    default="https://sandbox.zarinpal.com/pg/v4/payment/request.json",
+    default=f"https://{_ZARINPAL_HOST}/pg/v4/payment/request.json",
 )
 ZARINPAL_VERIFY_URL = env(
     "ZARINPAL_VERIFY_URL",
-    default="https://sandbox.zarinpal.com/pg/v4/payment/verify.json",
+    default=f"https://{_ZARINPAL_HOST}/pg/v4/payment/verify.json",
 )
 ZARINPAL_STARTPAY_URL = env(
     "ZARINPAL_STARTPAY_URL",
-    default="https://sandbox.zarinpal.com/pg/StartPay/{authority}",
+    default=f"https://{_ZARINPAL_HOST}/pg/StartPay/{{authority}}",
 )
+ZARINPAL_CONNECT_TIMEOUT_SECONDS = env.float("ZARINPAL_CONNECT_TIMEOUT_SECONDS", default=3.0)
+ZARINPAL_READ_TIMEOUT_SECONDS = env.float("ZARINPAL_READ_TIMEOUT_SECONDS", default=10.0)
+FINANCIAL_PROVIDER_CALLBACK_BASE_URL = env(
+    "FINANCIAL_PROVIDER_CALLBACK_BASE_URL",
+    default="",
+)
+DIGITAL_PAYMENT_CUSTOMER_RETURN_BASE_URL = env(
+    "DIGITAL_PAYMENT_CUSTOMER_RETURN_BASE_URL",
+    default="",
+)
+FINANCIAL_PROVIDER_CUSTOMER_ACTION_HOSTS = {
+    "zarinpal": (_ZARINPAL_HOST,),
+}
 BLOG_AI_PROVIDER = env("BLOG_AI_PROVIDER", default="openai_compatible")
 BLOG_AI_MODEL = env("BLOG_AI_MODEL", default="gpt-4o-mini")
 BLOG_AI_API_KEY = env("BLOG_AI_API_KEY", default="")
@@ -237,9 +268,8 @@ REST_FRAMEWORK = {
         'checkout_write': env('DRF_THROTTLE_CHECKOUT_WRITE', default='60/min'),
         'payment_write': env('DRF_THROTTLE_PAYMENT_WRITE', default='60/min'),
         'review_submit': env('DRF_THROTTLE_REVIEW_SUBMIT', default='10/min'),
-        # C2B1's callback view is intentionally not URL-wired. Keep the fixed
-        # boundary configured so direct validation cannot accidentally run
-        # without a conservative abuse-control policy.
+        # Provider callbacks are public transport claims and remain bounded by
+        # provider/account identity plus conservative abuse control.
         'financial_callback': env('DRF_THROTTLE_FINANCIAL_CALLBACK', default='120/min'),
     },
 }

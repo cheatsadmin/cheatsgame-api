@@ -566,6 +566,7 @@ def request_digital_checkout_payment(
             result_idempotency_key=result_key,
             reason_code=provider_result.reason_code,
             safe_metadata=provider_result.safe_metadata,
+            provider_authority=provider_result.provider_authority,
             actor_type=FinancialActorType.CUSTOMER,
             actor_id=actor.pk,
         )

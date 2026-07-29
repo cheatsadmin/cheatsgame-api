@@ -10,6 +10,19 @@ PAYMENT_GATEWAY_PROVIDER = env("PAYMENT_GATEWAY_PROVIDER", default=PAYMENT_GATEW
 if PAYMENT_GATEWAY_PROVIDER.strip().lower() == "fake":
     raise ImproperlyConfigured("The fake payment provider is forbidden in production.")
 PAYMENT_FAKE_PROVIDER_ENABLED = False
+if FINANCIAL_ZARINPAL_ENABLED:
+    if ZARINPAL_SANDBOX:
+        raise ImproperlyConfigured("Financial Core Zarinpal cannot use sandbox mode in production.")
+    if not ZARINPAL_MERCHANT_ID:
+        raise ImproperlyConfigured("ZARINPAL_MERCHANT_ID is required for Financial Core Zarinpal.")
+    if not FINANCIAL_PROVIDER_CALLBACK_BASE_URL:
+        raise ImproperlyConfigured(
+            "FINANCIAL_PROVIDER_CALLBACK_BASE_URL is required for Financial Core Zarinpal."
+        )
+    if not DIGITAL_PAYMENT_CUSTOMER_RETURN_BASE_URL:
+        raise ImproperlyConfigured(
+            "DIGITAL_PAYMENT_CUSTOMER_RETURN_BASE_URL is required for Financial Core Zarinpal."
+        )
 
 SECRET_KEY = env('SECRET_KEY')
 

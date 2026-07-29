@@ -636,6 +636,7 @@ def apply_provider_request_result(
     result_idempotency_key,
     reason_code="",
     safe_metadata=None,
+    provider_authority="",
     actor_type=FinancialActorType.SYSTEM,
     actor_id=None,
 ):
@@ -654,6 +655,7 @@ def apply_provider_request_result(
             "evidence_hash": str(evidence_hash),
             "reason_code": str(reason_code)[:100],
             "safe_metadata": clean_metadata,
+            "provider_authority": str(provider_authority),
         }
     )
     scope = f"financial_core:apply_provider_request_result:{transaction_id}"
@@ -674,6 +676,7 @@ def apply_provider_request_result(
                 or replay.claim_token != UUID(str(claim_token))
                 or replay.outcome != outcome
                 or replay.evidence_hash != str(evidence_hash)
+                or (transaction_obj.provider_authority or "") != str(provider_authority)
                 or record is None
                 or record.request_hash != request_hash
             ):
@@ -683,6 +686,11 @@ def apply_provider_request_result(
             raise StaleRequestClaim("Request result does not own the active claim token.")
         if transaction_obj.status != PaymentTransactionStatus.REQUESTING:
             raise StaleRequestClaim("Request result cannot overwrite stronger or terminal evidence.")
+        normalized_authority = str(provider_authority).strip()
+        if len(normalized_authority) > 128:
+            raise ValidationError("Provider authority is too long.")
+        if transaction_obj.provider_authority not in (None, "", normalized_authority):
+            raise StaleRequestClaim("Provider authority cannot overwrite existing evidence.")
 
         mapping = {
             ProviderRequestOutcome.CUSTOMER_ACTION_REQUIRED: (
@@ -764,6 +772,8 @@ def apply_provider_request_result(
             safe_response={"transaction_public_id": str(transaction_obj.public_id), "outcome": outcome},
         )
         transaction_obj.status = tx_target
+        if normalized_authority:
+            transaction_obj.provider_authority = normalized_authority
         transaction_obj.claim_token = None
         transaction_obj.claimed_at = None
         transaction_obj.claim_expires_at = None
@@ -777,6 +787,7 @@ def apply_provider_request_result(
         transaction_obj.save(
             update_fields=(
                 "status",
+                "provider_authority",
                 "claim_token",
                 "claimed_at",
                 "claim_expires_at",

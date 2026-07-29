@@ -79,10 +79,13 @@ def _safe_header_evidence(headers):
 
 
 def callback_transport_rejection(*, method, content_type, body, headers):
-    if str(method).upper() != "POST":
+    normalized_method = str(method).upper()
+    if normalized_method not in ("GET", "POST"):
         return "method_not_allowed"
     normalized_content_type = str(content_type).split(";", 1)[0].strip().lower()
     if normalized_content_type not in ALLOWED_CONTENT_TYPES:
+        return "unsupported_content_type"
+    if normalized_method == "GET" and normalized_content_type != "application/x-www-form-urlencoded":
         return "unsupported_content_type"
     if len(body) > MAX_CALLBACK_BODY_BYTES:
         return "body_too_large"
@@ -201,16 +204,34 @@ def _unauthenticated_hint_is_permitted(
         return False, None
     if not callback_transaction_public_id:
         return False, None
-    merchant_reference = str(normalized.merchant_reference)
-    if not BACKEND_MERCHANT_REFERENCE.fullmatch(merchant_reference):
-        return False, None
     transaction_obj = _callback_transaction(
         account=account,
         capability=capability,
         normalized=normalized,
         callback_transaction_public_id=callback_transaction_public_id,
     )
-    return transaction_obj is not None, transaction_obj
+    if transaction_obj is None:
+        return False, None
+    merchant_reference = str(normalized.merchant_reference)
+    merchant_reference_matches = False
+    if merchant_reference:
+        if (
+            not BACKEND_MERCHANT_REFERENCE.fullmatch(merchant_reference)
+            or merchant_reference != transaction_obj.merchant_reference
+        ):
+            return False, None
+        merchant_reference_matches = True
+    authority = str(normalized.provider_authority)
+    authority_matches = bool(
+        authority
+        and transaction_obj.provider_authority
+        and authority == transaction_obj.provider_authority
+    )
+    if transaction_obj.provider_authority and not authority_matches:
+        return False, None
+    if not merchant_reference_matches and not authority_matches:
+        return False, None
+    return True, transaction_obj
 
 
 def _lock_isolated_evidence_identity(identity):

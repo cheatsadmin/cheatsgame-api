@@ -2,6 +2,7 @@ import hashlib
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Protocol
 
+from django.conf import settings
 from django.core.exceptions import ValidationError
 
 from cheatgame.financial_core.models import (
@@ -55,6 +56,7 @@ class NormalizedProviderResult:
     reason_code: str = ""
     safe_metadata: Mapping[str, Any] = None
     customer_action_url: str = ""
+    provider_authority: str = ""
 
 
 @dataclass(frozen=True)
@@ -290,4 +292,14 @@ def _unknown_verification_transport_result(*, envelope, transport, error_classif
     )
 
 
-PRODUCTION_ADAPTER_REGISTRY = ProviderAdapterRegistry()
+def build_production_adapter_registry():
+    adapters = {}
+    if getattr(settings, "FINANCIAL_ZARINPAL_ENABLED", False):
+        from cheatgame.financial_core.services.zarinpal import ZarinpalAdapter
+
+        adapter = ZarinpalAdapter.from_settings()
+        adapters[(adapter.adapter_key, adapter.contract_version)] = adapter
+    return ProviderAdapterRegistry(adapters)
+
+
+PRODUCTION_ADAPTER_REGISTRY = build_production_adapter_registry()

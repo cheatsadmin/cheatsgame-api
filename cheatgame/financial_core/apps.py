@@ -5,3 +5,6 @@ class FinancialCoreConfig(AppConfig):
     default_auto_field = "django.db.models.BigAutoField"
     name = "cheatgame.financial_core"
     verbose_name = "Financial Core"
+
+    def ready(self):
+        from cheatgame.financial_core import checks  # noqa: F401

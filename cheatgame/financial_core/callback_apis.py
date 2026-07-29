@@ -1,6 +1,9 @@
 from uuid import uuid4
+from urllib.parse import urlencode, urljoin, urlsplit
 
+from django.conf import settings
 from django.db import transaction
+from django.http import HttpResponseRedirect
 from django.utils.decorators import method_decorator
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiParameter, extend_schema
@@ -77,12 +80,56 @@ def _transaction_policy(*, provider_key, transaction_id):
 
 @method_decorator(transaction.non_atomic_requests, name="dispatch")
 class ProviderCallbackIngestionApi(APIView):
+    serializer_class = ProviderCallbackAcknowledgementSerializer
     authentication_classes = ()
     permission_classes = ()
     throttle_classes = (ScopedRateThrottle, FinancialCallbackAccountThrottle)
     throttle_scope = "financial_callback"
-    http_method_names = ("post", "options")
+    http_method_names = ("get", "post", "options")
     adapter_registry = PRODUCTION_ADAPTER_REGISTRY
+
+    @extend_schema(
+        operation_id="financial_provider_callback_return",
+        parameters=[
+            OpenApiParameter("provider_key", OpenApiTypes.STR, OpenApiParameter.PATH),
+            OpenApiParameter("transaction_id", OpenApiTypes.UUID, OpenApiParameter.PATH),
+            OpenApiParameter("Authority", OpenApiTypes.STR, OpenApiParameter.QUERY),
+            OpenApiParameter("Status", OpenApiTypes.STR, OpenApiParameter.QUERY),
+        ],
+        request=None,
+        responses={
+            200: ProviderCallbackAcknowledgementSerializer,
+            202: ProviderCallbackAcknowledgementSerializer,
+            400: ProviderCallbackErrorSerializer,
+            401: ProviderCallbackErrorSerializer,
+            404: ProviderCallbackErrorSerializer,
+            409: ProviderCallbackErrorSerializer,
+            413: ProviderCallbackErrorSerializer,
+            415: ProviderCallbackErrorSerializer,
+            503: ProviderCallbackErrorSerializer,
+        },
+        auth=[],
+        description=(
+            "Authenticate, normalize, persist, and deduplicate provider callback evidence. "
+            "This endpoint never verifies funds or mutates payment truth."
+        ),
+    )
+    def get(self, request, provider_key, transaction_id):
+        if provider_key != "zarinpal":
+            return Response(status=status.HTTP_405_METHOD_NOT_ALLOWED)
+        pairs = []
+        for key, values in request.query_params.lists():
+            pairs.extend((key, value) for value in values)
+        body = urlencode(pairs, doseq=True).encode("ascii", errors="strict")
+        response = self._ingest(
+            request,
+            provider_key,
+            transaction_id,
+            body=body,
+            method="GET",
+            content_type="application/x-www-form-urlencoded",
+        )
+        return self._customer_return(transaction_id=transaction_id, fallback=response)
 
     @extend_schema(
         operation_id="financial_provider_callback_ingest",
@@ -109,11 +156,45 @@ class ProviderCallbackIngestionApi(APIView):
         ),
     )
     def post(self, request, provider_key, transaction_id):
-        body = request.body
-        headers = dict(request.headers)
-        transport_reason = callback_transport_rejection(
+        return self._ingest(
+            request,
+            provider_key,
+            transaction_id,
+            body=request.body,
             method=request.method,
             content_type=request.content_type or "",
+        )
+
+    def _customer_return(self, *, transaction_id, fallback):
+        base = str(getattr(settings, "DIGITAL_PAYMENT_CUSTOMER_RETURN_BASE_URL", "")).strip()
+        transaction_obj = (
+            PaymentTransaction.objects.select_related("attempt__payment__order__checkout")
+            .filter(public_id=transaction_id)
+            .first()
+        )
+        if not base or transaction_obj is None:
+            return fallback
+        parsed = urlsplit(base)
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+        ):
+            return fallback
+        checkout_id = transaction_obj.attempt.payment.order.checkout.public_id
+        target = urljoin(base.rstrip("/") + "/", f"{checkout_id}/")
+        redirect = HttpResponseRedirect(f"{target}?provider_return=1")
+        redirect.status_code = status.HTTP_303_SEE_OTHER
+        return redirect
+
+    def _ingest(self, request, provider_key, transaction_id, *, body, method, content_type):
+        headers = dict(request.headers)
+        transport_reason = callback_transport_rejection(
+            method=method,
+            content_type=content_type,
             body=body,
             headers=headers,
         )
@@ -130,8 +211,8 @@ class ProviderCallbackIngestionApi(APIView):
                 capability_version=transaction_obj.capability_version.version,
                 account_key=transaction_obj.merchant_account_version.account_key,
                 account_version=transaction_obj.merchant_account_version.version,
-                method=request.method,
-                content_type=request.content_type or "",
+                method=method,
+                content_type=content_type,
                 body=body,
                 headers=headers,
                 delivery_idempotency_key=uuid4(),
