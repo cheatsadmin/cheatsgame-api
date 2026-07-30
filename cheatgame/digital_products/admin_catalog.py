@@ -11,6 +11,7 @@ from cheatgame.digital_products.services.catalog_admin import (
 )
 from cheatgame.digital_products.services.inventory import (
     get_effective_held_quantity,
+    inventory_pool_allowed_actions,
 )
 from cheatgame.product.models import (
     AttachmentType,
@@ -88,7 +89,8 @@ def _readiness_projection(product, *, for_deactivation=False):
 
 def admin_catalog_games():
     offers = DigitalOffer.objects.select_related(
-        "delivered_version",
+        "delivered_version__product",
+        "delivered_version__product__digital_release_metadata",
         "inventory_pool",
     ).order_by("pk")
     return (
@@ -184,6 +186,7 @@ def _offer_allowed_actions(offer, actor):
         actions.append("change_state")
         if actor.user_type == UserTypes.ADMIN:
             actions.extend(("share_stock", "independent_stock"))
+            actions.extend(inventory_pool_allowed_actions(offer=offer, actor=actor))
     return actions
 
 

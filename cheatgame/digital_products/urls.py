@@ -42,7 +42,9 @@ from cheatgame.digital_products.admin_catalog_apis import (
     CreateDeliveredVersionApi,
     CreateDigitalOfferApi,
     DeactivateDigitalProductApi,
+    EnableOfferInventoryApi,
     MakeOfferStockIndependentApi,
+    PauseOfferInventoryApi,
     ShareOfferStockApi,
     UpdateOfferPriceApi,
     UpdateUpcomingGameMetadataApi,
@@ -173,6 +175,16 @@ urlpatterns = [
         "admin/catalog/offers/<int:offer_id>/independent-stock/",
         MakeOfferStockIndependentApi.as_view(),
         name="admin-catalog-offer-independent-stock",
+    ),
+    path(
+        "admin/catalog/offers/<int:offer_id>/enable-inventory/",
+        EnableOfferInventoryApi.as_view(),
+        name="admin-catalog-offer-enable-inventory",
+    ),
+    path(
+        "admin/catalog/offers/<int:offer_id>/pause-inventory/",
+        PauseOfferInventoryApi.as_view(),
+        name="admin-catalog-offer-pause-inventory",
     ),
     path(
         "admin/catalog/games/<int:product_id>/activate-digital/",

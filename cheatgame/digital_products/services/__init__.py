@@ -74,6 +74,10 @@ class OfferTransitionError(DigitalProductsValidationError):
     pass
 
 
+class InventoryPoolTransitionError(DigitalProductsConflictError):
+    code = "DIGITAL_INVENTORY_POOL_TRANSITION_INVALID"
+
+
 class StockIdempotencyConflictError(DigitalProductsConflictError):
     pass
 

@@ -19,6 +19,10 @@ from cheatgame.digital_products.models import (
 )
 from cheatgame.digital_products.services.cart import add_digital_offer_to_cart
 from cheatgame.digital_products.services.checkout_preparation import prepare_digital_checkout
+from cheatgame.digital_products.services.inventory import (
+    enable_inventory_pool,
+    pause_inventory_pool,
+)
 from cheatgame.product.models import (
     DeliveredVersion,
     NativeConsole,
@@ -100,6 +104,15 @@ class PublicDigitalCatalogApiTests(TestCase):
         user.phone_verified = True
         user.save(update_fields=("phone_verified", "updated_at"))
         return user
+
+    def admin(self):
+        return BaseUser.objects.create_user(
+            phone_number="09129999991",
+            firstname="Catalog",
+            lastname="Admin",
+            password="test-only",
+            user_type=UserTypes.ADMIN,
+        )
 
     def reserve(self, offer, *, suffix, state):
         user = self.customer(suffix)
@@ -251,6 +264,26 @@ class PublicDigitalCatalogApiTests(TestCase):
         InventoryPool.objects.filter(pk=offer.inventory_pool_id).update(status=InventoryPoolStatus.PAUSED)
         response = self.client.get(self.list_url)
         self.assertEqual(response.data["results"], [])
+
+    def test_operational_pool_transition_naturally_controls_catalog_and_detail_authority(self):
+        product = self.product("Operational Inventory Digital")
+        pool = InventoryPool.objects.create(
+            sellable_quantity=2,
+            status=InventoryPoolStatus.PAUSED,
+        )
+        offer = self.offer(product, pool=pool)
+        actor = self.admin()
+
+        self.assertEqual(self.client.get(self.list_url).data["results"], [])
+        enable_inventory_pool(offer_id=offer.pk, actor=actor)
+        listed = self.client.get(self.list_url)
+        self.assertEqual([row["id"] for row in listed.data["results"]], [product.pk])
+        detail = self.client.get(f"{self.list_url}{product.slug}/")
+        self.assertEqual(detail.status_code, 200)
+        self.assertEqual(detail.data["availability"], "AVAILABLE")
+
+        pause_inventory_pool(offer_id=offer.pk, actor=actor)
+        self.assertEqual(self.client.get(self.list_url).data["results"], [])
 
     def test_filters_ordering_and_pagination(self):
         alpha = self.product("Alpha PS4")

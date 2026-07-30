@@ -33,7 +33,11 @@ from cheatgame.digital_products.services.catalog_admin import (
     create_delivered_version,
     deactivate_digital_product,
 )
-from cheatgame.digital_products.services.inventory import adjust_pool_stock
+from cheatgame.digital_products.services.inventory import (
+    adjust_pool_stock,
+    enable_inventory_pool,
+    pause_inventory_pool,
+)
 from cheatgame.digital_products.services.offers import (
     create_digital_offer,
     link_offer_to_shared_pool,
@@ -397,6 +401,20 @@ class MakeOfferStockIndependentApi(_OfferCommandApi):
             offer_id=offer_id,
             actor=request.user,
         )
+        return offer.delivered_version.product_id
+
+
+class EnableOfferInventoryApi(_OfferCommandApi):
+    def execute(self, request, values, offer_id):
+        offer = self.offer(offer_id)
+        enable_inventory_pool(offer_id=offer_id, actor=request.user)
+        return offer.delivered_version.product_id
+
+
+class PauseOfferInventoryApi(_OfferCommandApi):
+    def execute(self, request, values, offer_id):
+        offer = self.offer(offer_id)
+        pause_inventory_pool(offer_id=offer_id, actor=request.user)
         return offer.delivered_version.product_id
 
 

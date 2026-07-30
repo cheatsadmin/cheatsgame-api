@@ -1,13 +1,19 @@
+import logging
 from decimal import Decimal, InvalidOperation
 from uuid import UUID
 
-from django.core.exceptions import PermissionDenied
+from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import IntegrityError, transaction
 from django.db.models import Sum
 
 from cheatgame.digital_products.models import (
+    DigitalGameUpcomingStatus,
     DigitalInventoryReservation,
+    DigitalOffer,
+    DigitalOfferCapacity,
+    DigitalOfferSaleState,
     InventoryPool,
+    InventoryPoolStatus,
     PoolStockAdjustment,
     PoolStockAdjustmentReason,
 )
@@ -17,10 +23,20 @@ from cheatgame.digital_products.services.reservations import (
 from cheatgame.digital_products.services import (
     DigitalProductsValidationError,
     InsufficientStockError,
+    InventoryPoolTransitionError,
     StockIdempotencyConflictError,
     require_admin,
     require_manager_or_admin,
 )
+from cheatgame.product.models import (
+    NativeConsole,
+    ProductCommerceAuthority,
+    ProductStatus,
+    ProductType,
+)
+
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize_delta(value) -> int:
@@ -64,6 +80,136 @@ def _resolve_existing_adjustment(*, adjustment, pool_id, delta, reason, actor_id
 
 
 EFFECTIVE_RESERVATION_STATES = CURRENT_DIGITAL_RESERVATION_STATES
+
+
+def _validate_inventory_pool_activation(
+    *,
+    offer: DigitalOffer,
+    pool: InventoryPool,
+    validate_model: bool = True,
+) -> None:
+    if pool.status == InventoryPoolStatus.ARCHIVED:
+        raise InventoryPoolTransitionError("Archived Inventory Pools cannot be enabled.")
+    if offer.sale_state != DigitalOfferSaleState.ACTIVE:
+        raise InventoryPoolTransitionError("Inventory can be enabled only for an active Digital Offer.")
+    if offer.delivered_version.product.product_type != ProductType.GAME:
+        raise InventoryPoolTransitionError("Inventory activation requires a GAME product.")
+    if (
+        offer.delivered_version.product.commerce_authority
+        != ProductCommerceAuthority.DIGITAL_PRODUCTS
+    ):
+        raise InventoryPoolTransitionError("Inventory activation requires DIGITAL_PRODUCTS authority.")
+    if offer.delivered_version.product.status != ProductStatus.PUBLISHED:
+        raise InventoryPoolTransitionError("Inventory activation requires a published game.")
+    if not offer.delivered_version.is_active:
+        raise InventoryPoolTransitionError("Inventory activation requires an active Delivered Version.")
+    if offer.customer_console not in NativeConsole.values:
+        raise InventoryPoolTransitionError("Inventory activation requires a valid customer Console.")
+    if offer.capacity not in DigitalOfferCapacity.values:
+        raise InventoryPoolTransitionError("Inventory activation requires a valid Capacity.")
+    if (
+        offer.customer_console == NativeConsole.PS4
+        and offer.delivered_version.native_console != NativeConsole.PS4
+    ):
+        raise InventoryPoolTransitionError("A PS4 customer requires a PS4 Delivered Version.")
+    if offer.price <= 0:
+        raise InventoryPoolTransitionError("Inventory activation requires a positive authoritative price.")
+    if pool.sellable_quantity < 0:
+        raise InventoryPoolTransitionError("Inventory quantity cannot be negative.")
+    release_metadata = getattr(
+        offer.delivered_version.product,
+        "digital_release_metadata",
+        None,
+    )
+    if (
+        release_metadata is not None
+        and release_metadata.upcoming_status != DigitalGameUpcomingStatus.RELEASED
+    ):
+        raise InventoryPoolTransitionError("Upcoming games cannot enable purchasable inventory.")
+    if not validate_model:
+        return
+    try:
+        offer.full_clean()
+    except ValidationError as exc:
+        raise InventoryPoolTransitionError("Digital Offer configuration is invalid.") from exc
+
+
+def inventory_pool_allowed_actions(*, offer: DigitalOffer, actor) -> list[str]:
+    try:
+        require_admin(actor)
+    except PermissionDenied:
+        return []
+    pool = offer.inventory_pool
+    if offer.sale_state == DigitalOfferSaleState.ARCHIVED or pool.status == InventoryPoolStatus.ARCHIVED:
+        return []
+    if pool.status == InventoryPoolStatus.ENABLED:
+        return ["pause_inventory"]
+    if pool.status != InventoryPoolStatus.PAUSED:
+        return []
+    try:
+        _validate_inventory_pool_activation(
+            offer=offer,
+            pool=pool,
+            validate_model=False,
+        )
+    except InventoryPoolTransitionError:
+        return []
+    return ["enable_inventory"]
+
+
+def _transition_inventory_pool(*, offer_id: int, target_status: str, actor) -> InventoryPool:
+    require_admin(actor)
+    if target_status not in (InventoryPoolStatus.ENABLED, InventoryPoolStatus.PAUSED):
+        raise InventoryPoolTransitionError("Target Inventory Pool state is invalid.")
+
+    with transaction.atomic():
+        try:
+            offer = (
+                DigitalOffer.objects.select_for_update()
+                .select_related("delivered_version__product", "inventory_pool")
+                .get(pk=offer_id)
+            )
+        except DigitalOffer.DoesNotExist as exc:
+            raise DigitalProductsValidationError("Digital Offer does not exist.") from exc
+
+        pool = InventoryPool.objects.select_for_update().get(pk=offer.inventory_pool_id)
+        if pool.status == target_status:
+            return pool
+        if pool.status == InventoryPoolStatus.ARCHIVED:
+            raise InventoryPoolTransitionError("Archived Inventory Pools cannot change sale availability.")
+        if target_status == InventoryPoolStatus.ENABLED:
+            _validate_inventory_pool_activation(offer=offer, pool=pool)
+
+        previous_status = pool.status
+        pool.status = target_status
+        pool.save(update_fields=["status", "updated_at"])
+        logger.info(
+            "digital_inventory_pool_status_changed",
+            extra={
+                "actor_id": actor.pk,
+                "digital_offer_id": offer.pk,
+                "inventory_pool_id": pool.pk,
+                "previous_status": previous_status,
+                "target_status": target_status,
+            },
+        )
+        return pool
+
+
+def enable_inventory_pool(*, offer_id: int, actor) -> InventoryPool:
+    return _transition_inventory_pool(
+        offer_id=offer_id,
+        target_status=InventoryPoolStatus.ENABLED,
+        actor=actor,
+    )
+
+
+def pause_inventory_pool(*, offer_id: int, actor) -> InventoryPool:
+    return _transition_inventory_pool(
+        offer_id=offer_id,
+        target_status=InventoryPoolStatus.PAUSED,
+        actor=actor,
+    )
 
 
 def get_effective_held_quantity(*, pool_id: int) -> int:

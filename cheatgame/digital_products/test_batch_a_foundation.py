@@ -1,5 +1,6 @@
 from threading import Barrier, Thread
 from unittest import skipUnless
+from unittest.mock import patch
 from uuid import uuid4
 
 from django.contrib import admin
@@ -21,6 +22,7 @@ from cheatgame.digital_products.services import (
     DigitalProductsConflictError,
     DigitalProductsValidationError,
     InsufficientStockError,
+    InventoryPoolTransitionError,
     OfferTransitionError,
     StockIdempotencyConflictError,
 )
@@ -30,7 +32,11 @@ from cheatgame.digital_products.services.catalog_admin import (
     deactivate_digital_product,
     evaluate_product_readiness,
 )
-from cheatgame.digital_products.services.inventory import adjust_pool_stock
+from cheatgame.digital_products.services.inventory import (
+    adjust_pool_stock,
+    enable_inventory_pool,
+    pause_inventory_pool,
+)
 from cheatgame.digital_products.services.offers import (
     create_digital_offer,
     link_offer_to_shared_pool,
@@ -43,6 +49,7 @@ from cheatgame.product.models import (
     NativeConsole,
     Product,
     ProductCommerceAuthority,
+    ProductStatus,
     ProductType,
 )
 from cheatgame.users.models import BaseUser, UserTypes
@@ -146,6 +153,85 @@ class BatchAFoundationTests(TestCase):
             actor=self.manager,
         )
         self.assertEqual(active.sale_state, DigitalOfferSaleState.ACTIVE)
+
+    def test_admin_enables_and_pauses_pool_idempotently_with_one_audit_log_per_change(self):
+        offer, pool = self.offer(initial_stock=3)
+        self.game.status = ProductStatus.PUBLISHED
+        self.game.save(update_fields=["status", "updated_at"])
+        activate_digital_product(product_id=self.game.id, actor=self.admin_user)
+        transition_offer_sale_state(
+            offer_id=offer.id,
+            target_state=DigitalOfferSaleState.ACTIVE,
+            actor=self.manager,
+        )
+
+        with patch("cheatgame.digital_products.services.inventory.logger.info") as audit:
+            first = enable_inventory_pool(offer_id=offer.id, actor=self.admin_user)
+            replay = enable_inventory_pool(offer_id=offer.id, actor=self.admin_user)
+            self.assertEqual((first.pk, replay.pk), (pool.pk, pool.pk))
+            self.assertEqual(audit.call_count, 1)
+
+            paused = pause_inventory_pool(offer_id=offer.id, actor=self.admin_user)
+            paused_replay = pause_inventory_pool(offer_id=offer.id, actor=self.admin_user)
+            self.assertEqual((paused.pk, paused_replay.pk), (pool.pk, pool.pk))
+            self.assertEqual(audit.call_count, 2)
+
+        pool.refresh_from_db()
+        self.assertEqual(pool.status, InventoryPoolStatus.PAUSED)
+        self.assertEqual(pool.sellable_quantity, 3)
+        self.assertEqual(PoolStockAdjustment.objects.filter(inventory_pool=pool).count(), 1)
+
+    def test_inventory_activation_is_admin_only_and_requires_coherent_active_offer(self):
+        offer, pool = self.offer(initial_stock=0)
+        self.game.status = ProductStatus.PUBLISHED
+        self.game.save(update_fields=["status", "updated_at"])
+        activate_digital_product(product_id=self.game.id, actor=self.admin_user)
+
+        with self.assertRaises(PermissionDenied):
+            enable_inventory_pool(offer_id=offer.id, actor=self.manager)
+        with self.assertRaises(PermissionDenied):
+            enable_inventory_pool(offer_id=offer.id, actor=self.customer)
+        with self.assertRaises(InventoryPoolTransitionError):
+            enable_inventory_pool(offer_id=offer.id, actor=self.admin_user)
+
+        transition_offer_sale_state(
+            offer_id=offer.id,
+            target_state=DigitalOfferSaleState.ACTIVE,
+            actor=self.manager,
+        )
+        enabled = enable_inventory_pool(offer_id=offer.id, actor=self.admin_user)
+        self.assertEqual(enabled.status, InventoryPoolStatus.ENABLED)
+        self.assertEqual(enabled.sellable_quantity, 0)
+
+    def test_inventory_activation_rejects_zero_price_invalid_lineage_and_archived_pool(self):
+        offer, pool = self.offer(price=0, initial_stock=1)
+        self.game.status = ProductStatus.PUBLISHED
+        self.game.save(update_fields=["status", "updated_at"])
+        activate_digital_product(product_id=self.game.id, actor=self.admin_user)
+        transition_offer_sale_state(
+            offer_id=offer.id,
+            target_state=DigitalOfferSaleState.ACTIVE,
+            actor=self.manager,
+        )
+        with self.assertRaises(InventoryPoolTransitionError):
+            enable_inventory_pool(offer_id=offer.id, actor=self.admin_user)
+
+        ps5_version = DeliveredVersion.objects.create(
+            product=self.game,
+            native_console=NativeConsole.PS5,
+        )
+        DigitalOffer.objects.filter(pk=offer.pk).update(
+            price=100000,
+            delivered_version=ps5_version,
+            customer_console=NativeConsole.PS4,
+        )
+        with self.assertRaises(InventoryPoolTransitionError):
+            enable_inventory_pool(offer_id=offer.id, actor=self.admin_user)
+
+        DigitalOffer.objects.filter(pk=offer.pk).update(delivered_version=self.version)
+        InventoryPool.objects.filter(pk=pool.pk).update(status=InventoryPoolStatus.ARCHIVED)
+        with self.assertRaises(InventoryPoolTransitionError):
+            enable_inventory_pool(offer_id=offer.id, actor=self.admin_user)
 
     def test_deactivation_preserves_history_and_requires_no_active_offer(self):
         offer, _ = self.offer()
@@ -268,6 +354,41 @@ class BatchAPostgreSQLConcurrencyTests(TransactionTestCase):
         )
         self.pool = InventoryPool.objects.create()
 
+    def active_offer(self):
+        game = Product.objects.create(
+            product_type=ProductType.GAME,
+            commerce_authority=ProductCommerceAuthority.DIGITAL_PRODUCTS,
+            title="Concurrent Inventory Game",
+            status=ProductStatus.PUBLISHED,
+            main_image="product/main_images/test.jpg",
+            price=50000,
+            off_price=45000,
+            quantity=0,
+            description="product/descriptions/test.html",
+        )
+        version = DeliveredVersion.objects.create(
+            product=game,
+            native_console=NativeConsole.PS4,
+        )
+        self.pool.sellable_quantity = 2
+        self.pool.save(update_fields=["sellable_quantity", "updated_at"])
+        offer = DigitalOffer.objects.create(
+            delivered_version=version,
+            customer_console=NativeConsole.PS4,
+            capacity=DigitalOfferCapacity.CAPACITY_1,
+            price=100000,
+            inventory_pool=self.pool,
+            sale_state=DigitalOfferSaleState.ACTIVE,
+        )
+        admin_user = BaseUser.objects.create_user(
+            phone_number="09121110012",
+            firstname="Concurrent",
+            lastname="Admin",
+            password="Test-only-password-123",
+            user_type=UserTypes.ADMIN,
+        )
+        return offer, admin_user
+
     def test_concurrent_adjustments_serialize_on_pool_row(self):
         barrier = Barrier(2)
         outcomes = []
@@ -298,3 +419,46 @@ class BatchAPostgreSQLConcurrencyTests(TransactionTestCase):
         self.assertCountEqual(outcomes, ["adjusted", "adjusted"])
         self.pool.refresh_from_db()
         self.assertEqual(self.pool.sellable_quantity, 2)
+
+    def test_concurrent_inventory_enable_and_pause_converge(self):
+        offer, admin_user = self.active_offer()
+
+        def exercise(command):
+            barrier = Barrier(2)
+            outcomes = []
+
+            def worker():
+                close_old_connections()
+                try:
+                    barrier.wait(timeout=5)
+                    pool = command(
+                        offer_id=offer.pk,
+                        actor=BaseUser.objects.get(pk=admin_user.pk),
+                    )
+                    outcomes.append(pool.status)
+                except Exception as exc:
+                    outcomes.append(type(exc).__name__)
+                finally:
+                    close_old_connections()
+
+            threads = [Thread(target=worker), Thread(target=worker)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=10)
+            self.assertFalse(any(thread.is_alive() for thread in threads), outcomes)
+            return outcomes
+
+        self.assertCountEqual(
+            exercise(enable_inventory_pool),
+            [InventoryPoolStatus.ENABLED, InventoryPoolStatus.ENABLED],
+        )
+        self.pool.refresh_from_db()
+        self.assertEqual(self.pool.status, InventoryPoolStatus.ENABLED)
+
+        self.assertCountEqual(
+            exercise(pause_inventory_pool),
+            [InventoryPoolStatus.PAUSED, InventoryPoolStatus.PAUSED],
+        )
+        self.pool.refresh_from_db()
+        self.assertEqual(self.pool.status, InventoryPoolStatus.PAUSED)

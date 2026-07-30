@@ -235,6 +235,68 @@ class AdminDigitalCatalogContractTests(TestCase):
         )
         self.assertEqual(active.status_code, 200)
         self.assertEqual(active.data["offers"][0]["sale_state"], "active")
+        self.assertIn(
+            "enable_inventory",
+            active.data["offers"][0]["allowed_actions"],
+        )
+
+        enabled = self.client.post(
+            f"{self.root}/offers/{self.offer.pk}/enable-inventory/",
+            {},
+            format="json",
+        )
+        self.assertEqual(enabled.status_code, 200)
+        self.assertEqual(
+            enabled.data["offers"][0]["inventory"]["status"],
+            InventoryPoolStatus.ENABLED,
+        )
+        self.assertIn(
+            "pause_inventory",
+            enabled.data["offers"][0]["allowed_actions"],
+        )
+
+        enabled_replay = self.client.post(
+            f"{self.root}/offers/{self.offer.pk}/enable-inventory/",
+            {},
+            format="json",
+        )
+        self.assertEqual(enabled_replay.status_code, 200)
+        paused = self.client.post(
+            f"{self.root}/offers/{self.offer.pk}/pause-inventory/",
+            {},
+            format="json",
+        )
+        self.assertEqual(paused.status_code, 200)
+        self.assertEqual(
+            paused.data["offers"][0]["inventory"]["status"],
+            InventoryPoolStatus.PAUSED,
+        )
+
+    def test_inventory_actions_are_admin_only_and_invalid_activation_fails_closed(self):
+        url = f"{self.root}/offers/{self.offer.pk}/enable-inventory/"
+        self.client.force_authenticate(self.manager)
+        forbidden = self.client.post(url, {}, format="json")
+        self.assertEqual(forbidden.status_code, 403)
+
+        manager_detail = self.client.get(self.detail_url())
+        self.assertNotIn(
+            "enable_inventory",
+            manager_detail.data["offers"][0]["allowed_actions"],
+        )
+        self.assertNotIn(
+            "pause_inventory",
+            manager_detail.data["offers"][0]["allowed_actions"],
+        )
+
+        self.client.force_authenticate(self.admin)
+        invalid = self.client.post(url, {}, format="json")
+        self.assertEqual(invalid.status_code, 409)
+        self.assertEqual(
+            invalid.data["code"],
+            "DIGITAL_INVENTORY_POOL_TRANSITION_INVALID",
+        )
+        self.pool.refresh_from_db()
+        self.assertEqual(self.pool.status, InventoryPoolStatus.PAUSED)
 
     def test_offer_create_rejects_foreign_version_and_share_uses_source_pool(self):
         other = self.product("Other Catalog Game")
