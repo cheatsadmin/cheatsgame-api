@@ -5,6 +5,8 @@ from django.test import TestCase
 from rest_framework.test import APIClient
 
 from cheatgame.digital_products.models import (
+    DigitalGameReleaseMetadata,
+    DigitalGameUpcomingStatus,
     DigitalOfferCapacity,
     DigitalOfferSaleState,
     InventoryPoolStatus,
@@ -151,6 +153,73 @@ class AdminDigitalCatalogContractTests(TestCase):
                 "independent_stock",
             ],
         )
+
+    def test_purchase_readiness_exposes_each_public_gate_without_conflating_configuration(self):
+        initial = self.client.get(self.detail_url())
+        self.assertTrue(initial.data["readiness"]["ready"])
+        purchase = initial.data["purchase_readiness"]
+        self.assertTrue(purchase["configuration_complete"])
+        self.assertFalse(purchase["ready_for_purchase"])
+        self.assertEqual(
+            {
+                gate["code"]: gate["passed"]
+                for gate in purchase["product_gates"]
+            },
+            {
+                "DIGITAL_SALE_ACTIVE": False,
+                "PUBLIC_PRODUCT": True,
+                "RELEASED": True,
+            },
+        )
+        self.assertEqual(
+            {
+                gate["code"]: gate["passed"]
+                for gate in purchase["offers"][0]["gates"]
+            },
+            {
+                "ACTIVE_SALE_OPTION": False,
+                "INVENTORY_ENABLED": False,
+                "POSITIVE_AVAILABLE_QUANTITY": True,
+            },
+        )
+
+        self.client.post(
+            f"{self.root}/games/{self.game.pk}/activate-digital/",
+            {},
+            format="json",
+        )
+        active = self.client.post(
+            f"{self.root}/offers/{self.offer.pk}/state/",
+            {"sale_state": DigitalOfferSaleState.ACTIVE},
+            format="json",
+        )
+        active_gates = {
+            gate["code"]: gate["passed"]
+            for gate in active.data["purchase_readiness"]["offers"][0]["gates"]
+        }
+        self.assertTrue(active_gates["ACTIVE_SALE_OPTION"])
+        self.assertFalse(active_gates["INVENTORY_ENABLED"])
+        self.assertFalse(active.data["purchase_readiness"]["ready_for_purchase"])
+
+        enabled = self.client.post(
+            f"{self.root}/offers/{self.offer.pk}/enable-inventory/",
+            {},
+            format="json",
+        )
+        self.assertTrue(enabled.data["purchase_readiness"]["ready_for_purchase"])
+
+        DigitalGameReleaseMetadata.objects.create(
+            product=self.game,
+            upcoming_status=DigitalGameUpcomingStatus.ANNOUNCED,
+        )
+        unreleased = self.client.get(self.detail_url())
+        release_gate = next(
+            gate
+            for gate in unreleased.data["purchase_readiness"]["product_gates"]
+            if gate["code"] == "RELEASED"
+        )
+        self.assertFalse(release_gate["passed"])
+        self.assertFalse(unreleased.data["purchase_readiness"]["ready_for_purchase"])
 
     def test_manager_and_admin_permissions_remain_service_authoritative(self):
         self.client.force_authenticate(self.customer)

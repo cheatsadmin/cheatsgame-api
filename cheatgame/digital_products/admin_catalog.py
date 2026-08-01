@@ -4,6 +4,7 @@ from cheatgame.digital_products.models import (
     DigitalGameUpcomingStatus,
     DigitalOffer,
     DigitalOfferSaleState,
+    InventoryPoolStatus,
 )
 from cheatgame.digital_products.public_catalog import compatibility_code_for
 from cheatgame.digital_products.services.catalog_admin import (
@@ -85,6 +86,84 @@ def _readiness_projection(product, *, for_deactivation=False):
             for_deactivation=for_deactivation,
         )
     )
+
+
+def _purchase_readiness_projection(product, offer_rows, configuration_readiness):
+    current_offers = [
+        offer for offer in offer_rows
+        if offer["sale_state"] != DigitalOfferSaleState.ARCHIVED
+    ]
+    metadata = getattr(product, "digital_release_metadata", None)
+    product_gates = [
+        {
+            "code": "DIGITAL_SALE_ACTIVE",
+            "label": "فروش دیجیتال بازی فعال است.",
+            "passed": (
+                product.commerce_authority
+                == ProductCommerceAuthority.DIGITAL_PRODUCTS
+            ),
+        },
+        {
+            "code": "PUBLIC_PRODUCT",
+            "label": "بازی در سایت منتشر شده است.",
+            "passed": product.status == ProductStatus.PUBLISHED,
+        },
+        {
+            "code": "RELEASED",
+            "label": "وضعیت انتشار بازی «منتشر شده» است.",
+            "passed": (
+                metadata is None
+                or metadata.upcoming_status
+                == DigitalGameUpcomingStatus.RELEASED
+            ),
+        },
+    ]
+    offer_readiness = []
+    for offer in current_offers:
+        gates = [
+            {
+                "code": "ACTIVE_SALE_OPTION",
+                "label": "گزینه فروش فعال است.",
+                "passed": (
+                    offer["sale_state"] == DigitalOfferSaleState.ACTIVE
+                ),
+            },
+            {
+                "code": "INVENTORY_ENABLED",
+                "label": "موجودی فروش فعال است.",
+                "passed": (
+                    offer["inventory"]["status"]
+                    == InventoryPoolStatus.ENABLED
+                ),
+            },
+            {
+                "code": "POSITIVE_AVAILABLE_QUANTITY",
+                "label": "تعداد قابل فروش بیشتر از صفر است.",
+                "passed": offer["inventory"]["available_quantity"] > 0,
+            },
+        ]
+        offer_readiness.append(
+            {
+                "offer_id": offer["id"],
+                "ready_for_purchase": all(
+                    gate["passed"] for gate in gates
+                ),
+                "gates": gates,
+            }
+        )
+    return {
+        "configuration_complete": configuration_readiness["ready"],
+        "ready_for_purchase": (
+            configuration_readiness["ready"]
+            and all(gate["passed"] for gate in product_gates)
+            and any(
+                offer["ready_for_purchase"]
+                for offer in offer_readiness
+            )
+        ),
+        "product_gates": product_gates,
+        "offers": offer_readiness,
+    }
 
 
 def admin_catalog_games():
@@ -272,6 +351,7 @@ def admin_catalog_game_projection(product, *, actor):
             }
         )
 
+    configuration_readiness = _readiness_projection(product)
     return {
         "game": {
             "id": product.pk,
@@ -290,7 +370,12 @@ def admin_catalog_game_projection(product, *, actor):
             "updated_at": product.updated_at,
         },
         "release_metadata": _release_metadata_projection(product),
-        "readiness": _readiness_projection(product),
+        "readiness": configuration_readiness,
+        "purchase_readiness": _purchase_readiness_projection(
+            product,
+            offer_rows,
+            configuration_readiness,
+        ),
         "delivered_versions": versions,
         "offers": offer_rows,
     }
