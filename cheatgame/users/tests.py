@@ -2,6 +2,7 @@ import io
 from contextlib import redirect_stdout
 
 import pyotp
+from django.core.cache import cache
 from django.test import TestCase, override_settings
 from rest_framework import status
 from rest_framework.test import APIClient
@@ -11,7 +12,11 @@ from cheatgame.users.models import Address, BaseUser, VerifyType
 
 class RegisterApiTests(TestCase):
     def setUp(self):
+        cache.clear()
         self.client = APIClient()
+
+    def tearDown(self):
+        cache.clear()
 
     def test_register_accepts_normalized_iranian_mobile_number(self):
         response = self.client.post(
@@ -44,6 +49,45 @@ class RegisterApiTests(TestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertFalse(BaseUser.objects.filter(phone_number="02170000004").exists())
+
+    def test_register_normalizes_international_and_localized_phone_numbers(self):
+        response = self.client.post(
+            "/api/user/register/",
+            {
+                "firstname": "Register",
+                "lastname": "Normalized",
+                "phone_number": "+۹۸۹۱۷۰۰۰۰۰۰۶",
+                "password": "StrongPass123!",
+                "confirm_password": "StrongPass123!",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertTrue(BaseUser.objects.filter(phone_number="09170000006").exists())
+
+    def test_duplicate_registration_keeps_one_customer_identity(self):
+        payload = {
+            "firstname": "Register",
+            "lastname": "Duplicate",
+            "phone_number": "09170000007",
+            "password": "StrongPass123!",
+            "confirm_password": "StrongPass123!",
+        }
+
+        first_response = self.client.post("/api/user/register/", payload, format="json")
+        second_response = self.client.post(
+            "/api/user/register/",
+            {**payload, "phone_number": "+989170000007"},
+            format="json",
+        )
+
+        self.assertEqual(first_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(second_response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(
+            BaseUser.objects.filter(phone_number="09170000007").count(),
+            1,
+        )
 
     def test_registered_unverified_customer_cannot_access_customer_flow(self):
         register_response = self.client.post(
@@ -84,6 +128,7 @@ class RegisterApiTests(TestCase):
 
 class OtpSecurityTests(TestCase):
     def setUp(self):
+        cache.clear()
         self.client = APIClient()
         self.user = BaseUser.objects.create_user(
             phone_number="09170000008",
@@ -91,6 +136,9 @@ class OtpSecurityTests(TestCase):
             lastname="User",
             password="StrongPass123!",
         )
+
+    def tearDown(self):
+        cache.clear()
 
     def current_otp(self):
         self.user.refresh_from_db()
@@ -130,6 +178,81 @@ class OtpSecurityTests(TestCase):
         self.user.refresh_from_db()
         self.assertTrue(self.user.phone_verified)
         self.assertIsNone(self.user.secret_key)
+
+    @override_settings(DEBUG=False, IS_SEND_SMS=False)
+    def test_resend_invalidates_the_previous_phone_otp(self):
+        first_response = self.client.post(
+            "/api/user/request-verify-phone/",
+            {"phone_number": self.user.phone_number},
+            format="json",
+        )
+        self.assertEqual(first_response.status_code, status.HTTP_200_OK)
+        previous_otp = self.current_otp()
+
+        second_response = self.client.post(
+            "/api/user/request-verify-phone/",
+            {"phone_number": self.user.phone_number},
+            format="json",
+        )
+        self.assertEqual(second_response.status_code, status.HTTP_200_OK)
+        current_otp = self.current_otp()
+
+        old_verify_response = self.client.post(
+            "/api/user/verify-phone/",
+            {"phone_number": self.user.phone_number, "otp": previous_otp},
+            format="json",
+        )
+        self.assertEqual(old_verify_response.status_code, status.HTTP_400_BAD_REQUEST)
+
+        current_verify_response = self.client.post(
+            "/api/user/verify-phone/",
+            {"phone_number": self.user.phone_number, "otp": current_otp},
+            format="json",
+        )
+        self.assertEqual(current_verify_response.status_code, status.HTTP_200_OK)
+
+    @override_settings(DEBUG=False, IS_SEND_SMS=False)
+    def test_otp_request_does_not_reveal_missing_or_inactive_accounts(self):
+        missing_response = self.client.post(
+            "/api/user/request-verify-phone/",
+            {"phone_number": "09170000099"},
+            format="json",
+        )
+        self.user.is_active = False
+        self.user.save(update_fields=["is_active"])
+        inactive_response = self.client.post(
+            "/api/user/request-verify-phone/",
+            {"phone_number": self.user.phone_number},
+            format="json",
+        )
+
+        self.assertEqual(missing_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(inactive_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(missing_response.data, inactive_response.data)
+        self.user.refresh_from_db()
+        self.assertIsNone(self.user.secret_key)
+
+    @override_settings(DEBUG=False, IS_SEND_SMS=False)
+    def test_inactive_user_cannot_verify_an_existing_otp(self):
+        response = self.client.post(
+            "/api/user/request-verify-phone/",
+            {"phone_number": self.user.phone_number},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        otp = self.current_otp()
+        self.user.is_active = False
+        self.user.save(update_fields=["is_active"])
+
+        verify_response = self.client.post(
+            "/api/user/verify-phone/",
+            {"phone_number": self.user.phone_number, "otp": otp},
+            format="json",
+        )
+
+        self.assertEqual(verify_response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.phone_verified)
 
     @override_settings(DEBUG=False, IS_SEND_SMS=False)
     def test_password_reset_request_does_not_return_otp_and_reset_still_works(self):

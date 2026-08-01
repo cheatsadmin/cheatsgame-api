@@ -7,12 +7,23 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from cheatgame.users.models import BaseUser, UserTypes
-from cheatgame.users.validators import check_phone_number
+from cheatgame.users.validators import normalize_iranian_phone_number
 
 
 class InPutLoginSerializer(serializers.Serializer):
-    phone_number = serializers.CharField(required=True)
+    phone_number = serializers.CharField(required=True, max_length=32)
     password = serializers.CharField(required=True)
+
+    def validate_phone_number(self, phone_number):
+        normalized_phone_number = normalize_iranian_phone_number(phone_number)
+        if not (
+            len(normalized_phone_number) == 11
+            and normalized_phone_number.startswith("09")
+            and normalized_phone_number.isascii()
+            and normalized_phone_number.isdigit()
+        ):
+            raise serializers.ValidationError("شماره تماس وارد شده معتبر نمی باشد.")
+        return normalized_phone_number
 
 
 class OutPutLoginSerializer(serializers.ModelSerializer):
@@ -39,8 +50,6 @@ def authenticate_user(request, user_type):
     serializer.is_valid(raise_exception=True)
     phone_number = serializer.validated_data.get('phone_number')
     password = serializer.validated_data.get('password')
-    if not check_phone_number(serializer.validated_data.get("phone_number")):
-        return Response({"error": "شماره فقط با حروف انگلیسی قابل قبول است."}, status=status.HTTP_400_BAD_REQUEST)
     user = authenticate(request=request, phone_number=phone_number, password=password)
     if not user:
         return Response({'error': 'رمز یا نام کاربری صحیح نمی باشد.'}, status=status.HTTP_401_UNAUTHORIZED)

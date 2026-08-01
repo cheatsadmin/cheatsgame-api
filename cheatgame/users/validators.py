@@ -4,10 +4,29 @@ from django.core.exceptions import ValidationError
 import re
 
 
+_LOCALIZED_DIGITS = str.maketrans(
+    "۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩",
+    "01234567890123456789",
+)
+
+
+def normalize_iranian_phone_number(phone_number):
+    value = str(phone_number or "").translate(_LOCALIZED_DIGITS).strip()
+    value = re.sub(r"[\s()\-]", "", value)
+
+    if re.fullmatch(r"\+989\d{9}", value):
+        return f"0{value[3:]}"
+    if re.fullmatch(r"00989\d{9}", value):
+        return f"0{value[4:]}"
+    if re.fullmatch(r"989\d{9}", value):
+        return f"0{value[2:]}"
+    return value
+
+
 
 def phone_number_validator(phone_number):
     regex = re.compile(r'^09\d{9}$')
-    if not regex.fullmatch(phone_number):
+    if not regex.fullmatch(normalize_iranian_phone_number(phone_number)):
         raise ValidationError(
             _("شماره تماس وارد شده معتبر نمی باشد.")
         )

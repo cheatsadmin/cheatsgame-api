@@ -14,7 +14,7 @@ from .selectors import get_user, verify_email_otp, verify_phone_otp, verify_pass
 from .models import VerifyType, Address, FavoriteProduct
 from django.core.validators import MinLengthValidator
 from .validators import number_validator, special_char_validator, letter_validator, phone_number_validator, \
-    check_phone_number
+    normalize_iranian_phone_number
 from cheatgame.users.models import BaseUser, UserTypes
 from cheatgame.users.services import create_user
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -28,6 +28,31 @@ from ..general.models import ContactForm
 from ..product.models import Product
 from ..product.permissions import CustomerPermission, AddressIsOwnerCustomer, FavoriteProductIsOwnerCustomer, \
     AdminOrManagerPermission
+
+
+class CanonicalIranianPhoneField(serializers.CharField):
+    default_error_messages = {
+        "invalid_phone": "شماره تماس وارد شده معتبر نمی باشد.",
+    }
+
+    def __init__(self, **kwargs):
+        kwargs.setdefault("max_length", 32)
+        super().__init__(**kwargs)
+
+    def to_internal_value(self, data):
+        normalized_phone_number = normalize_iranian_phone_number(
+            super().to_internal_value(data)
+        )
+        try:
+            phone_number_validator(normalized_phone_number)
+        except Exception:
+            self.fail("invalid_phone")
+        return normalized_phone_number
+
+
+OTP_REQUEST_ACCEPTED_MESSAGE = (
+    "اگر شماره برای این عملیات معتبر باشد، کد تایید ارسال می‌شود."
+)
 
 
 class UserApi(APIView, ApiAuthMixin):
@@ -82,9 +107,7 @@ class RegisterApi(APIView):
     throttle_scope = "register"
 
     class InputRegisterSerializer(serializers.Serializer):
-        phone_number = serializers.CharField(max_length=13, validators=[
-            phone_number_validator
-        ])
+        phone_number = CanonicalIranianPhoneField()
         firstname = serializers.CharField(max_length=255)
         lastname = serializers.CharField(max_length=255)
         password = serializers.CharField(
@@ -134,8 +157,6 @@ class RegisterApi(APIView):
         serializer = self.InputRegisterSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
-            if not check_phone_number(serializer.validated_data.get("phone_number")):
-                return Response({"error": "شماره فقط با حروف انگلیسی قابل قبول است."}, status=status.HTTP_400_BAD_REQUEST)
             user = create_user(
                 firstname=serializer.validated_data.get('firstname'),
                 lastname=serializer.validated_data.get('lastname'),
@@ -156,7 +177,7 @@ class VerifyPhoneRequestApi(APIView):
     throttle_scope = "otp_request"
 
     class InputPhoneOtpSerializer(serializers.Serializer):
-        phone_number = serializers.CharField(max_length=11, required=True , validators=[phone_number_validator])
+        phone_number = CanonicalIranianPhoneField(required=True)
 
     @extend_schema(request=InputPhoneOtpSerializer, responses={status.HTTP_200_OK: dict})
     def post(self, request):
@@ -164,8 +185,10 @@ class VerifyPhoneRequestApi(APIView):
         serializer.is_valid(raise_exception=True)
         try:
             if not check_user_exists(phone_number=serializer.validated_data.get("phone_number")):
-                return Response({"message": "این کاربر وجود ندارد"} , status=status.HTTP_400_BAD_REQUEST)
+                return Response({"message": OTP_REQUEST_ACCEPTED_MESSAGE}, status=status.HTTP_200_OK)
             user = get_user(phone_number=serializer.validated_data.get('phone_number'))
+            if not user.is_active:
+                return Response({"message": OTP_REQUEST_ACCEPTED_MESSAGE}, status=status.HTTP_200_OK)
             otp = generate_otp(user=user, verify_type=VerifyType.PHONENUMBER)
             if settings.IS_SEND_SMS:
                 try:
@@ -175,7 +198,7 @@ class VerifyPhoneRequestApi(APIView):
                         {"error": "ارسال پیامک با خطا مواجه شد. لطفا کمی بعد دوباره تلاش کنید."},
                         status=status.HTTP_503_SERVICE_UNAVAILABLE,
                     )
-            return Response({"message": "کد با موفقیت ارسال گردید"}, status=status.HTTP_200_OK)
+            return Response({"message": OTP_REQUEST_ACCEPTED_MESSAGE}, status=status.HTTP_200_OK)
         except Exception as ex:
             return Response({"error": "مشکلی رخ داده است"}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -185,9 +208,7 @@ class ChangePasswordRequestApi(APIView):
     throttle_scope = "password_reset_request"
 
     class InputPasswordOtpSerializer(serializers.Serializer):
-        phone_number = serializers.CharField(max_length=11, required=True, validators=[
-            phone_number_validator
-        ])
+        phone_number = CanonicalIranianPhoneField(required=True)
 
     @extend_schema(request=InputPasswordOtpSerializer, responses={status.HTTP_200_OK: dict})
     def post(self, request):
@@ -195,8 +216,10 @@ class ChangePasswordRequestApi(APIView):
         serializer.is_valid(raise_exception=True)
         try:
             if not check_user_exists(phone_number=serializer.validated_data.get("phone_number")):
-                return Response({"message": "این کاربر وجود ندارد"}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({"message": OTP_REQUEST_ACCEPTED_MESSAGE}, status=status.HTTP_200_OK)
             user = get_user(phone_number=serializer.validated_data.get('phone_number'))
+            if not user.is_active:
+                return Response({"message": OTP_REQUEST_ACCEPTED_MESSAGE}, status=status.HTTP_200_OK)
             otp = generate_otp(user=user, verify_type=VerifyType.PASSWORD)
             if settings.IS_SEND_SMS:
                 try:
@@ -206,7 +229,7 @@ class ChangePasswordRequestApi(APIView):
                         {"error": "ارسال پیامک با خطا مواجه شد. لطفا کمی بعد دوباره تلاش کنید."},
                         status=status.HTTP_503_SERVICE_UNAVAILABLE,
                     )
-            return Response({"message": "کد با موفقیت ارسال گردید"}, status=status.HTTP_200_OK)
+            return Response({"message": OTP_REQUEST_ACCEPTED_MESSAGE}, status=status.HTTP_200_OK)
         except Exception as ex:
             return Response({"error": "مشکلی رخ داده است"}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -235,9 +258,7 @@ class VerfiyPhoneApi(APIView):
     throttle_scope = "otp_verify"
 
     class InputVerifyPhoneSerilazer(serializers.Serializer):
-        phone_number = serializers.CharField(max_length=11, required=True, validators=[
-            phone_number_validator
-        ])
+        phone_number = CanonicalIranianPhoneField(required=True)
         otp = serializers.CharField(required=True)
 
     @extend_schema(request=InputVerifyPhoneSerilazer, responses={status.HTTP_200_OK: dict})
@@ -270,9 +291,7 @@ class ChangePasswordApi(APIView):
             ]
         )
         confirm_new_password = serializers.CharField(max_length=255)
-        phone_number = serializers.CharField(max_length=11, validators=[
-            phone_number_validator
-        ])
+        phone_number = CanonicalIranianPhoneField()
 
         def validate(self, data):
             if not data.get("new_password") or not data.get("confirm_new_password"):
@@ -616,6 +635,5 @@ class UserRegisterReport(ApiAuthMixin , APIView):
             return Response({"user_register_number":user_numbers})
         except Exception as e:
             return Response({"error": "مشکلی در این ای پی آی وجود دارید."}, status=status.HTTP_400_BAD_REQUEST)
-
 
 

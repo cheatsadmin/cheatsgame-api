@@ -53,6 +53,53 @@ class LoginThrottleTests(TestCase):
         self.assertEqual(first_response.status_code, status.HTTP_401_UNAUTHORIZED)
         self.assertEqual(second_response.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
 
+    def test_customer_login_normalizes_supported_iranian_phone_forms(self):
+        for phone_number in (
+            "+989175550001",
+            "989175550001",
+            "۰۹۱۷۵۵۵۰۰۰۱",
+            " 0917 555 0001 ",
+        ):
+            response = self.client.post(
+                "/api/auth/jwt/customer-login/",
+                {
+                    "phone_number": phone_number,
+                    "password": "StrongPass123!",
+                },
+                format="json",
+            )
+            self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+
+    def test_non_customer_role_cannot_use_customer_login(self):
+        self.user.user_type = 2
+        self.user.save(update_fields=["user_type"])
+
+        response = self.client.post(
+            "/api/auth/jwt/customer-login/",
+            {
+                "phone_number": self.user.phone_number,
+                "password": "StrongPass123!",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_inactive_customer_cannot_login(self):
+        self.user.is_active = False
+        self.user.save(update_fields=["is_active"])
+
+        response = self.client.post(
+            "/api/auth/jwt/customer-login/",
+            {
+                "phone_number": self.user.phone_number,
+                "password": "StrongPass123!",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
 
 class AuthThrottleConfigurationTests(TestCase):
     def test_security_sprint_auth_throttle_rates_are_configured(self):

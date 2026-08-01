@@ -21,7 +21,7 @@ def verify_phone_otp(*, phone_number: str, otp: str) -> bool:
         user = BaseUser.objects.get(phone_number=phone_number)
     except BaseUser.DoesNotExist:
         return False
-    if user.verify_type != VerifyType.PHONENUMBER:
+    if not user.is_active or user.verify_type != VerifyType.PHONENUMBER or not user.secret_key:
         return False
     totp = pyotp.TOTP(s=user.secret_key, interval=120)
     return totp.verify(otp=str(otp))
@@ -32,7 +32,7 @@ def verify_password_otp(*, phone_number: str, otp: str) -> bool:
         user = BaseUser.objects.get(phone_number=phone_number)
     except BaseUser.DoesNotExist:
         return False
-    if user.verify_type != VerifyType.PASSWORD:
+    if not user.is_active or user.verify_type != VerifyType.PASSWORD or not user.secret_key:
         return False
     totp = pyotp.TOTP(s=user.secret_key, interval=120)
     return totp.verify(otp)
