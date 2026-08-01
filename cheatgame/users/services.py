@@ -1,4 +1,6 @@
-from .models import BaseUser, Address, FavoriteProduct
+from django.db import transaction
+
+from .models import BaseUser, VerifyType, Address, FavoriteProduct
 import pyotp
 
 from ..general.models import  ContactForm
@@ -41,6 +43,28 @@ def change_password(user: BaseUser, password) -> None:
     user.set_password(password)
     user.full_clean()
     user.save()
+
+
+@transaction.atomic
+def complete_password_recovery(*, phone_number: str, otp: str, password: str) -> bool:
+    try:
+        user = BaseUser.objects.select_for_update().get(phone_number=phone_number)
+    except BaseUser.DoesNotExist:
+        return False
+
+    if not user.is_active or user.verify_type != VerifyType.PASSWORD or not user.secret_key:
+        return False
+
+    totp = pyotp.TOTP(s=user.secret_key, interval=120)
+    if not totp.verify(otp=str(otp)):
+        return False
+
+    user.set_password(password)
+    user.secret_key = None
+    user.verify_type = None
+    user.full_clean()
+    user.save(update_fields=["password", "secret_key", "verify_type"])
+    return True
 
 
 def confirm_phone(*, phone_number: str) -> None:

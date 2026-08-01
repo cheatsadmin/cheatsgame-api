@@ -10,8 +10,12 @@ _LOCALIZED_DIGITS = str.maketrans(
 )
 
 
+def normalize_localized_digits(value):
+    return str(value or "").translate(_LOCALIZED_DIGITS)
+
+
 def normalize_iranian_phone_number(phone_number):
-    value = str(phone_number or "").translate(_LOCALIZED_DIGITS).strip()
+    value = normalize_localized_digits(phone_number).strip()
     value = re.sub(r"[\s()\-]", "", value)
 
     if re.fullmatch(r"\+989\d{9}", value):

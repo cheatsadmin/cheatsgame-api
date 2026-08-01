@@ -7,6 +7,7 @@ from django.test import TestCase, override_settings
 from rest_framework import status
 from rest_framework.test import APIClient
 
+from cheatgame.users.apis import ChangePasswordApi
 from cheatgame.users.models import Address, BaseUser, VerifyType
 
 
@@ -285,6 +286,86 @@ class OtpSecurityTests(TestCase):
         self.assertEqual(reset_response.status_code, status.HTTP_200_OK)
         self.user.refresh_from_db()
         self.assertTrue(self.user.check_password("NewStrongPass123!"))
+        self.assertIsNone(self.user.secret_key)
+        self.assertIsNone(self.user.verify_type)
+
+        replay_response = self.client.post(
+            "/api/user/change-password/",
+            {
+                "phone_number": self.user.phone_number,
+                "otp": otp,
+                "new_password": "ReplayMustNotWin123!",
+                "confirm_new_password": "ReplayMustNotWin123!",
+            },
+            format="json",
+        )
+        self.assertEqual(replay_response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password("NewStrongPass123!"))
+
+    @override_settings(DEBUG=False, IS_SEND_SMS=False)
+    def test_password_recovery_phone_variants_resolve_one_customer(self):
+        original_count = BaseUser.objects.count()
+        variants = (
+            self.user.phone_number,
+            f"98{self.user.phone_number[1:]}",
+            f"+98{self.user.phone_number[1:]}",
+            self.user.phone_number.translate(str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")),
+            self.user.phone_number.translate(str.maketrans("0123456789", "٠١٢٣٤٥٦٧٨٩")),
+            f" {self.user.phone_number[:4]} {self.user.phone_number[4:7]} {self.user.phone_number[7:]} ",
+        )
+
+        for phone_number in variants:
+            cache.clear()
+            response = self.client.post(
+                "/api/user/requset-change-password/",
+                {"phone_number": phone_number},
+                format="json",
+            )
+            self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self.assertEqual(BaseUser.objects.count(), original_count)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.verify_type, VerifyType.PASSWORD)
+
+    @override_settings(DEBUG=False, IS_SEND_SMS=False)
+    def test_customer_with_unusable_password_can_recover_securely(self):
+        self.user.set_unusable_password()
+        self.user.save(update_fields=["password"])
+
+        request_response = self.client.post(
+            "/api/user/requset-change-password/",
+            {"phone_number": self.user.phone_number},
+            format="json",
+        )
+        self.assertEqual(request_response.status_code, status.HTTP_200_OK)
+        otp = self.current_otp()
+
+        reset_response = self.client.post(
+            "/api/user/change-password/",
+            {
+                "phone_number": self.user.phone_number,
+                "otp": otp,
+                "new_password": "EstablishedSecurely123!",
+                "confirm_new_password": "EstablishedSecurely123!",
+            },
+            format="json",
+        )
+        self.assertEqual(reset_response.status_code, status.HTTP_200_OK)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password("EstablishedSecurely123!"))
+
+    def test_password_recovery_preserves_leading_zero_and_normalizes_localized_otp(self):
+        serializer = ChangePasswordApi.InputChangePasswordSerializer(
+            data={
+                "phone_number": self.user.phone_number,
+                "otp": "۰۱۲۳۴۵",
+                "new_password": "NewStrongPass123!",
+                "confirm_new_password": "NewStrongPass123!",
+            }
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        self.assertEqual(serializer.validated_data["otp"], "012345")
 
     @override_settings(DEBUG=False, IS_SEND_SMS=False)
     def test_request_verify_email_does_not_return_or_print_otp_under_production_like_settings(self):

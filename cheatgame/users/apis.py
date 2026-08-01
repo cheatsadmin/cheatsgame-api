@@ -5,16 +5,16 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework import serializers
 from rest_framework.throttling import ScopedRateThrottle
-from .services import generate_otp, confirm_email, confirm_phone, update_user, change_password, create_address, \
+from .services import generate_otp, confirm_email, confirm_phone, update_user, complete_password_recovery, create_address, \
     update_address, delete_address, create_favorite_product, delete_favorite_product, create_contact_form, \
     update_contact_form
-from .selectors import get_user, verify_email_otp, verify_phone_otp, verify_password_otp, user_address_list, \
+from .selectors import get_user, verify_email_otp, verify_phone_otp, user_address_list, \
     number_of_user_address, number_of_favorite_product, user_favorite_product_list, favoirte_product_exists, \
     get_contact_form_list, user_list, user_number_register, check_user_exists
 from .models import VerifyType, Address, FavoriteProduct
 from django.core.validators import MinLengthValidator
 from .validators import number_validator, special_char_validator, letter_validator, phone_number_validator, \
-    normalize_iranian_phone_number
+    normalize_iranian_phone_number, normalize_localized_digits
 from cheatgame.users.models import BaseUser, UserTypes
 from cheatgame.users.services import create_user
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -281,7 +281,7 @@ class ChangePasswordApi(APIView):
     throttle_scope = "password_reset_confirm"
 
     class InputChangePasswordSerializer(serializers.Serializer):
-        otp = serializers.IntegerField(required=True)
+        otp = serializers.CharField(required=True, min_length=6, max_length=6)
         new_password = serializers.CharField(
             validators=[
                 number_validator,
@@ -292,6 +292,12 @@ class ChangePasswordApi(APIView):
         )
         confirm_new_password = serializers.CharField(max_length=255)
         phone_number = CanonicalIranianPhoneField()
+
+        def validate_otp(self, value):
+            normalized = normalize_localized_digits(value)
+            if len(normalized) != 6 or not normalized.isdigit():
+                raise serializers.ValidationError("کد تایید باید ۶ رقم باشد.")
+            return normalized
 
         def validate(self, data):
             if not data.get("new_password") or not data.get("confirm_new_password"):
@@ -305,11 +311,12 @@ class ChangePasswordApi(APIView):
         serializer = self.InputChangePasswordSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
-            if not verify_password_otp(phone_number=serializer.validated_data.get('phone_number'),
-                                       otp=serializer.validated_data.get('otp')):
+            if not complete_password_recovery(
+                phone_number=serializer.validated_data.get('phone_number'),
+                otp=serializer.validated_data.get('otp'),
+                password=serializer.validated_data.get('new_password'),
+            ):
                 return Response({"error": "اطلاعات وارد شده معتبر نیست."}, status=status.HTTP_400_BAD_REQUEST)
-            user = get_user(phone_number=serializer.validated_data.get('phone_number'))
-            change_password(user=user, password=serializer.validated_data.get('new_password'))
             return Response({'message': 'رمز با موفقت تغییر پیدا کرد.'}, status=status.HTTP_200_OK)
         except Exception as ex:
             return Response({"error": "مشکلی رخ داده است"}, status=status.HTTP_400_BAD_REQUEST)
@@ -635,5 +642,3 @@ class UserRegisterReport(ApiAuthMixin , APIView):
             return Response({"user_register_number":user_numbers})
         except Exception as e:
             return Response({"error": "مشکلی در این ای پی آی وجود دارید."}, status=status.HTTP_400_BAD_REQUEST)
-
-
