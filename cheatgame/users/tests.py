@@ -464,6 +464,48 @@ class OtpSecurityTests(TestCase):
         self.assertTrue(serializer.is_valid(), serializer.errors)
         self.assertEqual(serializer.validated_data["otp"], "012345")
 
+    @override_settings(DEBUG=False, IS_SEND_SMS=False)
+    def test_password_recovery_and_login_preserve_unicode_password_exactly(self):
+        passwords = (
+            "Latin@1۱۲",
+            "Latin@1١٢",
+            "Mix@1۱۲١",
+        )
+
+        for password in passwords:
+            with self.subTest(password_kind=len(password)):
+                request_response = self.client.post(
+                    "/api/user/requset-change-password/",
+                    {"phone_number": self.user.phone_number},
+                    format="json",
+                )
+                self.assertEqual(request_response.status_code, status.HTTP_200_OK)
+                otp = self.current_otp()
+
+                reset_response = self.client.post(
+                    "/api/user/change-password/",
+                    {
+                        "phone_number": self.user.phone_number,
+                        "otp": otp,
+                        "new_password": password,
+                        "confirm_new_password": password,
+                    },
+                    format="json",
+                )
+                self.assertEqual(reset_response.status_code, status.HTTP_200_OK)
+
+                self.user.refresh_from_db()
+                self.assertTrue(self.user.check_password(password))
+                login_response = self.client.post(
+                    "/api/auth/jwt/customer-login/",
+                    {
+                        "phone_number": self.user.phone_number,
+                        "password": password,
+                    },
+                    format="json",
+                )
+                self.assertEqual(login_response.status_code, status.HTTP_200_OK)
+
     def test_password_recovery_mismatch_returns_customer_actionable_error(self):
         serializer = ChangePasswordApi.InputChangePasswordSerializer(
             data={
