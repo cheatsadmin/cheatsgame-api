@@ -63,7 +63,7 @@ def complete_password_recovery(*, phone_number: str, otp: str, password: str) ->
     user.secret_key = None
     user.verify_type = None
     user.full_clean()
-    user.save(update_fields=["password", "secret_key", "verify_type"])
+    user.save(update_fields=["password", "secret_key", "verify_type", "updated_at"])
     return True
 
 

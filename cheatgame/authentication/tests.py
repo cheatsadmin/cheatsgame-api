@@ -51,6 +51,10 @@ class LoginThrottleTests(TestCase):
         )
 
         self.assertEqual(first_response.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(
+            first_response.data["error"],
+            "شماره موبایل یا رمز عبور صحیح نیست.",
+        )
         self.assertEqual(second_response.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
 
     def test_customer_login_normalizes_supported_iranian_phone_forms(self):

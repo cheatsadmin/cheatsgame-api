@@ -52,10 +52,16 @@ def authenticate_user(request, user_type):
     password = serializer.validated_data.get('password')
     user = authenticate(request=request, phone_number=phone_number, password=password)
     if not user:
-        return Response({'error': 'رمز یا نام کاربری صحیح نمی باشد.'}, status=status.HTTP_401_UNAUTHORIZED)
+        return Response(
+            {'error': 'شماره موبایل یا رمز عبور صحیح نیست.'},
+            status=status.HTTP_401_UNAUTHORIZED,
+        )
 
     if not user.user_type == user_type:
-        return Response({'error': 'رمز یا نام کاربری صحیح نمی باشد.'}, status=status.HTTP_401_UNAUTHORIZED)
+        return Response(
+            {'error': 'شماره موبایل یا رمز عبور صحیح نیست.'},
+            status=status.HTTP_401_UNAUTHORIZED,
+        )
 
     if not user.phone_verified:
         return Response({

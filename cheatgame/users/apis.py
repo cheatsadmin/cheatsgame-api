@@ -303,7 +303,7 @@ class ChangePasswordApi(APIView):
             if not data.get("new_password") or not data.get("confirm_new_password"):
                 raise serializers.ValidationError("لطفا پسورد و تکرار آن را وارد نمایید.")
             if data.get("new_password") != data.get("confirm_new_password"):
-                raise serializers.ValidationError("رمز و تکرار آن مشابه نیست.")
+                raise serializers.ValidationError("رمز عبور و تکرار آن یکسان نیستند.")
             return data
 
     @extend_schema(request=InputChangePasswordSerializer, responses={status.HTTP_200_OK: dict})
@@ -316,8 +316,14 @@ class ChangePasswordApi(APIView):
                 otp=serializer.validated_data.get('otp'),
                 password=serializer.validated_data.get('new_password'),
             ):
-                return Response({"error": "اطلاعات وارد شده معتبر نیست."}, status=status.HTTP_400_BAD_REQUEST)
-            return Response({'message': 'رمز با موفقت تغییر پیدا کرد.'}, status=status.HTTP_200_OK)
+                return Response(
+                    {
+                        "error": "کد تأیید صحیح نیست یا منقضی شده است.",
+                        "code": "PASSWORD_RESET_CODE_INVALID",
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            return Response({'message': 'رمز عبور با موفقیت تغییر کرد.'}, status=status.HTTP_200_OK)
         except Exception as ex:
             return Response({"error": "مشکلی رخ داده است"}, status=status.HTTP_400_BAD_REQUEST)
 

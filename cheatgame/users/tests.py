@@ -257,6 +257,8 @@ class OtpSecurityTests(TestCase):
 
     @override_settings(DEBUG=False, IS_SEND_SMS=False)
     def test_password_reset_request_does_not_return_otp_and_reset_still_works(self):
+        self.user.phone_verified = True
+        self.user.save(update_fields=["phone_verified"])
         stdout = io.StringIO()
 
         with redirect_stdout(stdout):
@@ -268,6 +270,7 @@ class OtpSecurityTests(TestCase):
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         otp = self.current_otp()
+        reset_requested_at = self.user.updated_at
         self.assertEqual(self.user.verify_type, VerifyType.PASSWORD)
         self.assert_response_does_not_expose_otp(response, otp)
         self.assertEqual(stdout.getvalue(), "")
@@ -286,8 +289,32 @@ class OtpSecurityTests(TestCase):
         self.assertEqual(reset_response.status_code, status.HTTP_200_OK)
         self.user.refresh_from_db()
         self.assertTrue(self.user.check_password("NewStrongPass123!"))
+        self.assertGreater(self.user.updated_at, reset_requested_at)
         self.assertIsNone(self.user.secret_key)
         self.assertIsNone(self.user.verify_type)
+
+        login_response = self.client.post(
+            "/api/auth/jwt/customer-login/",
+            {
+                "phone_number": self.user.phone_number,
+                "password": "NewStrongPass123!",
+            },
+            format="json",
+        )
+        self.assertEqual(login_response.status_code, status.HTTP_200_OK)
+
+        old_password_response = self.client.post(
+            "/api/auth/jwt/customer-login/",
+            {
+                "phone_number": self.user.phone_number,
+                "password": "StrongPass123!",
+            },
+            format="json",
+        )
+        self.assertEqual(
+            old_password_response.status_code,
+            status.HTTP_401_UNAUTHORIZED,
+        )
 
         replay_response = self.client.post(
             "/api/user/change-password/",
@@ -300,6 +327,13 @@ class OtpSecurityTests(TestCase):
             format="json",
         )
         self.assertEqual(replay_response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(
+            replay_response.data,
+            {
+                "error": "کد تأیید صحیح نیست یا منقضی شده است.",
+                "code": "PASSWORD_RESET_CODE_INVALID",
+            },
+        )
         self.user.refresh_from_db()
         self.assertTrue(self.user.check_password("NewStrongPass123!"))
 
@@ -366,6 +400,22 @@ class OtpSecurityTests(TestCase):
         )
         self.assertTrue(serializer.is_valid(), serializer.errors)
         self.assertEqual(serializer.validated_data["otp"], "012345")
+
+    def test_password_recovery_mismatch_returns_customer_actionable_error(self):
+        serializer = ChangePasswordApi.InputChangePasswordSerializer(
+            data={
+                "phone_number": self.user.phone_number,
+                "otp": "012345",
+                "new_password": "NewStrongPass123!",
+                "confirm_new_password": "DifferentPass123!",
+            }
+        )
+
+        self.assertFalse(serializer.is_valid())
+        self.assertEqual(
+            serializer.errors["non_field_errors"][0],
+            "رمز عبور و تکرار آن یکسان نیستند.",
+        )
 
     @override_settings(DEBUG=False, IS_SEND_SMS=False)
     def test_request_verify_email_does_not_return_or_print_otp_under_production_like_settings(self):
