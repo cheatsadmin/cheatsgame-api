@@ -5,10 +5,10 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework import serializers
 from rest_framework.throttling import ScopedRateThrottle
-from .services import generate_otp, confirm_email, confirm_phone, update_user, complete_password_recovery, create_address, \
+from .services import generate_otp, confirm_email, update_user, complete_password_recovery, complete_phone_verification, create_address, \
     update_address, delete_address, create_favorite_product, delete_favorite_product, create_contact_form, \
     update_contact_form
-from .selectors import get_user, verify_email_otp, verify_phone_otp, user_address_list, \
+from .selectors import get_user, verify_email_otp, user_address_list, \
     number_of_user_address, number_of_favorite_product, user_favorite_product_list, favoirte_product_exists, \
     get_contact_form_list, user_list, user_number_register, check_user_exists
 from .models import VerifyType, Address, FavoriteProduct
@@ -266,10 +266,11 @@ class VerfiyPhoneApi(APIView):
         serializer = self.InputVerifyPhoneSerilazer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
-            if not verify_phone_otp(phone_number=serializer.validated_data.get('phone_number'),
-                                    otp=serializer.validated_data.get('otp')):
+            if not complete_phone_verification(
+                phone_number=serializer.validated_data.get('phone_number'),
+                otp=serializer.validated_data.get('otp'),
+            ):
                 return Response({'error': 'اطلاعات مورد شد معتبر نمی باشد.'}, status=status.HTTP_400_BAD_REQUEST)
-            confirm_phone(phone_number=serializer.validated_data.get('phone_number'))
             return Response({'Message': "شماره تلفن کاربر احراز گردید."}, status=status.HTTP_200_OK)
 
         except Exception as ex:

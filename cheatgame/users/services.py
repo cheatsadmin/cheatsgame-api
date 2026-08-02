@@ -1,10 +1,32 @@
+from datetime import timedelta
+
 from django.db import transaction
+from django.utils import timezone
 
 from .models import BaseUser, VerifyType, Address, FavoriteProduct
 import pyotp
 
 from ..general.models import  ContactForm
 from ..product.models import Product
+
+
+OTP_INTERVAL_SECONDS = 120
+
+
+def _verify_issued_otp(*, user: BaseUser, otp: str, verify_type: int) -> bool:
+    if not user.is_active or user.verify_type != verify_type or not user.secret_key:
+        return False
+
+    verified_at = timezone.now()
+    if verified_at > user.updated_at + timedelta(seconds=OTP_INTERVAL_SECONDS):
+        return False
+
+    totp = pyotp.TOTP(s=user.secret_key, interval=OTP_INTERVAL_SECONDS)
+    return totp.verify(
+        otp=str(otp),
+        for_time=verified_at,
+        valid_window=1,
+    )
 
 
 def create_user(*, firstname: str, lastname: str, phone_number: str, password: str, user_type: int) -> BaseUser:
@@ -35,7 +57,7 @@ def update_user_secret(*, user: BaseUser, secret: str, verify_type: int) -> None
 def generate_otp(*, user: BaseUser, verify_type: int) -> str:
     secret = pyotp.random_base32()
     update_user_secret(user=user, secret=secret, verify_type=verify_type)
-    totp = pyotp.TOTP(s=secret, interval=120)
+    totp = pyotp.TOTP(s=secret, interval=OTP_INTERVAL_SECONDS)
     return totp.now()
 
 
@@ -52,18 +74,55 @@ def complete_password_recovery(*, phone_number: str, otp: str, password: str) ->
     except BaseUser.DoesNotExist:
         return False
 
-    if not user.is_active or user.verify_type != VerifyType.PASSWORD or not user.secret_key:
-        return False
-
-    totp = pyotp.TOTP(s=user.secret_key, interval=120)
-    if not totp.verify(otp=str(otp)):
+    if not _verify_issued_otp(
+        user=user,
+        otp=otp,
+        verify_type=VerifyType.PASSWORD,
+    ):
         return False
 
     user.set_password(password)
     user.secret_key = None
     user.verify_type = None
+    user.phone_verified = True
     user.full_clean()
-    user.save(update_fields=["password", "secret_key", "verify_type", "updated_at"])
+    user.save(
+        update_fields=[
+            "password",
+            "secret_key",
+            "verify_type",
+            "phone_verified",
+            "updated_at",
+        ]
+    )
+    return True
+
+
+@transaction.atomic
+def complete_phone_verification(*, phone_number: str, otp: str) -> bool:
+    try:
+        user = BaseUser.objects.select_for_update().get(phone_number=phone_number)
+    except BaseUser.DoesNotExist:
+        return False
+
+    if not _verify_issued_otp(
+        user=user,
+        otp=otp,
+        verify_type=VerifyType.PHONENUMBER,
+    ):
+        return False
+
+    user.secret_key = None
+    user.verify_type = None
+    user.phone_verified = True
+    user.save(
+        update_fields=[
+            "secret_key",
+            "verify_type",
+            "phone_verified",
+            "updated_at",
+        ]
+    )
     return True
 
 

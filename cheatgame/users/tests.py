@@ -1,9 +1,12 @@
 import io
 from contextlib import redirect_stdout
+from datetime import datetime, timedelta
+from unittest.mock import patch
 
 import pyotp
 from django.core.cache import cache
 from django.test import TestCase, override_settings
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient
 
@@ -257,8 +260,7 @@ class OtpSecurityTests(TestCase):
 
     @override_settings(DEBUG=False, IS_SEND_SMS=False)
     def test_password_reset_request_does_not_return_otp_and_reset_still_works(self):
-        self.user.phone_verified = True
-        self.user.save(update_fields=["phone_verified"])
+        self.assertFalse(self.user.phone_verified)
         stdout = io.StringIO()
 
         with redirect_stdout(stdout):
@@ -289,6 +291,7 @@ class OtpSecurityTests(TestCase):
         self.assertEqual(reset_response.status_code, status.HTTP_200_OK)
         self.user.refresh_from_db()
         self.assertTrue(self.user.check_password("NewStrongPass123!"))
+        self.assertTrue(self.user.phone_verified)
         self.assertGreater(self.user.updated_at, reset_requested_at)
         self.assertIsNone(self.user.secret_key)
         self.assertIsNone(self.user.verify_type)
@@ -336,6 +339,66 @@ class OtpSecurityTests(TestCase):
         )
         self.user.refresh_from_db()
         self.assertTrue(self.user.check_password("NewStrongPass123!"))
+
+    @override_settings(DEBUG=False, IS_SEND_SMS=False)
+    def test_phone_otp_is_accepted_first_time_across_totp_boundary(self):
+        issued_at = timezone.make_aware(datetime(2026, 8, 2, 15, 9, 59))
+        verified_at = timezone.make_aware(datetime(2026, 8, 2, 15, 10, 19))
+        secret = pyotp.random_base32()
+        BaseUser.objects.filter(pk=self.user.pk).update(
+            secret_key=secret,
+            verify_type=VerifyType.PHONENUMBER,
+            updated_at=issued_at,
+        )
+        otp = pyotp.TOTP(secret, interval=120).at(issued_at)
+
+        with patch("cheatgame.users.services.timezone.now", return_value=verified_at):
+            first_response = self.client.post(
+                "/api/user/verify-phone/",
+                {"phone_number": self.user.phone_number, "otp": otp},
+                format="json",
+            )
+
+        self.assertEqual(
+            first_response.status_code,
+            status.HTTP_200_OK,
+            first_response.data,
+        )
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.phone_verified)
+        self.assertIsNone(self.user.secret_key)
+        self.assertIsNone(self.user.verify_type)
+
+        replay_response = self.client.post(
+            "/api/user/verify-phone/",
+            {"phone_number": self.user.phone_number, "otp": otp},
+            format="json",
+        )
+        self.assertEqual(replay_response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    @override_settings(DEBUG=False, IS_SEND_SMS=False)
+    def test_phone_otp_expires_after_issued_policy_interval(self):
+        issued_at = timezone.make_aware(datetime(2026, 8, 2, 15, 9, 59))
+        expired_at = issued_at + timedelta(seconds=121)
+        secret = pyotp.random_base32()
+        BaseUser.objects.filter(pk=self.user.pk).update(
+            secret_key=secret,
+            verify_type=VerifyType.PHONENUMBER,
+            updated_at=issued_at,
+        )
+        otp = pyotp.TOTP(secret, interval=120).at(issued_at)
+
+        with patch("cheatgame.users.services.timezone.now", return_value=expired_at):
+            response = self.client.post(
+                "/api/user/verify-phone/",
+                {"phone_number": self.user.phone_number, "otp": otp},
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.phone_verified)
+        self.assertEqual(self.user.secret_key, secret)
 
     @override_settings(DEBUG=False, IS_SEND_SMS=False)
     def test_password_recovery_phone_variants_resolve_one_customer(self):
