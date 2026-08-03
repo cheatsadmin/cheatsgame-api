@@ -238,7 +238,7 @@ class InventoryPool(BaseModel):
 
 
 class DigitalGameReleaseMetadata(BaseModel):
-    """Authoritative release metadata; preorder commerce remains disabled."""
+    """Authoritative public lifecycle for one Digital Game."""
 
     product = models.OneToOneField(
         "product.Product",
@@ -262,10 +262,6 @@ class DigitalGameReleaseMetadata(BaseModel):
                 name="digital_game_upcoming_status_valid",
             ),
             models.CheckConstraint(
-                check=Q(preorder_enabled=False),
-                name="digital_game_preorder_disabled_v1",
-            ),
-            models.CheckConstraint(
                 check=(
                     Q(preorder_close_at__isnull=True)
                     | Q(preorder_open_at__isnull=True)
@@ -275,10 +271,16 @@ class DigitalGameReleaseMetadata(BaseModel):
             ),
             models.CheckConstraint(
                 check=(
-                    ~Q(upcoming_status=DigitalGameUpcomingStatus.PREORDER_OPEN)
-                    | Q(preorder_enabled=True)
+                    Q(
+                        upcoming_status=DigitalGameUpcomingStatus.PREORDER_OPEN,
+                        preorder_enabled=True,
+                    )
+                    | (
+                        ~Q(upcoming_status=DigitalGameUpcomingStatus.PREORDER_OPEN)
+                        & Q(preorder_enabled=False)
+                    )
                 ),
-                name="digital_game_preorder_status_requires_enablement",
+                name="digital_game_preorder_state_coherent_v1",
             ),
         ]
 
@@ -286,13 +288,22 @@ class DigitalGameReleaseMetadata(BaseModel):
         super().clean()
         if self.product_id and self.product.product_type != ProductType.GAME.value:
             raise ValidationError({"product": "Release metadata requires a GAME product."})
-        if self.preorder_enabled:
+        if self.preorder_enabled != (
+            self.upcoming_status == DigitalGameUpcomingStatus.PREORDER_OPEN
+        ):
             raise ValidationError(
-                {"preorder_enabled": "Preorder purchasing is not supported by the current commerce lifecycle."}
+                {
+                    "preorder_enabled": (
+                        "Preorder enablement must exactly match the PREORDER_OPEN Product state."
+                    )
+                }
             )
-        if self.upcoming_status == DigitalGameUpcomingStatus.PREORDER_OPEN:
+        if (
+            self.upcoming_status == DigitalGameUpcomingStatus.PREORDER_OPEN
+            and self.release_date is None
+        ):
             raise ValidationError(
-                {"upcoming_status": "PREORDER_OPEN is unavailable until preorder commerce is approved."}
+                {"release_date": "A preorder requires an authoritative release date."}
             )
         if (
             self.preorder_open_at
@@ -376,7 +387,11 @@ class DigitalOffer(BaseModel):
         if (
             self.sale_state == DigitalOfferSaleState.ACTIVE
             and release_metadata is not None
-            and release_metadata.upcoming_status != DigitalGameUpcomingStatus.RELEASED
+            and release_metadata.upcoming_status
+            not in (
+                DigitalGameUpcomingStatus.PREORDER_OPEN,
+                DigitalGameUpcomingStatus.RELEASED,
+            )
         ):
             raise ValidationError(
                 {"sale_state": "Upcoming games cannot expose an active purchasable Offer."}

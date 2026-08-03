@@ -107,6 +107,12 @@ def public_game_projection(product, *, detail=False):
     offers = prefetched_public_offers(product)
     offer_rows = [public_offer_projection(offer) for offer in offers]
     available_rows = [row for row in offer_rows if row["is_available"]]
+    metadata = getattr(product, "digital_release_metadata", None)
+    is_preorder = bool(
+        metadata
+        and metadata.preorder_enabled
+        and metadata.upcoming_status == DigitalGameUpcomingStatus.PREORDER_OPEN
+    )
     result = {
         "id": product.pk,
         "title": product.title,
@@ -114,6 +120,13 @@ def public_game_projection(product, *, detail=False):
         "main_image": safe_file_url(file=product.main_image),
         "short_description": product.meta_description or "",
         "purchase_flow": "DIGITAL_GAME",
+        "product_state": (
+            DigitalGameUpcomingStatus.PREORDER_OPEN
+            if is_preorder
+            else DigitalGameUpcomingStatus.RELEASED
+        ),
+        "is_preorder": is_preorder,
+        "release_date": metadata.release_date if metadata else None,
         "supported_customer_consoles": sorted({row["customer_console"] for row in offer_rows}),
         "available_capacities": sorted({row["capacity"] for row in offer_rows}),
         "starting_price": min(row["price"] for row in offer_rows),
@@ -156,7 +169,10 @@ def public_upcoming_game_projection(product):
         "release_date": metadata.release_date,
         "upcoming_status": metadata.upcoming_status,
         "upcoming_status_label": UPCOMING_STATUS_LABELS[metadata.upcoming_status],
-        "preorder_available": False,
+        "preorder_available": (
+            metadata.preorder_enabled
+            and metadata.upcoming_status == DigitalGameUpcomingStatus.PREORDER_OPEN
+        ),
         "preorder_price": None,
         "currency": PUBLIC_DIGITAL_CURRENCY,
     }

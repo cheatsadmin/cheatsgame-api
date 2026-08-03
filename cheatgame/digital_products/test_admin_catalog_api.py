@@ -169,7 +169,7 @@ class AdminDigitalCatalogContractTests(TestCase):
             {
                 "DIGITAL_SALE_ACTIVE": False,
                 "PUBLIC_PRODUCT": True,
-                "RELEASED": True,
+                "PURCHASE_STATE": True,
             },
         )
         self.assertEqual(
@@ -217,7 +217,7 @@ class AdminDigitalCatalogContractTests(TestCase):
         release_gate = next(
             gate
             for gate in unreleased.data["purchase_readiness"]["product_gates"]
-            if gate["code"] == "RELEASED"
+            if gate["code"] == "PURCHASE_STATE"
         )
         self.assertFalse(release_gate["passed"])
         self.assertFalse(unreleased.data["purchase_readiness"]["ready_for_purchase"])

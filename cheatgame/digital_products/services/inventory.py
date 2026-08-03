@@ -123,9 +123,15 @@ def _validate_inventory_pool_activation(
     )
     if (
         release_metadata is not None
-        and release_metadata.upcoming_status != DigitalGameUpcomingStatus.RELEASED
+        and release_metadata.upcoming_status
+        not in (
+            DigitalGameUpcomingStatus.PREORDER_OPEN,
+            DigitalGameUpcomingStatus.RELEASED,
+        )
     ):
-        raise InventoryPoolTransitionError("Upcoming games cannot enable purchasable inventory.")
+        raise InventoryPoolTransitionError(
+            "Only PREORDER_OPEN or RELEASED games can enable purchasable inventory."
+        )
     if not validate_model:
         return
     try:

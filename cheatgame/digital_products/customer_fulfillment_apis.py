@@ -20,9 +20,14 @@ from cheatgame.digital_products.fulfillment_serializers import (
     CustomerDigitalFulfillmentProjectionSerializer,
 )
 from cheatgame.digital_products.models import (
+    DigitalCheckoutLineSnapshot,
+    DigitalGameUpcomingStatus,
     DigitalFulfillmentItem,
     DigitalFulfillmentStatus,
 )
+from cheatgame.financial_core.models import PaymentCollectionStatus
+from cheatgame.product.models import Product
+from cheatgame.shop.models import OrderStatus
 from cheatgame.digital_products.services.fulfillment import (
     DigitalFulfillmentConflict,
     DigitalFulfillmentValidationError,
@@ -69,6 +74,17 @@ class ConfirmRemoteCompletionSerializer(serializers.Serializer):
     idempotency_key = serializers.UUIDField()
 
 
+class CustomerPreorderSerializer(serializers.Serializer):
+    order_tracking_code = serializers.CharField()
+    game = serializers.DictField()
+    selection = serializers.DictField()
+    paid_price = serializers.DecimalField(max_digits=16, decimal_places=0)
+    currency = serializers.CharField()
+    paid_at = serializers.DateTimeField(allow_null=True)
+    release_date = serializers.DateField()
+    status = serializers.DictField()
+
+
 class CustomerFulfillmentListApi(CustomerFulfillmentApi):
     serializer_class = CustomerDigitalFulfillmentListSerializer
     pagination_class = LimitOffsetPagination
@@ -106,6 +122,68 @@ class CustomerFulfillmentListApi(CustomerFulfillmentApi):
         page = paginator.paginate_queryset(queryset, request, view=self)
         serializer = self.serializer_class(page, many=True)
         return paginator.get_paginated_response(serializer.data)
+
+
+class CustomerPreorderListApi(CustomerFulfillmentApi):
+    @extend_schema(responses={200: CustomerPreorderSerializer(many=True)})
+    def get(self, request):
+        snapshots = list(
+            DigitalCheckoutLineSnapshot.objects.select_related(
+                "checkout_line__checkout",
+            )
+            .filter(
+                safe_display_metadata__purchase_kind="preorder",
+                checkout_line__checkout__orders__user=request.user,
+                checkout_line__checkout__orders__payment_status=OrderStatus.PAID.value,
+                checkout_line__checkout__orders__commercial_finalization__payment__collection_status=(
+                    PaymentCollectionStatus.PAID
+                ),
+                checkout_line__digital_fulfillment_obligation__isnull=True,
+            )
+            .order_by("-created_at", "pk")
+        )
+        products = {
+            product.pk: product
+            for product in Product.objects.select_related(
+                "digital_release_metadata"
+            ).filter(pk__in={snapshot.product_id for snapshot in snapshots})
+        }
+        rows = []
+        for snapshot in snapshots:
+            product = products.get(snapshot.product_id)
+            metadata = getattr(product, "digital_release_metadata", None)
+            if (
+                product is None
+                or metadata is None
+                or metadata.upcoming_status
+                != DigitalGameUpcomingStatus.PREORDER_OPEN
+                or metadata.release_date is None
+            ):
+                continue
+            order = snapshot.checkout_line.checkout.orders.get()
+            rows.append(
+                {
+                    "order_tracking_code": order.public_tracking_code,
+                    "game": {
+                        "title": snapshot.product_name,
+                        "slug": product.slug,
+                    },
+                    "selection": {
+                        "customer_console": snapshot.customer_console,
+                        "capacity": snapshot.capacity,
+                        "delivered_version": snapshot.version_label,
+                    },
+                    "paid_price": snapshot.line_total,
+                    "currency": "IRT",
+                    "paid_at": snapshot.checkout_line.checkout.paid_at,
+                    "release_date": metadata.release_date,
+                    "status": {
+                        "code": "WAITING_FOR_RELEASE",
+                        "label": "منتظر عرضه رسمی",
+                    },
+                }
+            )
+        return Response(CustomerPreorderSerializer(rows, many=True).data)
 
 
 class CustomerFulfillmentDetailApi(CustomerFulfillmentApi):

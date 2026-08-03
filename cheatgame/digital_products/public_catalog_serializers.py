@@ -100,6 +100,14 @@ class PublicDigitalGameListItemSerializer(serializers.Serializer):
     main_image = serializers.CharField(allow_blank=True)
     short_description = serializers.CharField(allow_blank=True)
     purchase_flow = serializers.CharField()
+    product_state = serializers.ChoiceField(
+        choices=(
+            DigitalGameUpcomingStatus.PREORDER_OPEN,
+            DigitalGameUpcomingStatus.RELEASED,
+        )
+    )
+    is_preorder = serializers.BooleanField()
+    release_date = serializers.DateField(allow_null=True)
     supported_customer_consoles = serializers.ListField(child=serializers.CharField())
     available_capacities = serializers.ListField(child=serializers.CharField())
     starting_price = serializers.DecimalField(max_digits=15, decimal_places=0)

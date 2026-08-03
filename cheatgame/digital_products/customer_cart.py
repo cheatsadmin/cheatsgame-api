@@ -82,7 +82,10 @@ def _offer_is_currently_available(item, offer):
         and (
             release_metadata is None
             or release_metadata.upcoming_status
-            == DigitalGameUpcomingStatus.RELEASED
+            in (
+                DigitalGameUpcomingStatus.PREORDER_OPEN,
+                DigitalGameUpcomingStatus.RELEASED,
+            )
         )
         and (getattr(item, "digital_available_quantity", 0) or 0) > 0
     )

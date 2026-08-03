@@ -84,7 +84,7 @@ class UpcomingGamesFoundationTests(TestCase):
             sale_state=DigitalOfferSaleState.ACTIVE,
         )
 
-    def test_model_is_game_owned_and_preorder_fails_closed(self):
+    def test_model_is_game_owned_and_preorder_state_is_coherent(self):
         physical = Product.objects.create(
             product_type=ProductType.PHYSCIAL,
             title="Physical",
@@ -96,12 +96,21 @@ class UpcomingGamesFoundationTests(TestCase):
         with self.assertRaises(ValidationError):
             DigitalGameReleaseMetadata.objects.create(product=physical)
 
-        game = self.game("No Preorder")
+        game = self.game("Preorder")
+        metadata = DigitalGameReleaseMetadata.objects.create(
+            product=game,
+            release_date=date.today() + timedelta(days=30),
+            upcoming_status=DigitalGameUpcomingStatus.PREORDER_OPEN,
+            preorder_enabled=True,
+        )
+        self.assertTrue(metadata.preorder_enabled)
+
+        another = self.game("Incoherent Preorder")
         with self.assertRaises(ValidationError):
             DigitalGameReleaseMetadata.objects.create(
-                product=game,
+                product=another,
                 upcoming_status=DigitalGameUpcomingStatus.PREORDER_OPEN,
-                preorder_enabled=True,
+                preorder_enabled=False,
             )
 
     def test_public_projection_is_bounded_ordered_and_contains_no_price_authority(self):
@@ -208,7 +217,7 @@ class UpcomingGamesFoundationTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["results"], [])
 
-    def test_admin_can_configure_display_metadata_but_not_preorder(self):
+    def test_admin_can_configure_display_metadata_and_preorder_state(self):
         game = self.game("Admin Upcoming", status=ProductStatus.HIDDEN)
         self.client.force_authenticate(self.admin)
         url = f"/api/digital-products/admin/catalog/games/{game.pk}/release-metadata/"
@@ -224,16 +233,19 @@ class UpcomingGamesFoundationTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.data["release_metadata"]["configured"])
         self.assertTrue(response.data["release_metadata"]["published"])
-        self.assertFalse(
+        self.assertTrue(
             response.data["release_metadata"]["preorder_commerce_supported"]
         )
 
+        payload["upcoming_status"] = DigitalGameUpcomingStatus.PREORDER_OPEN
         payload["preorder_enabled"] = True
-        forbidden = self.client.post(url, payload, format="json")
-        self.assertEqual(forbidden.status_code, 400)
+        preorder = self.client.post(url, payload, format="json")
+        self.assertEqual(preorder.status_code, 200)
+        metadata = DigitalGameReleaseMetadata.objects.get(product=game)
+        self.assertTrue(metadata.preorder_enabled)
         self.assertEqual(
-            DigitalGameReleaseMetadata.objects.get(product=game).preorder_enabled,
-            False,
+            metadata.upcoming_status,
+            DigitalGameUpcomingStatus.PREORDER_OPEN,
         )
 
     def test_admin_rejects_incoherent_coming_soon_release_information(self):

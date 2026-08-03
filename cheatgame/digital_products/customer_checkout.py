@@ -135,6 +135,13 @@ def digital_checkout_projection(checkout):
                 "quantity": snapshot.quantity,
                 "line_total": _money(snapshot.line_total),
                 "currency": PUBLIC_DIGITAL_CURRENCY,
+                "is_preorder": (
+                    snapshot.safe_display_metadata.get("purchase_kind")
+                    == "preorder"
+                ),
+                "release_date": snapshot.safe_display_metadata.get(
+                    "release_date"
+                ),
             }
         )
 

@@ -94,6 +94,7 @@ RECEIPT_JOURNAL_SOURCE = "provider_receipt"
 FULFILLMENT_OUTBOX_TOPIC = "commercial.fulfillment.requested"
 FINALIZATION_NAMESPACE = UUID("5c71ef26-9ace-4b8e-81fd-25e01a285cf9")
 CLAIM_LEASE = timedelta(minutes=5)
+PREORDER_PURCHASE_KIND = "preorder"
 
 
 def _new_finalization_contract():
@@ -715,6 +716,11 @@ def finalize_paid_commerce(
                 quantity=item.quantity,
             )
         for item, reservation, snapshot in digital_specs:
+            if (
+                snapshot.safe_display_metadata.get("purchase_kind")
+                == PREORDER_PURCHASE_KIND
+            ):
+                continue
             DigitalFulfillmentObligation.objects.create(
                 finalization=finalization,
                 order=order,
@@ -728,11 +734,16 @@ def finalize_paid_commerce(
         if is_v2:
             line_pairs = list(zip(lines, order_items))
             for sequence, (line, item) in enumerate(line_pairs, start=1):
-                fulfillment = (
-                    StandardFulfillmentObligation.objects.get(finalization=finalization, order_item=item)
-                    if authority == ProductCommerceAuthority.STANDARD_COMMERCE
-                    else DigitalFulfillmentObligation.objects.get(finalization=finalization, order_item=item)
-                )
+                if authority == ProductCommerceAuthority.STANDARD_COMMERCE:
+                    fulfillment = StandardFulfillmentObligation.objects.get(
+                        finalization=finalization,
+                        order_item=item,
+                    )
+                else:
+                    fulfillment = DigitalFulfillmentObligation.objects.filter(
+                        finalization=finalization,
+                        order_item=item,
+                    ).first()
                 line_amount = _canonical_commercial_component(
                     source=source, amount=line.line_payable_total, checkout_id=checkout.pk,
                     source_field=f"lines.{line.pk}.line_payable_total",

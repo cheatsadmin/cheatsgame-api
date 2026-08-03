@@ -24,6 +24,11 @@ UPCOMING_DISPLAY_STATUSES = {
     DigitalGameUpcomingStatus.DELAYED,
 }
 
+DATED_PUBLIC_STATES = {
+    DigitalGameUpcomingStatus.COMING_SOON,
+    DigitalGameUpcomingStatus.PREORDER_OPEN,
+}
+
 
 def evaluate_upcoming_readiness(product):
     """Return the public-display gates without consulting commercial Offers."""
@@ -35,7 +40,7 @@ def evaluate_upcoming_readiness(product):
     release_information_coherent = bool(
         display_status
         and (
-            metadata.upcoming_status != DigitalGameUpcomingStatus.COMING_SOON
+            metadata.upcoming_status not in DATED_PUBLIC_STATES
             or release_date is not None
         )
         and (release_date is None or release_date >= timezone.localdate())
@@ -102,9 +107,14 @@ def update_upcoming_game_metadata(
     require_manager_or_admin(actor)
     if upcoming_status not in DigitalGameUpcomingStatus.values:
         raise DigitalProductsValidationError("Upcoming status is invalid.")
-    if preorder_enabled or upcoming_status == DigitalGameUpcomingStatus.PREORDER_OPEN:
+    expected_preorder = upcoming_status == DigitalGameUpcomingStatus.PREORDER_OPEN
+    if bool(preorder_enabled) != expected_preorder:
         raise DigitalProductsValidationError(
-            "Preorder purchasing is disabled until the commerce lifecycle supports it."
+            "Preorder enablement must exactly match the PREORDER_OPEN Product state."
+        )
+    if preorder_open_at is not None or preorder_close_at is not None:
+        raise DigitalProductsValidationError(
+            "Preorder V1 does not use separate sale windows."
         )
     if (
         preorder_open_at
@@ -114,13 +124,15 @@ def update_upcoming_game_metadata(
         raise DigitalProductsValidationError(
             "Preorder close time must follow the open time."
         )
-    if upcoming_status in UPCOMING_DISPLAY_STATUSES:
+    if upcoming_status in UPCOMING_DISPLAY_STATUSES | {
+        DigitalGameUpcomingStatus.PREORDER_OPEN
+    }:
         if (
-            upcoming_status == DigitalGameUpcomingStatus.COMING_SOON
+            upcoming_status in DATED_PUBLIC_STATES
             and release_date is None
         ):
             raise DigitalProductsValidationError(
-                "Coming-soon publication requires a release date."
+                "This publication state requires a release date."
             )
         if release_date is not None and release_date < timezone.localdate():
             raise DigitalProductsValidationError(
@@ -149,12 +161,23 @@ def update_upcoming_game_metadata(
         metadata, _ = DigitalGameReleaseMetadata.objects.select_for_update().get_or_create(
             product=product
         )
+        previous_status = metadata.upcoming_status
         metadata.release_date = release_date
         metadata.upcoming_status = upcoming_status
-        metadata.preorder_enabled = False
-        metadata.preorder_open_at = preorder_open_at
-        metadata.preorder_close_at = preorder_close_at
+        metadata.preorder_enabled = expected_preorder
+        metadata.preorder_open_at = None
+        metadata.preorder_close_at = None
         metadata.save()
+
+        if (
+            upcoming_status == DigitalGameUpcomingStatus.RELEASED
+            and previous_status != DigitalGameUpcomingStatus.RELEASED
+        ):
+            from cheatgame.digital_products.services.preorders import (
+                release_paid_preorders_for_product,
+            )
+
+            release_paid_preorders_for_product(product=product)
 
         target_status = ProductStatus.PUBLISHED if publish else ProductStatus.HIDDEN
         if product.status != target_status:

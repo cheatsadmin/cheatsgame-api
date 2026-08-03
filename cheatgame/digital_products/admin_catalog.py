@@ -74,7 +74,7 @@ def _release_metadata_projection(product):
             metadata.preorder_close_at if metadata else None
         ),
         "published": product.status == ProductStatus.PUBLISHED,
-        "preorder_commerce_supported": False,
+        "preorder_commerce_supported": True,
     }
 
 
@@ -151,12 +151,15 @@ def _purchase_readiness_projection(product, offer_rows, configuration_readiness)
             "passed": product.status == ProductStatus.PUBLISHED,
         },
         {
-            "code": "RELEASED",
-            "label": "وضعیت انتشار بازی «منتشر شده» است.",
+            "code": "PURCHASE_STATE",
+            "label": "وضعیت بازی «پیش‌خرید» یا «منتشرشده» است.",
             "passed": (
                 metadata is None
                 or metadata.upcoming_status
-                == DigitalGameUpcomingStatus.RELEASED
+                in (
+                    DigitalGameUpcomingStatus.PREORDER_OPEN,
+                    DigitalGameUpcomingStatus.RELEASED,
+                )
             ),
         },
     ]

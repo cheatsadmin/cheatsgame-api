@@ -111,8 +111,8 @@ class PublicUpcomingGameListApi(PublicDigitalReadOnlyAPIView):
             status.HTTP_400_BAD_REQUEST: DigitalApiErrorSerializer,
         },
         description=(
-            "Public display-only upcoming Digital GAME catalog. "
-            "Preorder purchase authority is intentionally disabled."
+            "Public upcoming Digital GAME catalog. PREORDER_OPEN remains a display "
+            "state here; purchase authority is exposed only by the ordinary Digital catalog."
         ),
     )
     def get(self, request):

@@ -1,5 +1,5 @@
 from threading import Barrier, Thread
-from datetime import timedelta
+from datetime import date, timedelta
 from unittest import skipUnless
 from unittest.mock import patch
 from uuid import uuid4
@@ -25,6 +25,8 @@ from cheatgame.financial_core.models import (
 )
 from cheatgame.digital_products.models import (
     DigitalCartFulfillmentMethod,
+    DigitalGameReleaseMetadata,
+    DigitalGameUpcomingStatus,
     DigitalInventoryReservation,
     DigitalInventoryReservationState,
     DigitalOffer,
@@ -80,9 +82,16 @@ class CommercialFinalizerFixture(ProviderExecutionPhase1Fixture):
         )
         return placement, policy
 
-    def ready_digital(self, *, expire_before_funds=False):
+    def ready_digital(self, *, expire_before_funds=False, preorder=False):
         user = self.make_user()
         product = self.make_product(authority=ProductCommerceAuthority.DIGITAL_PRODUCTS, price=9000)
+        if preorder:
+            DigitalGameReleaseMetadata.objects.create(
+                product=product,
+                release_date=date.today() + timedelta(days=30),
+                upcoming_status=DigitalGameUpcomingStatus.PREORDER_OPEN,
+                preorder_enabled=True,
+            )
         version = DeliveredVersion.objects.create(product=product, native_console=NativeConsole.PS4)
         pool = InventoryPool.objects.create(sellable_quantity=2, status=InventoryPoolStatus.ENABLED)
         offer = DigitalOffer.objects.create(

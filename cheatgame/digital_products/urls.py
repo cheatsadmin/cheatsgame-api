@@ -24,6 +24,7 @@ from cheatgame.digital_products.customer_fulfillment_apis import (
     CustomerFulfillmentConfirmRemoteCompletionApi,
     CustomerFulfillmentDetailApi,
     CustomerFulfillmentListApi,
+    CustomerPreorderListApi,
 )
 from cheatgame.digital_products.admin_fulfillment_apis import (
     AssignableOperatorDirectoryApi,
@@ -110,6 +111,11 @@ urlpatterns = [
         "customer/fulfillments/",
         CustomerFulfillmentListApi.as_view(),
         name="customer-fulfillment-list",
+    ),
+    path(
+        "customer/preorders/",
+        CustomerPreorderListApi.as_view(),
+        name="customer-preorder-list",
     ),
     path(
         "customer/fulfillments/<uuid:fulfillment_id>/",

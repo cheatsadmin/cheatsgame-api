@@ -15,6 +15,7 @@ from cheatgame.digital_products.models import (
     DigitalOffer,
     DigitalOfferCapacity,
     DigitalOfferSaleState,
+    DigitalGameUpcomingStatus,
     InventoryPool,
     InventoryPoolStatus,
 )
@@ -59,6 +60,7 @@ from cheatgame.users.models import UserTypes
 
 
 COMMERCIAL_SNAPSHOT_REVISION = 1
+PREORDER_PURCHASE_KIND = "preorder"
 
 
 def _require_customer(actor):
@@ -196,6 +198,16 @@ def _load_terms(cart):
             or pool.status != InventoryPoolStatus.ENABLED
         ):
             raise DigitalOfferUnavailableError("Digital Offer is unavailable.")
+        release_metadata = getattr(product, "digital_release_metadata", None)
+        if (
+            release_metadata is not None
+            and release_metadata.upcoming_status
+            not in (
+                DigitalGameUpcomingStatus.PREORDER_OPEN,
+                DigitalGameUpcomingStatus.RELEASED,
+            )
+        ):
+            raise DigitalOfferUnavailableError("Digital Offer is unavailable in this Product state.")
         try:
             selection.full_clean()
             offer.full_clean()
@@ -476,7 +488,23 @@ def _prepare_digital_checkout_atomic(*, actor, client_checkout_uuid):
             unit_price=offer.price,
             quantity=1,
             line_total=offer.price,
-            safe_display_metadata={},
+            safe_display_metadata=(
+                {
+                    "purchase_kind": PREORDER_PURCHASE_KIND,
+                    "release_date": (
+                        item.product.digital_release_metadata.release_date.isoformat()
+                        if item.product.digital_release_metadata.release_date
+                        else None
+                    ),
+                }
+                if (
+                    hasattr(item.product, "digital_release_metadata")
+                    and item.product.digital_release_metadata.preorder_enabled
+                    and item.product.digital_release_metadata.upcoming_status
+                    == DigitalGameUpcomingStatus.PREORDER_OPEN
+                )
+                else {}
+            ),
         )
         lines.append((line, offer.inventory_pool_id))
 

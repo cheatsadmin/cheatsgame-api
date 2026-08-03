@@ -162,10 +162,14 @@ def _validate_activation(offer: DigitalOffer) -> None:
     )
     if (
         release_metadata is not None
-        and release_metadata.upcoming_status != DigitalGameUpcomingStatus.RELEASED
+        and release_metadata.upcoming_status
+        not in (
+            DigitalGameUpcomingStatus.PREORDER_OPEN,
+            DigitalGameUpcomingStatus.RELEASED,
+        )
     ):
         raise OfferTransitionError(
-            "Upcoming games cannot activate a purchasable Offer."
+            "Only PREORDER_OPEN or RELEASED games can activate a purchasable Offer."
         )
     try:
         offer.full_clean()

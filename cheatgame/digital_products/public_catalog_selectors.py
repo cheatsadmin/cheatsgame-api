@@ -37,6 +37,7 @@ EFFECTIVE_PUBLIC_HOLD_STATES = CURRENT_DIGITAL_RESERVATION_STATES
 PUBLIC_UPCOMING_STATUSES = (
     DigitalGameUpcomingStatus.ANNOUNCED,
     DigitalGameUpcomingStatus.COMING_SOON,
+    DigitalGameUpcomingStatus.PREORDER_OPEN,
     DigitalGameUpcomingStatus.DELAYED,
 )
 
@@ -64,8 +65,9 @@ def public_digital_offers():
         .filter(
             Q(delivered_version__product__digital_release_metadata__isnull=True)
             | Q(
-                delivered_version__product__digital_release_metadata__upcoming_status=(
-                    DigitalGameUpcomingStatus.RELEASED
+                delivered_version__product__digital_release_metadata__upcoming_status__in=(
+                    DigitalGameUpcomingStatus.PREORDER_OPEN,
+                    DigitalGameUpcomingStatus.RELEASED,
                 )
             )
         )
@@ -100,9 +102,10 @@ def public_upcoming_digital_games(*, console=""):
         )
         .filter(
             Q(
-                digital_release_metadata__upcoming_status=(
-                    DigitalGameUpcomingStatus.COMING_SOON
-                ),
+                    digital_release_metadata__upcoming_status__in=(
+                        DigitalGameUpcomingStatus.COMING_SOON,
+                        DigitalGameUpcomingStatus.PREORDER_OPEN,
+                    ),
                 digital_release_metadata__release_date__gte=today,
             )
             | (
@@ -187,7 +190,7 @@ def public_digital_games(
     else:
         queryset = queryset.order_by("-updated_at", "pk")
 
-    return queryset.prefetch_related(
+    return queryset.select_related("digital_release_metadata").prefetch_related(
         Prefetch(
             "delivered_versions__digital_offers",
             queryset=public_digital_offers(),
