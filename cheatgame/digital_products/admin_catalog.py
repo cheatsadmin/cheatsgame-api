@@ -14,6 +14,9 @@ from cheatgame.digital_products.services.inventory import (
     get_effective_held_quantity,
     inventory_pool_allowed_actions,
 )
+from cheatgame.digital_products.services.upcoming_games import (
+    evaluate_upcoming_readiness,
+)
 from cheatgame.product.models import (
     AttachmentType,
     Product,
@@ -32,6 +35,16 @@ _READINESS_LABELS = {
     "INVALID_OFFER": "یکی از گزینه‌های فروش پیکربندی معتبر ندارد.",
     "INCOMPATIBLE_SHARED_POOL": "موجودی مشترک ناسازگار است.",
     "LEGACY_QUANTITY_IGNORED": "موجودی قدیمی محصول در فروش دیجیتال استفاده نمی‌شود.",
+}
+
+_UPCOMING_GATE_LABELS = {
+    "GAME_PRODUCT": "این رکورد یک بازی است.",
+    "DIGITAL_AUTHORITY": "مدیریت بازی به بخش بازی‌های دیجیتال سپرده شده است.",
+    "PUBLIC_PRODUCT": "بازی در سایت منتشر شده است.",
+    "UPCOMING_STATUS": "وضعیت بازی در راه معتبر است.",
+    "RELEASE_INFORMATION": "اطلاعات انتشار معتبر است.",
+    "ACTIVE_VERSION": "حداقل یک نسخه فعال PS4 یا PS5 ثبت شده است.",
+    "PUBLIC_IDENTITY": "نام، نشانی سایت و تصویر اصلی کامل است.",
 }
 
 
@@ -84,6 +97,35 @@ def _readiness_projection(product, *, for_deactivation=False):
         evaluate_product_readiness(
             product,
             for_deactivation=for_deactivation,
+        )
+    )
+
+
+def _upcoming_readiness_projection(product):
+    result = evaluate_upcoming_readiness(product)
+    return {
+        "ready_for_publication": result["ready"],
+        "ready_for_authority": result["ready_for_authority"],
+        "gates": [
+            {
+                "code": gate["code"],
+                "label": _UPCOMING_GATE_LABELS[gate["code"]],
+                "passed": gate["passed"],
+            }
+            for gate in result["gates"]
+        ],
+    }
+
+
+def _is_upcoming_product(product):
+    metadata = getattr(product, "digital_release_metadata", None)
+    return bool(
+        metadata
+        and metadata.upcoming_status
+        in (
+            DigitalGameUpcomingStatus.ANNOUNCED,
+            DigitalGameUpcomingStatus.COMING_SOON,
+            DigitalGameUpcomingStatus.DELAYED,
         )
     )
 
@@ -213,7 +255,12 @@ def filter_admin_catalog_games(queryset, values):
         queryset = [
             product
             for product in queryset
-            if evaluate_product_readiness(product)["ready"] is expected
+            if (
+                evaluate_upcoming_readiness(product)["ready"]
+                if _is_upcoming_product(product)
+                else evaluate_product_readiness(product)["ready"]
+            )
+            is expected
         ]
     return queryset
 
@@ -254,6 +301,7 @@ def admin_catalog_game_list_projection(product):
             for offer in non_archived
         ],
         "readiness": _readiness_projection(product),
+        "upcoming_readiness": _upcoming_readiness_projection(product),
         "release_metadata": _release_metadata_projection(product),
         "updated_at": product.updated_at,
     }
@@ -370,6 +418,7 @@ def admin_catalog_game_projection(product, *, actor):
             "updated_at": product.updated_at,
         },
         "release_metadata": _release_metadata_projection(product),
+        "upcoming_readiness": _upcoming_readiness_projection(product),
         "readiness": configuration_readiness,
         "purchase_readiness": _purchase_readiness_projection(
             product,

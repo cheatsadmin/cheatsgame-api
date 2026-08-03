@@ -42,12 +42,12 @@ CAPACITY_DISCLOSURES = {
 }
 
 UPCOMING_STATUS_LABELS = {
-    DigitalGameUpcomingStatus.ANNOUNCED: "بزودی",
-    DigitalGameUpcomingStatus.COMING_SOON: "بزودی",
+    DigitalGameUpcomingStatus.ANNOUNCED: "معرفی‌شده",
+    DigitalGameUpcomingStatus.COMING_SOON: "به‌زودی",
     DigitalGameUpcomingStatus.PREORDER_OPEN: "پیش‌خرید فعال",
-    DigitalGameUpcomingStatus.RELEASED: "منتشر شده",
-    DigitalGameUpcomingStatus.DELAYED: "تأخیر در انتشار",
-    DigitalGameUpcomingStatus.CANCELLED: "لغو شده",
+    DigitalGameUpcomingStatus.RELEASED: "منتشرشده",
+    DigitalGameUpcomingStatus.DELAYED: "تأخیرخورده",
+    DigitalGameUpcomingStatus.CANCELLED: "لغوشده",
 }
 
 

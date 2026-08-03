@@ -10,6 +10,7 @@ from django.db.models import (
     Value,
 )
 from django.db.models.functions import Coalesce, Greatest
+from django.utils import timezone
 
 from cheatgame.digital_products.models import (
     DigitalGameUpcomingStatus,
@@ -88,13 +89,38 @@ def public_digital_offers():
 
 
 def public_upcoming_digital_games(*, console=""):
+    today = timezone.localdate()
     queryset = (
         Product.objects.filter(
             product_type=ProductType.GAME.value,
             status=ProductStatus.PUBLISHED,
+            commerce_authority=ProductCommerceAuthority.DIGITAL_PRODUCTS,
             digital_release_metadata__upcoming_status__in=PUBLIC_UPCOMING_STATUSES,
             delivered_versions__is_active=True,
         )
+        .filter(
+            Q(
+                digital_release_metadata__upcoming_status=(
+                    DigitalGameUpcomingStatus.COMING_SOON
+                ),
+                digital_release_metadata__release_date__gte=today,
+            )
+            | (
+                Q(
+                    digital_release_metadata__upcoming_status__in=(
+                        DigitalGameUpcomingStatus.ANNOUNCED,
+                        DigitalGameUpcomingStatus.DELAYED,
+                    ),
+                )
+                & (
+                    Q(digital_release_metadata__release_date__isnull=True)
+                    | Q(digital_release_metadata__release_date__gte=today)
+                )
+            )
+        )
+        .exclude(title="")
+        .exclude(slug="")
+        .exclude(main_image="")
         .select_related("digital_release_metadata")
         .prefetch_related(
             Prefetch(

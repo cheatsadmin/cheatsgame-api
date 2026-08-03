@@ -38,10 +38,16 @@ class UpcomingGamesFoundationTests(TestCase):
             user_type=UserTypes.ADMIN,
         )
 
-    def game(self, title, *, status=ProductStatus.PUBLISHED):
+    def game(
+        self,
+        title,
+        *,
+        status=ProductStatus.PUBLISHED,
+        commerce_authority=ProductCommerceAuthority.DIGITAL_PRODUCTS,
+    ):
         product = Product.objects.create(
             product_type=ProductType.GAME,
-            commerce_authority=ProductCommerceAuthority.DIGITAL_PRODUCTS,
+            commerce_authority=commerce_authority,
             title=title,
             status=status,
             main_image="tests/upcoming-cover.jpg",
@@ -102,7 +108,10 @@ class UpcomingGamesFoundationTests(TestCase):
         unknown = self.game("Unknown Date")
         nearest = self.game("Nearest")
         later = self.game("Later")
-        self.metadata(unknown)
+        self.metadata(
+            unknown,
+            upcoming_status=DigitalGameUpcomingStatus.ANNOUNCED,
+        )
         self.metadata(nearest, release_date=date.today() + timedelta(days=10))
         self.metadata(later, release_date=date.today() + timedelta(days=30))
 
@@ -115,15 +124,62 @@ class UpcomingGamesFoundationTests(TestCase):
         )
         row = response.data["results"][0]
         self.assertEqual(row["supported_customer_consoles"], ["ps5"])
-        self.assertEqual(row["upcoming_status_label"], "بزودی")
+        self.assertEqual(row["upcoming_status_label"], "به‌زودی")
         self.assertFalse(row["preorder_available"])
         self.assertIsNone(row["preorder_price"])
         self.assertNotIn("purchase_flow", row)
+
+    def test_public_upcoming_requires_digital_authority_but_no_offer_or_inventory(self):
+        digital = self.game("Digital Upcoming")
+        standard = self.game(
+            "Standard Upcoming",
+            commerce_authority=ProductCommerceAuthority.STANDARD_COMMERCE,
+        )
+        self.metadata(
+            digital,
+            release_date=date.today() + timedelta(days=15),
+        )
+        self.metadata(
+            standard,
+            release_date=date.today() + timedelta(days=15),
+        )
+
+        response = self.client.get(self.public_url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            [row["title"] for row in response.data["results"]],
+            ["Digital Upcoming"],
+        )
+        self.assertFalse(DigitalOffer.objects.filter(delivered_version__product=digital).exists())
+        self.assertFalse(InventoryPool.objects.exists())
+
+    def test_public_status_labels_distinguish_announced_and_delayed(self):
+        announced = self.game("Announced")
+        delayed = self.game("Delayed")
+        self.metadata(
+            announced,
+            upcoming_status=DigitalGameUpcomingStatus.ANNOUNCED,
+        )
+        self.metadata(
+            delayed,
+            upcoming_status=DigitalGameUpcomingStatus.DELAYED,
+        )
+
+        response = self.client.get(self.public_url)
+        labels = {
+            row["title"]: row["upcoming_status_label"]
+            for row in response.data["results"]
+        }
+
+        self.assertEqual(labels["Announced"], "معرفی‌شده")
+        self.assertEqual(labels["Delayed"], "تأخیرخورده")
 
     def test_released_cancelled_hidden_and_wrong_console_are_excluded(self):
         released = self.game("Released")
         cancelled = self.game("Cancelled")
         hidden = self.game("Hidden", status=ProductStatus.HIDDEN)
+        draft = self.game("Draft", status=ProductStatus.DRAFT)
         ps4_only = self.game("PS4 Only")
         ps4_only.delivered_versions.all().delete()
         DeliveredVersion.objects.create(
@@ -133,9 +189,22 @@ class UpcomingGamesFoundationTests(TestCase):
         self.metadata(released, upcoming_status=DigitalGameUpcomingStatus.RELEASED)
         self.metadata(cancelled, upcoming_status=DigitalGameUpcomingStatus.CANCELLED)
         self.metadata(hidden)
+        self.metadata(draft)
         self.metadata(ps4_only)
 
         response = self.client.get(self.public_url, {"console": "ps5"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["results"], [])
+
+    def test_stale_release_date_is_excluded_from_public_upcoming(self):
+        stale = self.game("Stale Upcoming")
+        self.metadata(
+            stale,
+            release_date=date.today() - timedelta(days=1),
+        )
+
+        response = self.client.get(self.public_url)
+
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["results"], [])
 
@@ -167,6 +236,60 @@ class UpcomingGamesFoundationTests(TestCase):
             False,
         )
 
+    def test_admin_rejects_incoherent_coming_soon_release_information(self):
+        game = self.game("Invalid Upcoming", status=ProductStatus.HIDDEN)
+        self.client.force_authenticate(self.admin)
+        url = f"/api/digital-products/admin/catalog/games/{game.pk}/release-metadata/"
+        base = {
+            "upcoming_status": DigitalGameUpcomingStatus.COMING_SOON,
+            "preorder_enabled": False,
+            "preorder_open_at": None,
+            "preorder_close_at": None,
+            "publish": True,
+        }
+
+        missing = self.client.post(url, {**base, "release_date": None}, format="json")
+        past = self.client.post(
+            url,
+            {**base, "release_date": str(date.today() - timedelta(days=1))},
+            format="json",
+        )
+
+        self.assertEqual(missing.status_code, 400)
+        self.assertEqual(past.status_code, 400)
+        self.assertFalse(DigitalGameReleaseMetadata.objects.filter(product=game).exists())
+
+    def test_admin_can_assign_digital_authority_from_upcoming_readiness(self):
+        game = self.game(
+            "Authority Ready Upcoming",
+            commerce_authority=ProductCommerceAuthority.STANDARD_COMMERCE,
+        )
+        self.metadata(
+            game,
+            release_date=date.today() + timedelta(days=30),
+        )
+        self.client.force_authenticate(self.admin)
+
+        detail = self.client.get(
+            f"/api/digital-products/admin/catalog/games/{game.pk}/"
+        )
+        activation = self.client.post(
+            f"/api/digital-products/admin/catalog/games/{game.pk}/activate-digital/",
+            {},
+            format="json",
+        )
+
+        self.assertFalse(detail.data["upcoming_readiness"]["ready_for_publication"])
+        self.assertTrue(detail.data["upcoming_readiness"]["ready_for_authority"])
+        self.assertFalse(detail.data["readiness"]["ready"])
+        self.assertEqual(activation.status_code, 200)
+        self.assertEqual(activation.data["game"]["commerce_authority"], "digital_game")
+        self.assertTrue(
+            activation.data["upcoming_readiness"]["ready_for_publication"]
+        )
+        self.assertFalse(activation.data["purchase_readiness"]["ready_for_purchase"])
+        self.assertFalse(DigitalOffer.objects.filter(delivered_version__product=game).exists())
+
     def test_active_offer_blocks_upcoming_admin_transition_and_public_purchase(self):
         game = self.game("Already Sellable")
         offer = self.active_offer(game)
@@ -187,7 +310,10 @@ class UpcomingGamesFoundationTests(TestCase):
             DigitalGameReleaseMetadata.objects.filter(product=game).exists()
         )
 
-        self.metadata(game)
+        self.metadata(
+            game,
+            release_date=date.today() + timedelta(days=20),
+        )
         normal_catalog = self.client.get("/api/digital-products/catalog/games/")
         self.assertNotIn(game.title, str(normal_catalog.data))
         self.assertEqual(

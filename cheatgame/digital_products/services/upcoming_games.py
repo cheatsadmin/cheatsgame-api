@@ -1,4 +1,5 @@
 from django.db import transaction
+from django.utils import timezone
 
 from cheatgame.digital_products.models import (
     DigitalGameReleaseMetadata,
@@ -9,7 +10,12 @@ from cheatgame.digital_products.services import (
     DigitalProductsValidationError,
     require_manager_or_admin,
 )
-from cheatgame.product.models import Product, ProductStatus, ProductType
+from cheatgame.product.models import (
+    Product,
+    ProductCommerceAuthority,
+    ProductStatus,
+    ProductType,
+)
 
 
 UPCOMING_DISPLAY_STATUSES = {
@@ -17,6 +23,69 @@ UPCOMING_DISPLAY_STATUSES = {
     DigitalGameUpcomingStatus.COMING_SOON,
     DigitalGameUpcomingStatus.DELAYED,
 }
+
+
+def evaluate_upcoming_readiness(product):
+    """Return the public-display gates without consulting commercial Offers."""
+    metadata = getattr(product, "digital_release_metadata", None)
+    display_status = bool(
+        metadata and metadata.upcoming_status in UPCOMING_DISPLAY_STATUSES
+    )
+    release_date = metadata.release_date if metadata else None
+    release_information_coherent = bool(
+        display_status
+        and (
+            metadata.upcoming_status != DigitalGameUpcomingStatus.COMING_SOON
+            or release_date is not None
+        )
+        and (release_date is None or release_date >= timezone.localdate())
+    )
+    gates = [
+        {
+            "code": "GAME_PRODUCT",
+            "passed": product.product_type == ProductType.GAME.value,
+        },
+        {
+            "code": "DIGITAL_AUTHORITY",
+            "passed": (
+                product.commerce_authority
+                == ProductCommerceAuthority.DIGITAL_PRODUCTS
+            ),
+        },
+        {
+            "code": "PUBLIC_PRODUCT",
+            "passed": product.status == ProductStatus.PUBLISHED,
+        },
+        {
+            "code": "UPCOMING_STATUS",
+            "passed": display_status,
+        },
+        {
+            "code": "RELEASE_INFORMATION",
+            "passed": release_information_coherent,
+        },
+        {
+            "code": "ACTIVE_VERSION",
+            "passed": product.delivered_versions.filter(is_active=True).exists(),
+        },
+        {
+            "code": "PUBLIC_IDENTITY",
+            "passed": bool(
+                str(product.title or "").strip()
+                and str(product.slug or "").strip()
+                and product.main_image
+            ),
+        },
+    ]
+    return {
+        "ready": all(gate["passed"] for gate in gates),
+        "ready_for_authority": all(
+            gate["passed"]
+            for gate in gates
+            if gate["code"] != "DIGITAL_AUTHORITY"
+        ),
+        "gates": gates,
+    }
 
 
 def update_upcoming_game_metadata(
@@ -45,6 +114,18 @@ def update_upcoming_game_metadata(
         raise DigitalProductsValidationError(
             "Preorder close time must follow the open time."
         )
+    if upcoming_status in UPCOMING_DISPLAY_STATUSES:
+        if (
+            upcoming_status == DigitalGameUpcomingStatus.COMING_SOON
+            and release_date is None
+        ):
+            raise DigitalProductsValidationError(
+                "Coming-soon publication requires a release date."
+            )
+        if release_date is not None and release_date < timezone.localdate():
+            raise DigitalProductsValidationError(
+                "Upcoming release date cannot be in the past."
+            )
 
     with transaction.atomic():
         try:

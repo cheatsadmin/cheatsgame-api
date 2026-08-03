@@ -7,6 +7,9 @@ from cheatgame.digital_products.services import (
     require_admin,
     require_manager_or_admin,
 )
+from cheatgame.digital_products.services.upcoming_games import (
+    evaluate_upcoming_readiness,
+)
 from cheatgame.product.models import (
     DeliveredVersion,
     NativeConsole,
@@ -95,7 +98,11 @@ def activate_digital_product(*, product_id, actor):
         if product.commerce_authority == ProductCommerceAuthority.DIGITAL_PRODUCTS:
             return product
         readiness = evaluate_product_readiness(product)
-        if not readiness["ready"]:
+        upcoming_readiness = evaluate_upcoming_readiness(product)
+        if (
+            not readiness["ready"]
+            and not upcoming_readiness["ready_for_authority"]
+        ):
             error = DigitalProductsConflictError("Product is not ready for Digital Products authority.")
             error.readiness = readiness
             raise error
