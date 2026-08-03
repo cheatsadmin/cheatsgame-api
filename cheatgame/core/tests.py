@@ -70,6 +70,30 @@ class ProductionSettingsTests(SimpleTestCase):
         with self.assertRaises(ImproperlyConfigured):
             self.import_production_settings(env)
 
+    def test_production_runtime_rejects_financial_certification_before_startup(self):
+        env = {
+            **PRODUCTION_ENV,
+            "CHEATSGAME_RUNTIME_ENVIRONMENT": "production",
+            "FINANCIAL_CERTIFICATION_PROVIDER_ENABLED": "True",
+            "FINANCIAL_CERTIFICATION_SECRET": "x" * 48,
+            "FINANCIAL_CERTIFICATION_ALLOWED_HOSTS": "api.example.com",
+        }
+
+        with self.assertRaises(ImproperlyConfigured):
+            self.import_production_settings(env)
+
+    def test_staging_identity_rejects_nonstaging_certification_host(self):
+        env = {
+            **PRODUCTION_ENV,
+            "CHEATSGAME_RUNTIME_ENVIRONMENT": "staging",
+            "FINANCIAL_CERTIFICATION_PROVIDER_ENABLED": "True",
+            "FINANCIAL_CERTIFICATION_SECRET": "x" * 48,
+            "FINANCIAL_CERTIFICATION_ALLOWED_HOSTS": "api.example.com",
+        }
+
+        with self.assertRaises(ImproperlyConfigured):
+            self.import_production_settings(env)
+
     @override_settings(PAYMENT_FAKE_PROVIDER_ENABLED=False)
     def test_fake_callback_is_not_wired_when_provider_is_disabled(self):
         sys.modules.pop("cheatgame.api.urls", None)

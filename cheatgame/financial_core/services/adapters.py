@@ -299,6 +299,13 @@ def build_production_adapter_registry():
 
         adapter = ZarinpalAdapter.from_settings()
         adapters[(adapter.adapter_key, adapter.contract_version)] = adapter
+    if getattr(settings, "FINANCIAL_CERTIFICATION_PROVIDER_ENABLED", False):
+        from cheatgame.financial_core.services.financial_certification import (
+            FinancialCertificationAdapter,
+        )
+
+        adapter = FinancialCertificationAdapter.from_settings()
+        adapters[(adapter.adapter_key, adapter.contract_version)] = adapter
     return ProviderAdapterRegistry(adapters)
 
 

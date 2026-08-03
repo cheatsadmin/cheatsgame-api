@@ -16,6 +16,7 @@ SAFE_METADATA_KEYS = frozenset(
         "amount",
         "sequence",
         "outcome",
+        "provider_reference",
         "finding_type",
         "severity",
     }

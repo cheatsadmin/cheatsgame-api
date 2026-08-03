@@ -6,6 +6,14 @@ DEBUG = env.bool("DEBUG", default=False)
 if DEBUG:
     raise ImproperlyConfigured("DEBUG must be False in production.")
 
+FINANCIAL_CERTIFICATION_PROVIDER_ENABLED = env.bool(
+    "FINANCIAL_CERTIFICATION_PROVIDER_ENABLED", default=False
+)
+FINANCIAL_CERTIFICATION_SECRET = env("FINANCIAL_CERTIFICATION_SECRET", default="")
+FINANCIAL_CERTIFICATION_ALLOWED_HOSTS = env.list(
+    "FINANCIAL_CERTIFICATION_ALLOWED_HOSTS", default=[]
+)
+
 PAYMENT_GATEWAY_PROVIDER = env("PAYMENT_GATEWAY_PROVIDER", default=PAYMENT_GATEWAY_PROVIDER)
 if PAYMENT_GATEWAY_PROVIDER.strip().lower() == "fake":
     raise ImproperlyConfigured("The fake payment provider is forbidden in production.")
@@ -35,6 +43,33 @@ ALLOWED_HOSTS = list(dict.fromkeys([
     "localhost",
     "[::1]",
 ]))
+
+CHEATSGAME_RUNTIME_ENVIRONMENT = env(
+    "CHEATSGAME_RUNTIME_ENVIRONMENT", default="production"
+).strip().lower()
+if FINANCIAL_CERTIFICATION_PROVIDER_ENABLED:
+    if CHEATSGAME_RUNTIME_ENVIRONMENT != "staging":
+        raise ImproperlyConfigured(
+            "The Financial Certification provider is forbidden outside staging."
+        )
+    if len(FINANCIAL_CERTIFICATION_SECRET) < 32:
+        raise ImproperlyConfigured(
+            "FINANCIAL_CERTIFICATION_SECRET must contain at least 32 characters."
+        )
+    certification_hosts = {
+        str(host).strip().lower().rstrip(".")
+        for host in FINANCIAL_CERTIFICATION_ALLOWED_HOSTS
+        if str(host).strip()
+    }
+    configured_hosts = {str(host).strip().lower().rstrip(".") for host in ALLOWED_HOSTS}
+    if (
+        not certification_hosts
+        or not certification_hosts.issubset(configured_hosts)
+        or any("staging" not in host for host in certification_hosts)
+    ):
+        raise ImproperlyConfigured(
+            "Financial Certification hosts must be explicit staging ALLOWED_HOSTS."
+        )
 
 CORS_ALLOW_ALL_ORIGINS = False
 CORS_ALLOWED_ORIGINS = env.list(
