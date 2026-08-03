@@ -4,12 +4,17 @@ from django.db import transaction
 
 from cheatgame.financial_core.models import (
     CallbackAuthenticationStrength,
+    CommercialAccountingPolicyVersion,
+    FinancialAccount,
+    FinancialAccountStatus,
+    FinancialAccountType,
     MerchantAccountVersion,
     MoneyUnit,
     PaymentTransactionOperation,
     ProviderCapabilityVersion,
     ProviderDefinition,
     ProviderVerificationSemantics,
+    ReceiptAccountingPolicyVersion,
 )
 from cheatgame.financial_core.services.adapters import ADAPTER_CONTRACT_VERSION
 from cheatgame.financial_core.services.financial_certification import (
@@ -37,6 +42,7 @@ class Command(BaseCommand):
             provider = self._provider()
             capability = self._capability(provider)
             account = self._account(provider, capability)
+            self._accounting_policies(account)
             for item in (provider, account):
                 changed = []
                 if not item.is_enabled:
@@ -63,12 +69,26 @@ class Command(BaseCommand):
             account_key=settings.FINANCIAL_CERTIFICATION_ACCOUNT_KEY,
             version=1,
         ).first() if provider else None
+        receipt_policy = (
+            ReceiptAccountingPolicyVersion.objects.filter(
+                merchant_account_version=account,
+                active_for_new_applications=True,
+            ).first()
+            if account
+            else None
+        )
+        commercial_policy = CommercialAccountingPolicyVersion.objects.filter(
+            commerce_authority="digital_products",
+            active_for_new_finalizations=True,
+        ).first()
         self.stdout.write(
             "Financial Certification configuration: "
             f"provider={'present' if provider else 'missing'}, "
             f"capability={'present' if capability else 'missing'}, "
             f"account={'present' if account else 'missing'}, "
-            f"enabled={bool(provider and provider.is_enabled and account and account.is_enabled)}"
+            f"enabled={bool(provider and provider.is_enabled and account and account.is_enabled)}, "
+            f"receipt_accounting={'present' if receipt_policy else 'missing'}, "
+            f"commercial_accounting={'present' if commercial_policy else 'missing'}"
         )
 
     @staticmethod
@@ -142,3 +162,89 @@ class Command(BaseCommand):
             },
         )
         return self._ensure_exact(account, expected)
+
+    def _financial_account(self, *, key, name, account_type):
+        account, _ = FinancialAccount.objects.get_or_create(
+            key=key,
+            defaults={
+                "name": name,
+                "account_type": account_type,
+                "currency": MoneyUnit.IRR,
+                "status": FinancialAccountStatus.ACTIVE,
+            },
+        )
+        return self._ensure_exact(
+            account,
+            {
+                "name": name,
+                "account_type": account_type,
+                "currency": MoneyUnit.IRR,
+                "status": FinancialAccountStatus.ACTIVE,
+            },
+        )
+
+    def _accounting_policies(self, account):
+        clearing = self._financial_account(
+            key="staging-certification-provider-clearing",
+            name="Staging certification provider clearing",
+            account_type=FinancialAccountType.ASSET,
+        )
+        liability = self._financial_account(
+            key="staging-certification-customer-unapplied",
+            name="Staging certification customer unapplied funds",
+            account_type=FinancialAccountType.LIABILITY,
+        )
+        merchandise = self._financial_account(
+            key="staging-certification-digital-revenue",
+            name="Staging certification digital revenue",
+            account_type=FinancialAccountType.REVENUE,
+        )
+        shipping = self._financial_account(
+            key="staging-certification-shipping-revenue",
+            name="Staging certification shipping revenue",
+            account_type=FinancialAccountType.REVENUE,
+        )
+        receipt_expected = {
+            "provider_clearing_account_id": clearing.pk,
+            "customer_unapplied_funds_account_id": liability.pk,
+            "currency": MoneyUnit.IRR,
+        }
+        receipt_policy, _ = ReceiptAccountingPolicyVersion.objects.get_or_create(
+            merchant_account_version=account,
+            policy_key="staging-certification-receipt-v1",
+            version=1,
+            defaults={
+                "provider_clearing_account": clearing,
+                "customer_unapplied_funds_account": liability,
+                "currency": MoneyUnit.IRR,
+                "active_for_new_applications": True,
+            },
+        )
+        self._ensure_exact(receipt_policy, receipt_expected)
+        if not receipt_policy.active_for_new_applications:
+            if ReceiptAccountingPolicyVersion.objects.filter(
+                merchant_account_version=account,
+                active_for_new_applications=True,
+            ).exclude(pk=receipt_policy.pk).exists():
+                raise CommandError(
+                    "Another receipt accounting policy is already active for certification."
+                )
+            receipt_policy.active_for_new_applications = True
+            receipt_policy.save(update_fields=("active_for_new_applications", "updated_at"))
+
+        active_commercial = CommercialAccountingPolicyVersion.objects.filter(
+            commerce_authority="digital_products",
+            active_for_new_finalizations=True,
+        ).first()
+        if active_commercial:
+            return
+        CommercialAccountingPolicyVersion.objects.create(
+            policy_key="staging-certification-digital-v1",
+            version=1,
+            commerce_authority="digital_products",
+            customer_unapplied_funds_account=liability,
+            merchandise_revenue_account=merchandise,
+            shipping_revenue_account=shipping,
+            currency=MoneyUnit.IRR,
+            active_for_new_finalizations=True,
+        )

@@ -30,13 +30,12 @@ from cheatgame.financial_core.models import (
     CommercialAccountingPolicyVersion,
     CommercialFinalization,
     DigitalFulfillmentObligation,
-    FinancialAccount,
-    FinancialAccountType,
     FinancialAllocation,
     JournalEntry,
     MoneyUnit,
     PaymentAttempt,
     ProviderRequestOutcome,
+    ReceiptAccountingPolicyVersion,
     Verification,
     VerificationWorkItem,
 )
@@ -228,30 +227,17 @@ class FinancialCertificationLifecycleTests(CommercialFinalizerFixture, Transacti
         admin.is_admin = True
         admin.phone_verified = True
         admin.save(update_fields=("user_type", "is_admin", "phone_verified", "updated_at"))
-        _, _, liability = self.accounting_policy(attempt.merchant_account_version)
-        merchandise = FinancialAccount.objects.create(
-            key=f"certification-digital-revenue:{uuid4()}",
-            name="Certification digital revenue",
-            account_type=FinancialAccountType.REVENUE,
-        )
-        shipping = FinancialAccount.objects.create(
-            key=f"certification-digital-shipping:{uuid4()}",
-            name="Certification digital shipping",
-            account_type=FinancialAccountType.REVENUE,
-        )
-        CommercialAccountingPolicyVersion.objects.create(
-            policy_key="commercial-certification-digital-v1",
-            version=1,
-            commerce_authority="digital_products",
-            customer_unapplied_funds_account=liability,
-            merchandise_revenue_account=merchandise,
-            shipping_revenue_account=shipping,
-            active_for_new_finalizations=True,
-        )
         return customer, checkout, attempt, admin, pool
 
     def test_admin_certification_uses_full_runtime_and_defers_preorder_fulfillment(self):
         _, _, attempt, admin, pool = self._graph()
+        self.assertEqual(
+            ReceiptAccountingPolicyVersion.objects.filter(
+                merchant_account_version=attempt.merchant_account_version,
+                active_for_new_applications=True,
+            ).count(),
+            1,
+        )
         stdout = StringIO()
         call_command(
             "certify_staging_payment",
@@ -353,6 +339,10 @@ class FinancialCertificationLifecycleTests(CommercialFinalizerFixture, Transacti
             )
 
     def test_wrong_provider_attempt_cannot_be_certified(self):
+        CommercialAccountingPolicyVersion.objects.filter(
+            commerce_authority="digital_products",
+            active_for_new_finalizations=True,
+        ).update(active_for_new_finalizations=False)
         placement, _ = self.ready_digital(preorder=True)
         attempt = placement.payment.attempts.get()
         admin = self.make_user()

@@ -25,6 +25,11 @@ python manage.py configure_financial_certification
 python manage.py configure_financial_certification --apply
 ```
 
+The apply operation also provisions the staging-only receipt accounts and
+policy required by funds recognition. If no active Digital Products commercial
+accounting policy exists, it provisions the staging certification policy; an
+existing active Digital Products policy remains authoritative.
+
 After the customer creates a payment request with provider
 `financial_certification`, an authorized server operator records one explicit
 Admin certification:
