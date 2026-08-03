@@ -224,9 +224,8 @@ class FinancialCertificationLifecycleTests(CommercialFinalizerFixture, Transacti
         attempt = PaymentAttempt.objects.get(payment__order__checkout=checkout)
         admin = self.make_user()
         admin.user_type = UserTypes.ADMIN
-        admin.is_admin = True
         admin.phone_verified = True
-        admin.save(update_fields=("user_type", "is_admin", "phone_verified", "updated_at"))
+        admin.save(update_fields=("user_type", "phone_verified", "updated_at"))
         return customer, checkout, attempt, admin, pool
 
     def test_admin_certification_uses_full_runtime_and_defers_preorder_fulfillment(self):
@@ -347,8 +346,7 @@ class FinancialCertificationLifecycleTests(CommercialFinalizerFixture, Transacti
         attempt = placement.payment.attempts.get()
         admin = self.make_user()
         admin.user_type = UserTypes.ADMIN
-        admin.is_admin = True
-        admin.save(update_fields=("user_type", "is_admin", "updated_at"))
+        admin.save(update_fields=("user_type", "updated_at"))
         with self.assertRaises(CommandError):
             call_command(
                 "certify_staging_payment",

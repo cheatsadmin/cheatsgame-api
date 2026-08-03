@@ -52,7 +52,6 @@ class Command(BaseCommand):
             if (
                 actor is None
                 or not actor.is_active
-                or not actor.is_admin
                 or actor.user_type != UserTypes.ADMIN
             ):
                 raise CommandError("An active application Admin actor is required.")
