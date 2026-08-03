@@ -1,8 +1,12 @@
+import os
+import subprocess
+import sys
 from datetime import date, timedelta
 from io import StringIO
 from threading import Barrier, Thread
 from uuid import uuid4
 
+from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured, ValidationError
 from django.core.management import call_command
 from django.core.management.base import CommandError
@@ -98,6 +102,29 @@ def request_envelope(**overrides):
 
 @override_settings(**CERTIFICATION_SETTINGS)
 class FinancialCertificationAdapterTests(SimpleTestCase):
+    def test_enabled_registry_can_import_certification_command_in_fresh_process(self):
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "DJANGO_SETTINGS_MODULE": "config.django.base",
+                "ALLOWED_HOSTS": "testserver",
+                "CHEATSGAME_RUNTIME_ENVIRONMENT": "test",
+                "FINANCIAL_CERTIFICATION_PROVIDER_ENABLED": "True",
+                "FINANCIAL_CERTIFICATION_SECRET": "x" * 48,
+                "FINANCIAL_CERTIFICATION_ALLOWED_HOSTS": "testserver",
+            }
+        )
+        result = subprocess.run(
+            [sys.executable, "manage.py", "help", "certify_staging_payment"],
+            cwd=settings.BASE_DIR,
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+
     def test_request_stays_pending_and_verification_uses_immutable_irr(self):
         adapter = FinancialCertificationAdapter.from_settings()
         request = request_envelope()

@@ -17,10 +17,14 @@ from cheatgame.financial_core.models import (
     VerificationWorkType,
     Payment,
 )
+from cheatgame.financial_core.services.adapters import (
+    ADAPTER_CONTRACT_VERSION,
+    build_production_adapter_registry,
+)
 from cheatgame.financial_core.services.events import append_financial_event
 from cheatgame.financial_core.services.financial_certification import (
+    FINANCIAL_CERTIFICATION_ADAPTER_KEY,
     FINANCIAL_CERTIFICATION_PROVIDER_KEY,
-    FinancialCertificationAdapter,
     certification_authority,
     certification_identity_from_transaction,
     certification_reference,
@@ -46,7 +50,10 @@ class Command(BaseCommand):
         del args
         if not options["confirm"]:
             raise CommandError("--confirm is required.")
-        adapter = FinancialCertificationAdapter.from_settings()
+        adapter = build_production_adapter_registry().resolve(
+            adapter_key=FINANCIAL_CERTIFICATION_ADAPTER_KEY,
+            contract_version=ADAPTER_CONTRACT_VERSION,
+        )
         with transaction.atomic():
             actor = get_user_model().objects.select_for_update().filter(pk=options["actor_id"]).first()
             if (
