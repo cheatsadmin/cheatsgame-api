@@ -1,6 +1,8 @@
 from datetime import timedelta
 
+from django.db import connection
 from django.test import TransactionTestCase
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -64,10 +66,12 @@ class PreorderV1Tests(CommercialFinalizerFixture, TransactionTestCase):
         self.assertFalse(Entitlement.objects.exists())
 
         self.client.force_authenticate(placement.order.user)
-        response = self.client.get(
-            "/api/digital-products/customer/preorders/"
-        )
+        with CaptureQueriesContext(connection) as preorder_queries:
+            response = self.client.get(
+                "/api/digital-products/customer/preorders/"
+            )
         self.assertEqual(response.status_code, 200)
+        self.assertLessEqual(len(preorder_queries), 6)
         self.assertEqual(len(response.data), 1)
         self.assertEqual(
             response.data[0]["status"]["code"],

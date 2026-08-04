@@ -1,7 +1,9 @@
 from unittest.mock import patch
 from uuid import uuid4
 
+from django.db import connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 from rest_framework.test import APIClient
 
 from cheatgame.digital_products.models import (
@@ -120,6 +122,50 @@ class AdminDigitalCatalogContractTests(TestCase):
             {"commerce_authority": "digital_game"},
         )
         self.assertEqual(digital.data["results"][0]["id"], other.pk)
+
+    def test_list_and_readiness_filter_query_budgets_are_constant(self):
+        for index in range(12):
+            game = self.product(f"Scaled Admin Game {index}")
+            version = DeliveredVersion.objects.create(
+                product=game,
+                native_console=NativeConsole.PS4,
+            )
+            create_digital_offer(
+                delivered_version_id=version.pk,
+                customer_console=NativeConsole.PS4,
+                capacity=DigitalOfferCapacity.CAPACITY_1,
+                price="100000",
+                initial_stock=1,
+                actor=self.manager,
+            )
+
+        with CaptureQueriesContext(connection) as list_queries:
+            response = self.client.get(
+                f"{self.root}/games/",
+                {"limit": 50, "offset": 0},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 13)
+        list_sql = [
+            query["sql"]
+            for query in list_queries.captured_queries
+            if not query["sql"].startswith(("SAVEPOINT", "RELEASE SAVEPOINT"))
+        ]
+        self.assertLessEqual(len(list_sql), 6)
+
+        with CaptureQueriesContext(connection) as readiness_queries:
+            filtered = self.client.get(
+                f"{self.root}/games/",
+                {"readiness": "ready", "limit": 50, "offset": 0},
+            )
+        self.assertEqual(filtered.status_code, 200)
+        self.assertEqual(filtered.data["count"], 13)
+        readiness_sql = [
+            query["sql"]
+            for query in readiness_queries.captured_queries
+            if not query["sql"].startswith(("SAVEPOINT", "RELEASE SAVEPOINT"))
+        ]
+        self.assertLessEqual(len(readiness_sql), 5)
 
     def test_detail_composes_frozen_catalog_offer_and_inventory_authorities(self):
         Attachment.objects.create(

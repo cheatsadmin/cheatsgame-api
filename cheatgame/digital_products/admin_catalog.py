@@ -97,12 +97,14 @@ def _readiness_projection(product, *, for_deactivation=False):
         evaluate_product_readiness(
             product,
             for_deactivation=for_deactivation,
+            use_prefetched=True,
+            validate_offer_models=False,
         )
     )
 
 
 def _upcoming_readiness_projection(product):
-    result = evaluate_upcoming_readiness(product)
+    result = evaluate_upcoming_readiness(product, use_prefetched=True)
     return {
         "ready_for_publication": result["ready"],
         "ready_for_authority": result["ready_for_authority"],
@@ -259,9 +261,13 @@ def filter_admin_catalog_games(queryset, values):
             product
             for product in queryset
             if (
-                evaluate_upcoming_readiness(product)["ready"]
+                evaluate_upcoming_readiness(product, use_prefetched=True)["ready"]
                 if _is_upcoming_product(product)
-                else evaluate_product_readiness(product)["ready"]
+                else evaluate_product_readiness(
+                    product,
+                    use_prefetched=True,
+                    validate_offer_models=False,
+                )["ready"]
             )
             is expected
         ]

@@ -30,7 +30,7 @@ DATED_PUBLIC_STATES = {
 }
 
 
-def evaluate_upcoming_readiness(product):
+def evaluate_upcoming_readiness(product, *, use_prefetched=False):
     """Return the public-display gates without consulting commercial Offers."""
     metadata = getattr(product, "digital_release_metadata", None)
     display_status = bool(
@@ -44,6 +44,16 @@ def evaluate_upcoming_readiness(product):
             or release_date is not None
         )
         and (release_date is None or release_date >= timezone.localdate())
+    )
+    prefetched_versions = getattr(
+        product,
+        "_prefetched_objects_cache",
+        {},
+    ).get("delivered_versions") if use_prefetched else None
+    has_active_version = (
+        any(version.is_active for version in prefetched_versions)
+        if prefetched_versions is not None
+        else product.delivered_versions.filter(is_active=True).exists()
     )
     gates = [
         {
@@ -71,7 +81,7 @@ def evaluate_upcoming_readiness(product):
         },
         {
             "code": "ACTIVE_VERSION",
-            "passed": product.delivered_versions.filter(is_active=True).exists(),
+            "passed": has_active_version,
         },
         {
             "code": "PUBLIC_IDENTITY",

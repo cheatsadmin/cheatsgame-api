@@ -131,6 +131,7 @@ class CustomerPreorderListApi(CustomerFulfillmentApi):
             DigitalCheckoutLineSnapshot.objects.select_related(
                 "checkout_line__checkout",
             )
+            .prefetch_related("checkout_line__checkout__orders")
             .filter(
                 safe_display_metadata__purchase_kind="preorder",
                 checkout_line__checkout__orders__user=request.user,
@@ -160,7 +161,10 @@ class CustomerPreorderListApi(CustomerFulfillmentApi):
                 or metadata.release_date is None
             ):
                 continue
-            order = snapshot.checkout_line.checkout.orders.get()
+            orders = list(snapshot.checkout_line.checkout.orders.all())
+            if len(orders) != 1:
+                continue
+            order = orders[0]
             rows.append(
                 {
                     "order_tracking_code": order.public_tracking_code,
