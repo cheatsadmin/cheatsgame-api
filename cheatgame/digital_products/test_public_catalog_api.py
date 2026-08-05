@@ -307,6 +307,28 @@ class PublicDigitalCatalogApiTests(TestCase):
         self.assertEqual((paginated.data["limit"], paginated.data["offset"], paginated.data["count"]), (1, 1, 3))
         self.assertEqual(paginated.data["results"][0]["id"], beta.pk)
 
+    def test_search_normalizes_common_customer_formatting(self):
+        gta = self.product("اکانت بازی GTA VI")
+        self.offer(gta)
+        cyberpunk = self.product("اکانت بازی Cyberpunk 2077")
+        self.offer(cyberpunk)
+        wwe = self.product("اکانت بازی WWE 2K26")
+        self.offer(wwe)
+
+        cases = {
+            "gta 6": gta.pk,
+            "GTA VI": gta.pk,
+            "cyber punk": cyberpunk.pk,
+            " wwe ۲k۲۶ ": wwe.pk,
+        }
+        for query, expected_id in cases.items():
+            with self.subTest(query=query):
+                response = self.client.get(self.list_url, {"search": query})
+                self.assertEqual(
+                    [row["id"] for row in response.data["results"]],
+                    [expected_id],
+                )
+
     def test_availability_omission_and_all_are_backward_compatible(self):
         available = self.product("Available Digital")
         self.offer(available, quantity=2)

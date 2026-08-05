@@ -1,3 +1,5 @@
+import re
+
 from django.db.models import (
     Exists,
     F,
@@ -9,7 +11,7 @@ from django.db.models import (
     Sum,
     Value,
 )
-from django.db.models.functions import Coalesce, Greatest
+from django.db.models.functions import Coalesce, Greatest, Lower, Replace
 from django.utils import timezone
 
 from cheatgame.digital_products.models import (
@@ -40,6 +42,23 @@ PUBLIC_UPCOMING_STATUSES = (
     DigitalGameUpcomingStatus.PREORDER_OPEN,
     DigitalGameUpcomingStatus.DELAYED,
 )
+
+_LOCALIZED_DIGITS = str.maketrans(
+    "۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩",
+    "01234567890123456789",
+)
+
+
+def _public_catalog_search_terms(search):
+    normalized = " ".join(
+        str(search or "").translate(_LOCALIZED_DIGITS).split()
+    ).lower()
+    if not normalized:
+        return ()
+    terms = {normalized}
+    terms.add(re.sub(r"\b6\b", "vi", normalized))
+    terms.add(re.sub(r"\bvi\b", "6", normalized))
+    return tuple(term for term in terms if term)
 
 
 def public_digital_offers():
@@ -173,8 +192,26 @@ def public_digital_games(
         .annotate(has_customer_offer=Exists(matching_offers))
         .filter(has_customer_offer=True)
     )
-    if search:
-        queryset = queryset.filter(Q(title__icontains=search) | Q(slug__icontains=search))
+    search_terms = _public_catalog_search_terms(search)
+    if search_terms:
+        queryset = queryset.annotate(
+            _compact_search_title=Lower(
+                Replace(Replace("title", Value(" "), Value("")), Value("-"), Value(""))
+            ),
+            _compact_search_slug=Lower(
+                Replace(Replace("slug", Value(" "), Value("")), Value("-"), Value(""))
+            ),
+        )
+        search_filter = Q()
+        for term in search_terms:
+            compact_term = term.replace(" ", "").replace("-", "")
+            search_filter |= (
+                Q(title__icontains=term)
+                | Q(slug__icontains=term)
+                | Q(_compact_search_title__icontains=compact_term)
+                | Q(_compact_search_slug__icontains=compact_term)
+            )
+        queryset = queryset.filter(search_filter)
 
     minimum_price = (
         public_digital_offers()
