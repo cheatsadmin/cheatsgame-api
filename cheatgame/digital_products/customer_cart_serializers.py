@@ -68,6 +68,8 @@ class DigitalCartSelectionOutputSerializer(serializers.Serializer):
     currency = serializers.CharField()
     availability = serializers.ChoiceField(choices=("AVAILABLE", "SOLD_OUT"))
     is_available = serializers.BooleanField()
+    is_preorder = serializers.BooleanField()
+    release_date = serializers.DateField(allow_null=True)
 
 
 class DigitalCartItemOutputSerializer(serializers.Serializer):

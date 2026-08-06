@@ -1,3 +1,4 @@
+from datetime import date
 from decimal import Decimal
 from threading import Barrier, Lock, Thread
 from unittest import skipUnless
@@ -12,6 +13,8 @@ from rest_framework.test import APIClient
 from cheatgame.digital_products.models import (
     DigitalCartFulfillmentMethod,
     DigitalCartSelection,
+    DigitalGameReleaseMetadata,
+    DigitalGameUpcomingStatus,
     DigitalFulfillmentItem,
     DigitalInventoryReservation,
     DigitalOffer,
@@ -177,6 +180,8 @@ class CustomerDigitalCartApiTests(TestCase):
         self.assertEqual((selection.offer_id, selection.fulfillment_method), (offer.pk, "remote"))
         self.assertEqual(response.data["commerce_authority"], "DIGITAL_PRODUCTS")
         self.assertEqual(Decimal(response.data["digital_selection"]["unit_price"]), offer.price)
+        self.assertFalse(response.data["digital_selection"]["is_preorder"])
+        self.assertIsNone(response.data["digital_selection"]["release_date"])
         self.assertNotEqual(item.price, product.price)
         self.assertEqual(DigitalInventoryReservation.objects.count(), 0)
         self.assertEqual(StockReservation.objects.count(), 0)
@@ -192,6 +197,24 @@ class CustomerDigitalCartApiTests(TestCase):
         self.assertEqual(Entitlement.objects.count(), 0)
         offer.inventory_pool.refresh_from_db()
         self.assertEqual(offer.inventory_pool.sellable_quantity, 3)
+
+    def test_cart_projection_identifies_preorder_and_release_date(self):
+        product = self.product("Preorder Cart")
+        DigitalGameReleaseMetadata.objects.create(
+            product=product,
+            upcoming_status=DigitalGameUpcomingStatus.PREORDER_OPEN,
+            preorder_enabled=True,
+            release_date=date(2027, 4, 18),
+        )
+        offer = self.offer(product)
+
+        self.assertEqual(self.add(offer).status_code, 201)
+        response = self.client.get(self.cart_url)
+
+        self.assertEqual(response.status_code, 200)
+        selection = response.data[0]["digital_selection"]
+        self.assertTrue(selection["is_preorder"])
+        self.assertEqual(str(selection["release_date"]), "2027-04-18")
 
     def test_expected_unit_price_is_optional_and_matching_value_is_acknowledged_exactly(self):
         offer = self.offer(

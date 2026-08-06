@@ -95,7 +95,17 @@ def digital_selection_projection(item):
     selection = coherent_digital_selection(item)
     offer = selection.offer
     version = offer.delivered_version
-    product = item.product
+    # The Cart queryset joins release metadata through the authoritative
+    # delivered-version lineage. Reuse that joined Product here so projecting
+    # preorder state remains constant-query for mixed carts.
+    product = version.product
+    release_metadata = getattr(product, "digital_release_metadata", None)
+    is_preorder = bool(
+        release_metadata
+        and release_metadata.preorder_enabled
+        and release_metadata.upcoming_status
+        == DigitalGameUpcomingStatus.PREORDER_OPEN
+    )
     compatibility_code = compatibility_code_for(
         customer_console=offer.customer_console,
         native_console=version.native_console,
@@ -130,6 +140,12 @@ def digital_selection_projection(item):
         "currency": PUBLIC_DIGITAL_CURRENCY,
         "availability": "AVAILABLE" if is_available else "SOLD_OUT",
         "is_available": is_available,
+        "is_preorder": is_preorder,
+        "release_date": (
+            release_metadata.release_date.isoformat()
+            if is_preorder and release_metadata.release_date
+            else None
+        ),
     }
 
 
