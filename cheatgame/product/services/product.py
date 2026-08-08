@@ -1,9 +1,18 @@
+from functools import partial
+
 from django.db import transaction
 from django.conf import settings
 from django.db.models.deletion import ProtectedError
 from django.utils.text import slugify
 
 from cheatgame.product.models import Category, Product, ProductCategory, ProductNote, ProductStatus
+from cheatgame.product.services.media import (
+    delete_file_if_owned,
+    is_owned_product_description,
+    is_owned_product_main_image,
+    save_product_description,
+    save_product_main_image,
+)
 
 
 class ProductDeleteProtectedError(ValueError):
@@ -26,21 +35,40 @@ def create_product(*, product_type: int, title: str, main_image: str, price: flo
         status=status,
         seo_title=seo_title or "",
         meta_description=meta_description or "",
-        main_image=main_image,
+        main_image="",
         price=price,
         off_price=off_price,
         quantity=quantity,
         discount_end_time=discount_end_time,
-        description=description,
+        description="",
         order_limit=order_limit,
         device_model=device_model,
     )
-    if included_products:
-        product_ids = [product.id for product in included_products]
-        included_products = Product.objects.filter(id__in=product_ids)
-        product.included_products.add(*included_products)
-    set_product_categories(product=product, categories=categories or [])
-    return product
+    created_files = []
+    try:
+        created_files.append(
+            (
+                product.main_image.storage,
+                save_product_main_image(product=product, upload=main_image),
+            )
+        )
+        created_files.append(
+            (
+                product.description.storage,
+                save_product_description(product=product, upload=description),
+            )
+        )
+        product.save(update_fields=["main_image", "description", "updated_at"])
+        if included_products:
+            product_ids = [product.id for product in included_products]
+            included_products = Product.objects.filter(id__in=product_ids)
+            product.included_products.add(*included_products)
+        set_product_categories(product=product, categories=categories or [])
+        return product
+    except Exception:
+        for storage, name in created_files:
+            storage.delete(name)
+        raise
 
 
 def build_unique_product_slug(value: str, *, exclude_product_id: int = None) -> str:
@@ -110,6 +138,8 @@ def update_product(*, product_id: int, product_type: int, title: str, main_image
                    status: str = ProductStatus.PUBLISHED, seo_title: str = "", meta_description: str = "",
                    categories: list[Category] = None) -> Product:
     product = Product.objects.select_for_update().get(id=product_id)
+    old_main_image_name = product.main_image.name
+    old_description_name = product.description.name
     product.product_type = product_type
     product.title = title
     if slug is not None:
@@ -121,13 +151,13 @@ def update_product(*, product_id: int, product_type: int, title: str, main_image
     product.seo_title = seo_title or ""
     product.meta_description = meta_description or ""
     if main_image is not None:
-        product.main_image = main_image
+        save_product_main_image(product=product, upload=main_image)
     product.price = price
     product.off_price = off_price
     product.quantity = quantity
     product.discount_end_time = discount_end_time
     if description is not None:
-        product.description = description
+        save_product_description(product=product, upload=description)
     product.order_limit = order_limit
     product.device_model = device_model
     product.save(
@@ -136,6 +166,30 @@ def update_product(*, product_id: int, product_type: int, title: str, main_image
                        "description", "order_limit", "device_model" ,"updated_at"])
     if categories is not None:
         set_product_categories(product=product, categories=categories)
+    if main_image is not None and old_main_image_name != product.main_image.name:
+        transaction.on_commit(
+            partial(
+                delete_file_if_owned,
+                storage=product.main_image.storage,
+                name=old_main_image_name,
+                owned=is_owned_product_main_image(
+                    old_main_image_name,
+                    product_id=product.id,
+                ),
+            )
+        )
+    if description is not None and old_description_name != product.description.name:
+        transaction.on_commit(
+            partial(
+                delete_file_if_owned,
+                storage=product.description.storage,
+                name=old_description_name,
+                owned=is_owned_product_description(
+                    old_description_name,
+                    product_id=product.id,
+                ),
+            )
+        )
     return product
 
 
