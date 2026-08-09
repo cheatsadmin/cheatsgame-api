@@ -1,7 +1,9 @@
+import hashlib
 import os
 import shutil
 import tempfile
 
+from django.core.files.base import ContentFile
 from django.core.files.storage import FileSystemStorage
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
@@ -10,6 +12,10 @@ from rest_framework.test import APIClient
 
 from cheatgame.product.models import Category, CategoryType, Image, Product, ProductStatus, ProductType
 from cheatgame.users.models import BaseUser, UserTypes
+
+
+def content_hash(content: bytes) -> str:
+    return hashlib.sha256(content).hexdigest()[:12]
 
 
 class OverwriteFileSystemStorage(FileSystemStorage):
@@ -91,27 +97,35 @@ class ProductMediaIsolationTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
         return Product.objects.get(id=response.data["id"])
 
-    def update_product(self, product, *, description_bytes, title=None):
-        response = self.client.put(
-            f"/api/product/product-deatil/{product.id}/",
-            {
-                "product_type": product.product_type,
-                "title": title or product.title,
-                "slug": product.slug,
-                "status": product.status,
-                "price": str(product.price),
-                "off_price": str(product.off_price),
-                "quantity": str(product.quantity),
-                "order_limit": str(product.order_limit),
-                "description": SimpleUploadedFile(
-                    "content.html",
-                    description_bytes,
-                    content_type="text/html",
-                ),
-                "categories": [self.category.id],
-            },
-            format="multipart",
-        )
+    def update_product(self, product, *, description_bytes, title=None, image_bytes=None):
+        payload = {
+            "product_type": product.product_type,
+            "title": title or product.title,
+            "slug": product.slug,
+            "status": product.status,
+            "price": str(product.price),
+            "off_price": str(product.off_price),
+            "quantity": str(product.quantity),
+            "order_limit": str(product.order_limit),
+            "description": SimpleUploadedFile(
+                "content.html",
+                description_bytes,
+                content_type="text/html",
+            ),
+            "categories": [self.category.id],
+        }
+        if image_bytes is not None:
+            payload["main_image"] = SimpleUploadedFile(
+                "1-Photo-1.jpg",
+                image_bytes,
+                content_type="image/jpeg",
+            )
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.client.put(
+                f"/api/product/product-deatil/{product.id}/",
+                payload,
+                format="multipart",
+            )
         self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
         product.refresh_from_db()
         return product
@@ -144,8 +158,14 @@ class ProductMediaIsolationTests(TestCase):
         self.assertEqual(product_x.description.name, f"product/descriptions/{product_x.id}/content.html")
         self.assertEqual(product_y.description.name, f"product/descriptions/{product_y.id}/content.html")
         self.assertNotEqual(product_x.description.name, product_y.description.name)
-        self.assertEqual(product_x.main_image.name, f"product/main_images/{product_x.id}/main.jpg")
-        self.assertEqual(product_y.main_image.name, f"product/main_images/{product_y.id}/main.jpg")
+        self.assertEqual(
+            product_x.main_image.name,
+            f"product/main_images/{product_x.id}/main-{content_hash(b'image-x')}.jpg",
+        )
+        self.assertEqual(
+            product_y.main_image.name,
+            f"product/main_images/{product_y.id}/main-{content_hash(b'image-y')}.jpg",
+        )
         self.assertNotEqual(product_x.main_image.name, product_y.main_image.name)
         self.assertEqual(self.stored_bytes(product_x.main_image), b"image-x")
         self.assertEqual(self.stored_bytes(product_y.main_image), b"image-y")
@@ -174,6 +194,96 @@ class ProductMediaIsolationTests(TestCase):
         self.assertEqual(product.description.name, f"product/descriptions/{product.id}/content.html")
         self.assertEqual(self.stored_bytes(product.description), b"description-3")
         self.assertEqual(self.stored_files(), initial_files)
+
+    def test_main_image_path_changes_only_when_content_changes(self):
+        product = self.create_product(
+            title="Versioned main image",
+            slug="versioned-main-image",
+            image_bytes=b"image-a",
+            description_bytes=b"description",
+        )
+        image_a_path = (
+            f"product/main_images/{product.id}/main-{content_hash(b'image-a')}.jpg"
+        )
+        self.assertEqual(product.main_image.name, image_a_path)
+        initial_files = self.stored_files()
+
+        self.update_product(
+            product,
+            image_bytes=b"image-a",
+            description_bytes=b"description",
+        )
+        self.assertEqual(product.main_image.name, image_a_path)
+        self.assertEqual(self.stored_files(), initial_files)
+
+        self.update_product(
+            product,
+            image_bytes=b"image-b",
+            description_bytes=b"description",
+        )
+        image_b_path = (
+            f"product/main_images/{product.id}/main-{content_hash(b'image-b')}.jpg"
+        )
+        self.assertEqual(product.main_image.name, image_b_path)
+        self.assertNotEqual(image_a_path, image_b_path)
+        self.assertEqual(self.stored_bytes(product.main_image), b"image-b")
+        self.assertFalse(self.storage.exists(image_a_path))
+
+    def test_legacy_main_image_remains_readable_and_is_not_deleted_on_update(self):
+        product = self.create_product(
+            title="Legacy main image",
+            slug="legacy-main-image",
+            image_bytes=b"initial",
+            description_bytes=b"description",
+        )
+        legacy_path = self.storage.save(
+            "product/main_images/legacy-main.jpg",
+            ContentFile(b"legacy-main"),
+        )
+        product.main_image = legacy_path
+        product.save(update_fields=["main_image"])
+
+        self.assertEqual(self.stored_bytes(product.main_image), b"legacy-main")
+        self.assertEqual(product.main_image.url, "/media/product/main_images/legacy-main.jpg")
+
+        self.update_product(
+            product,
+            image_bytes=b"replacement",
+            description_bytes=b"description",
+        )
+        self.assertEqual(
+            product.main_image.name,
+            f"product/main_images/{product.id}/main-{content_hash(b'replacement')}.jpg",
+        )
+        self.assertTrue(self.storage.exists(legacy_path))
+
+    def test_owned_main_image_is_not_deleted_while_another_product_references_it(self):
+        product_x = self.create_product(
+            title="Shared reference X",
+            slug="shared-reference-x",
+            image_bytes=b"shared-main",
+            description_bytes=b"description-x",
+        )
+        product_y = self.create_product(
+            title="Shared reference Y",
+            slug="shared-reference-y",
+            image_bytes=b"other-main",
+            description_bytes=b"description-y",
+        )
+        shared_path = product_x.main_image.name
+        product_y.main_image = shared_path
+        product_y.save(update_fields=["main_image"])
+
+        self.update_product(
+            product_x,
+            image_bytes=b"replacement-x",
+            description_bytes=b"description-x",
+        )
+
+        self.assertTrue(self.storage.exists(shared_path))
+        product_y.refresh_from_db()
+        self.assertEqual(product_y.main_image.name, shared_path)
+        self.assertEqual(self.stored_bytes(product_y.main_image), b"shared-main")
 
     def test_identically_named_gallery_images_are_isolated_and_stable_on_update(self):
         product_x = self.create_product(
@@ -210,22 +320,84 @@ class ProductMediaIsolationTests(TestCase):
         image_x = Image.objects.get(id=response_x.data["id"])
         image_y = Image.objects.get(id=response_y.data["id"])
 
-        self.assertEqual(image_x.file.name, f"product_images/{product_x.id}/{image_x.id}.jpg")
-        self.assertEqual(image_y.file.name, f"product_images/{product_y.id}/{image_y.id}.jpg")
+        self.assertEqual(
+            image_x.file.name,
+            f"product_images/{product_x.id}/{image_x.id}-{content_hash(b'gallery-x')}.jpg",
+        )
+        self.assertEqual(
+            image_y.file.name,
+            f"product_images/{product_y.id}/{image_y.id}-{content_hash(b'gallery-y')}.jpg",
+        )
         self.assertNotEqual(image_x.file.name, image_y.file.name)
         self.assertEqual(self.stored_bytes(image_x.file), b"gallery-x")
         self.assertEqual(self.stored_bytes(image_y.file), b"gallery-y")
 
-        response = self.client.put(
-            f"/api/product/image-detail/{image_y.id}/",
-            {
-                "product": product_y.id,
-                "image": SimpleUploadedFile("1-Photo-1.jpg", b"gallery-y-2", content_type="image/jpeg"),
-            },
-            format="multipart",
-        )
+        image_y_initial_path = image_y.file.name
+        initial_files = self.stored_files()
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.client.put(
+                f"/api/product/image-detail/{image_y.id}/",
+                {
+                    "product": product_y.id,
+                    "image": SimpleUploadedFile("1-Photo-1.jpg", b"gallery-y", content_type="image/jpeg"),
+                },
+                format="multipart",
+            )
         self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
         image_y.refresh_from_db()
-        self.assertEqual(image_y.file.name, f"product_images/{product_y.id}/{image_y.id}.jpg")
+        self.assertEqual(image_y.file.name, image_y_initial_path)
+        self.assertEqual(self.stored_files(), initial_files)
+
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.client.put(
+                f"/api/product/image-detail/{image_y.id}/",
+                {
+                    "product": product_y.id,
+                    "image": SimpleUploadedFile("1-Photo-1.jpg", b"gallery-y-2", content_type="image/jpeg"),
+                },
+                format="multipart",
+            )
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        image_y.refresh_from_db()
+        self.assertEqual(
+            image_y.file.name,
+            f"product_images/{product_y.id}/{image_y.id}-{content_hash(b'gallery-y-2')}.jpg",
+        )
         self.assertEqual(self.stored_bytes(image_x.file), b"gallery-x")
         self.assertEqual(self.stored_bytes(image_y.file), b"gallery-y-2")
+        self.assertFalse(self.storage.exists(image_y_initial_path))
+
+    def test_legacy_gallery_image_remains_readable_and_is_not_deleted_on_update(self):
+        product = self.create_product(
+            title="Legacy gallery",
+            slug="legacy-gallery",
+            image_bytes=b"main",
+            description_bytes=b"description",
+        )
+        legacy_path = self.storage.save(
+            "product_images/legacy-gallery.jpg",
+            ContentFile(b"legacy-gallery"),
+        )
+        image = Image.objects.create(product=product, file=legacy_path)
+        self.assertEqual(self.stored_bytes(image.file), b"legacy-gallery")
+
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.client.put(
+                f"/api/product/image-detail/{image.id}/",
+                {
+                    "product": product.id,
+                    "image": SimpleUploadedFile(
+                        "1-Photo-1.jpg",
+                        b"gallery-replacement",
+                        content_type="image/jpeg",
+                    ),
+                },
+                format="multipart",
+            )
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        image.refresh_from_db()
+        self.assertEqual(
+            image.file.name,
+            f"product_images/{product.id}/{image.id}-{content_hash(b'gallery-replacement')}.jpg",
+        )
+        self.assertTrue(self.storage.exists(legacy_path))

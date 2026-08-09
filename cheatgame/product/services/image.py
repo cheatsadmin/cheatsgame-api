@@ -10,6 +10,22 @@ from cheatgame.product.services.media import (
 )
 
 
+def _delete_gallery_image_if_unreferenced(
+    *, storage, name: str, product_id: int, image_id: int
+) -> None:
+    if Image.objects.filter(file=name).exists():
+        return
+    delete_file_if_owned(
+        storage=storage,
+        name=name,
+        owned=is_owned_product_gallery_image(
+            name,
+            product_id=product_id,
+            image_id=image_id,
+        ),
+    )
+
+
 @transaction.atomic
 def create_image(*, proudct: Product, image) -> Image:
     product_image = Image.objects.create(product=proudct, file="")
@@ -36,14 +52,11 @@ def update_image(*, image_id: int, product: Product, image=None) -> Image:
     if image is not None and old_name != file.file.name:
         transaction.on_commit(
             partial(
-                delete_file_if_owned,
+                _delete_gallery_image_if_unreferenced,
                 storage=file.file.storage,
                 name=old_name,
-                owned=is_owned_product_gallery_image(
-                    old_name,
-                    product_id=old_product_id,
-                    image_id=file.id,
-                ),
+                product_id=old_product_id,
+                image_id=file.id,
             )
         )
     return file
@@ -59,13 +72,10 @@ def delete_image(*, image_id: int) -> None:
     image.delete()
     transaction.on_commit(
         partial(
-            delete_file_if_owned,
+            _delete_gallery_image_if_unreferenced,
             storage=storage,
             name=name,
-            owned=is_owned_product_gallery_image(
-                name,
-                product_id=product_id,
-                image_id=image_id,
-            ),
+            product_id=product_id,
+            image_id=image_id,
         )
     )

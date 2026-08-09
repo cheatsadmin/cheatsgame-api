@@ -23,6 +23,16 @@ class ProductDeleteDependencyError(ValueError):
     pass
 
 
+def _delete_main_image_if_unreferenced(*, storage, name: str, product_id: int) -> None:
+    if Product.objects.filter(main_image=name).exists():
+        return
+    delete_file_if_owned(
+        storage=storage,
+        name=name,
+        owned=is_owned_product_main_image(name, product_id=product_id),
+    )
+
+
 @transaction.atomic
 def create_product(*, product_type: int, title: str, main_image: str, price: float, off_price: float,
                    quantity: int, discount_end_time=None, description: str, included_products: list = None,
@@ -169,13 +179,10 @@ def update_product(*, product_id: int, product_type: int, title: str, main_image
     if main_image is not None and old_main_image_name != product.main_image.name:
         transaction.on_commit(
             partial(
-                delete_file_if_owned,
+                _delete_main_image_if_unreferenced,
                 storage=product.main_image.storage,
                 name=old_main_image_name,
-                owned=is_owned_product_main_image(
-                    old_main_image_name,
-                    product_id=product.id,
-                ),
+                product_id=product.id,
             )
         )
     if description is not None and old_description_name != product.description.name:
