@@ -433,7 +433,10 @@ class AppendOnlyModel(models.Model):
     def save(self, *args, **kwargs):
         if self.pk and type(self).objects.filter(pk=self.pk).exists():
             raise ValidationError("Append-only financial records cannot be updated.")
-        self.full_clean()
+        # Django 4.0's full_clean() did not execute Meta constraints. Preserve
+        # that approved application-validation contract after the 5.2 upgrade;
+        # PostgreSQL remains authoritative for the immutable DB constraints.
+        self.full_clean(validate_constraints=False)
         return super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
@@ -453,7 +456,7 @@ class ProviderDefinition(BaseModel):
             original = type(self).objects.filter(pk=self.pk).values(*self.IMMUTABLE_FIELDS).first()
             if original and any(original[field] != getattr(self, field) for field in self.IMMUTABLE_FIELDS):
                 raise ValidationError("Provider identity is immutable.")
-        self.full_clean()
+        self.full_clean(validate_constraints=False)
         return super().save(*args, **kwargs)
 
 
@@ -561,7 +564,7 @@ class ProviderCapabilityVersion(BaseModel):
             original = type(self).objects.filter(pk=self.pk).values(*self.IMMUTABLE_FIELDS).first()
             if original and any(original[field] != getattr(self, field) for field in self.IMMUTABLE_FIELDS):
                 raise ValidationError("Provider capability versions are immutable.")
-        self.full_clean()
+        self.full_clean(validate_constraints=False)
         return super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
@@ -637,7 +640,7 @@ class MerchantAccountVersion(BaseModel):
             original = type(self).objects.filter(pk=self.pk).values(*self.IMMUTABLE_FIELDS).first()
             if original and any(original[field] != getattr(self, field) for field in self.IMMUTABLE_FIELDS):
                 raise ValidationError("Merchant-account versions are immutable.")
-        self.full_clean()
+        self.full_clean(validate_constraints=False)
         return super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
@@ -716,7 +719,7 @@ class Payment(BaseModel):
             original = type(self).objects.filter(pk=self.pk).values(*self.IMMUTABLE_FIELDS).first()
             if original and any(original[field] != getattr(self, field) for field in self.IMMUTABLE_FIELDS):
                 raise ValidationError("Payment obligation identity and amount are immutable.")
-        self.full_clean()
+        self.full_clean(validate_constraints=False)
         return super().save(*args, **kwargs)
 
 
@@ -884,7 +887,7 @@ class PaymentAttempt(BaseModel):
             original = type(self).objects.filter(pk=self.pk).values(*self.IMMUTABLE_FIELDS).first()
             if original and any(original[field] != getattr(self, field) for field in self.IMMUTABLE_FIELDS):
                 raise ValidationError("PaymentAttempt identity and requested terms are immutable.")
-        self.full_clean()
+        self.full_clean(validate_constraints=False)
         return super().save(*args, **kwargs)
 
 
@@ -1128,7 +1131,7 @@ class PaymentTransaction(BaseModel):
             for field in ("provider_authority", "provider_reference", "evidence_hash", "completed_at"):
                 if original and original[field] not in (None, "") and original[field] != getattr(self, field):
                     raise ValidationError({field: "Provider evidence fields are write-once."})
-        self.full_clean()
+        self.full_clean(validate_constraints=False)
         return super().save(*args, **kwargs)
 
 
@@ -1800,7 +1803,7 @@ class ReceiptAccountingPolicyVersion(BaseModel):
             original = type(self).objects.filter(pk=self.pk).values(*self.IMMUTABLE_FIELDS).first()
             if original and any(original[field] != getattr(self, field) for field in self.IMMUTABLE_FIELDS):
                 raise ValidationError("Receipt accounting policy identity is immutable.")
-        self.full_clean()
+        self.full_clean(validate_constraints=False)
         return super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
@@ -1967,7 +1970,7 @@ class CommercialFinalizationWorkItem(BaseModel):
             original = type(self).objects.filter(pk=self.pk).values(*immutable_fields).first()
             if original and any(original[field] != getattr(self, field) for field in immutable_fields):
                 raise ValidationError("Commercial-finalization work identity is immutable.")
-        self.full_clean()
+        self.full_clean(validate_constraints=False)
         return super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
@@ -2055,7 +2058,7 @@ class CommercialAccountingPolicyVersion(BaseModel):
             original = type(self).objects.filter(pk=self.pk).values(*self.IMMUTABLE_FIELDS).first()
             if original and any(original[field] != getattr(self, field) for field in self.IMMUTABLE_FIELDS):
                 raise ValidationError("Commercial accounting policy identity is immutable.")
-        self.full_clean()
+        self.full_clean(validate_constraints=False)
         return super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
@@ -2352,7 +2355,7 @@ class RecognitionPolicyVersion(BaseModel):
             original = type(self).objects.filter(pk=self.pk).values(*self.IMMUTABLE_FIELDS).first()
             if original and any(original[field] != getattr(self, field) for field in self.IMMUTABLE_FIELDS):
                 raise ValidationError("Recognition policy versions are immutable; create a new version.")
-        self.full_clean()
+        self.full_clean(validate_constraints=False)
         return super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
@@ -2764,7 +2767,7 @@ class RevenueRecognitionWorkItem(BaseModel):
             original = type(self).objects.filter(pk=self.pk).values(*self.IDENTITY_FIELDS).first()
             if original and any(original[field] != getattr(self, field) for field in self.IDENTITY_FIELDS):
                 raise ValidationError("Revenue-recognition work identity is immutable.")
-        self.full_clean()
+        self.full_clean(validate_constraints=False)
         return super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
@@ -2897,7 +2900,7 @@ class FinancialAccount(BaseModel):
             original = type(self).objects.filter(pk=self.pk).values("key", "account_type", "currency").first()
             if original and any(original[field] != getattr(self, field) for field in original):
                 raise ValidationError("Financial account identity is immutable.")
-        self.full_clean()
+        self.full_clean(validate_constraints=False)
         return super().save(*args, **kwargs)
 
 
@@ -3060,7 +3063,7 @@ class ReviewCase(BaseModel):
             original = type(self).objects.filter(pk=self.pk).values(*immutable_fields).first()
             if original and any(original[field] != getattr(self, field) for field in immutable_fields):
                 raise ValidationError("ReviewCase identity and aggregate ownership are immutable.")
-        self.full_clean()
+        self.full_clean(validate_constraints=False)
         return super().save(*args, **kwargs)
 
 
@@ -3288,7 +3291,7 @@ class LatePaymentAdjudication(BaseModel):
             original = type(self).objects.filter(pk=self.pk).values(*self.IMMUTABLE_FIELDS).first()
             if original and any(original[field] != getattr(self, field) for field in self.IMMUTABLE_FIELDS):
                 raise ValidationError("Late-payment adjudication ownership is immutable.")
-        self.full_clean()
+        self.full_clean(validate_constraints=False)
         return super().save(*args, **kwargs)
 
 
@@ -3411,7 +3414,7 @@ class ExceptionalRecognitionAuthorization(BaseModel):
             original = type(self).objects.filter(pk=self.pk).values(*self.IMMUTABLE_FIELDS).first()
             if original and any(original[field] != getattr(self, field) for field in self.IMMUTABLE_FIELDS):
                 raise ValidationError("Exceptional recognition authority is immutable.")
-        self.full_clean()
+        self.full_clean(validate_constraints=False)
         return super().save(*args, **kwargs)
 
 
@@ -3492,7 +3495,7 @@ class IdempotencyRecord(BaseModel):
             original = type(self).objects.filter(pk=self.pk).values("scope", "key", "request_hash").first()
             if original and any(original[field] != getattr(self, field) for field in original):
                 raise ValidationError("Idempotency command identity is immutable.")
-        self.full_clean()
+        self.full_clean(validate_constraints=False)
         return super().save(*args, **kwargs)
 
 

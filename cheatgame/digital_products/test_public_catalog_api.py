@@ -541,23 +541,68 @@ class PublicDigitalCatalogApiTests(TestCase):
         self.assertNotIn("quantity", payload)
         self.assertNotIn("price", payload)
 
-    def test_list_query_budget_is_constant_for_multiple_games_and_offers(self):
-        for index in range(4):
-            product = self.product(f"Budget Game {index}")
-            self.offer(product, customer_console=NativeConsole.PS4, price=100 + index)
-            self.offer(product, customer_console=NativeConsole.PS5, price=200 + index)
+    def _assert_list_query_budget_at_scale(self, game_count):
+        products = Product.objects.bulk_create(
+            [
+                Product(
+                    product_type=ProductType.GAME,
+                    commerce_authority=ProductCommerceAuthority.DIGITAL_PRODUCTS,
+                    title=f"Budget Game {index}",
+                    slug=f"budget-game-{index}",
+                    status=ProductStatus.PUBLISHED,
+                    main_image="tests/catalog-cover.png",
+                    description="tests/catalog-description.html",
+                    meta_description=f"Budget Game {index} summary",
+                    price=1,
+                    off_price=1,
+                    quantity=999,
+                )
+                for index in range(game_count)
+            ]
+        )
+        versions = DeliveredVersion.objects.bulk_create(
+            [
+                DeliveredVersion(product=product, native_console=NativeConsole.PS4)
+                for product in products
+            ]
+        )
+        pools = InventoryPool.objects.bulk_create(
+            [
+                InventoryPool(sellable_quantity=3, status=InventoryPoolStatus.ENABLED)
+                for _ in products
+            ]
+        )
+        DigitalOffer.objects.bulk_create(
+            [
+                DigitalOffer(
+                    delivered_version=version,
+                    customer_console=NativeConsole.PS4,
+                    capacity=DigitalOfferCapacity.CAPACITY_2,
+                    price=450000,
+                    inventory_pool=pool,
+                    sale_state=DigitalOfferSaleState.ACTIVE,
+                )
+                for version, pool in zip(versions, pools)
+            ]
+        )
         with CaptureQueriesContext(connection) as queries:
             response = self.client.get(
                 self.list_url,
-                {"availability": "available", "limit": 10},
+                {"availability": "available", "limit": 50},
             )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data["count"], 4)
+        self.assertEqual(response.data["count"], game_count)
         data_queries = [
             query["sql"] for query in queries
             if not query["sql"].startswith(("SAVEPOINT", "RELEASE SAVEPOINT"))
         ]
         self.assertLessEqual(len(data_queries), 4, data_queries)
+
+    def test_list_query_budget_is_constant_at_one_hundred_games(self):
+        self._assert_list_query_budget_at_scale(100)
+
+    def test_list_query_budget_is_constant_at_one_thousand_games(self):
+        self._assert_list_query_budget_at_scale(1000)
 
     def test_openapi_has_explicit_public_catalog_operations(self):
         schema = SchemaGenerator().get_schema(request=None, public=True)

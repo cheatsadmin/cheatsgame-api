@@ -9,8 +9,10 @@ from rest_framework.test import APIClient
 from cheatgame.digital_products.models import (
     DigitalGameReleaseMetadata,
     DigitalGameUpcomingStatus,
+    DigitalOffer,
     DigitalOfferCapacity,
     DigitalOfferSaleState,
+    InventoryPool,
     InventoryPoolStatus,
     PoolStockAdjustment,
     PoolStockAdjustmentReason,
@@ -123,21 +125,49 @@ class AdminDigitalCatalogContractTests(TestCase):
         )
         self.assertEqual(digital.data["results"][0]["id"], other.pk)
 
-    def test_list_and_readiness_filter_query_budgets_are_constant(self):
-        for index in range(12):
-            game = self.product(f"Scaled Admin Game {index}")
-            version = DeliveredVersion.objects.create(
-                product=game,
-                native_console=NativeConsole.PS4,
-            )
-            create_digital_offer(
-                delivered_version_id=version.pk,
-                customer_console=NativeConsole.PS4,
-                capacity=DigitalOfferCapacity.CAPACITY_1,
-                price="100000",
-                initial_stock=1,
-                actor=self.manager,
-            )
+    def _assert_list_and_readiness_filter_query_budgets(self, game_count):
+        games = Product.objects.bulk_create(
+            [
+                Product(
+                    product_type=ProductType.GAME,
+                    title=f"Scaled Admin Game {index}",
+                    slug=f"scaled-admin-game-{index}",
+                    status=ProductStatus.PUBLISHED,
+                    commerce_authority=ProductCommerceAuthority.DIGITAL_PRODUCTS,
+                    main_image="product/main_images/test.jpg",
+                    price=50000,
+                    off_price=45000,
+                    quantity=2,
+                    description="product/descriptions/test.html",
+                )
+                for index in range(game_count - 1)
+            ]
+        )
+        versions = DeliveredVersion.objects.bulk_create(
+            [
+                DeliveredVersion(product=game, native_console=NativeConsole.PS4)
+                for game in games
+            ]
+        )
+        pools = InventoryPool.objects.bulk_create(
+            [
+                InventoryPool(sellable_quantity=1, status=InventoryPoolStatus.ENABLED)
+                for _ in games
+            ]
+        )
+        DigitalOffer.objects.bulk_create(
+            [
+                DigitalOffer(
+                    delivered_version=version,
+                    customer_console=NativeConsole.PS4,
+                    capacity=DigitalOfferCapacity.CAPACITY_1,
+                    price=100000,
+                    inventory_pool=pool,
+                    sale_state=DigitalOfferSaleState.ACTIVE,
+                )
+                for version, pool in zip(versions, pools)
+            ]
+        )
 
         with CaptureQueriesContext(connection) as list_queries:
             response = self.client.get(
@@ -145,7 +175,7 @@ class AdminDigitalCatalogContractTests(TestCase):
                 {"limit": 50, "offset": 0},
             )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data["count"], 13)
+        self.assertEqual(response.data["count"], game_count)
         list_sql = [
             query["sql"]
             for query in list_queries.captured_queries
@@ -159,13 +189,19 @@ class AdminDigitalCatalogContractTests(TestCase):
                 {"readiness": "ready", "limit": 50, "offset": 0},
             )
         self.assertEqual(filtered.status_code, 200)
-        self.assertEqual(filtered.data["count"], 13)
+        self.assertEqual(filtered.data["count"], game_count)
         readiness_sql = [
             query["sql"]
             for query in readiness_queries.captured_queries
             if not query["sql"].startswith(("SAVEPOINT", "RELEASE SAVEPOINT"))
         ]
         self.assertLessEqual(len(readiness_sql), 5)
+
+    def test_list_and_readiness_filter_query_budgets_at_one_hundred_games(self):
+        self._assert_list_and_readiness_filter_query_budgets(100)
+
+    def test_list_and_readiness_filter_query_budgets_at_one_thousand_games(self):
+        self._assert_list_and_readiness_filter_query_budgets(1000)
 
     def test_detail_composes_frozen_catalog_offer_and_inventory_authorities(self):
         Attachment.objects.create(

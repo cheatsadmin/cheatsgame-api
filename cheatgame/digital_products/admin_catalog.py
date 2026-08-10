@@ -1,4 +1,6 @@
-from django.db.models import Prefetch, Q
+from django.db.models import Exists, OuterRef, Prefetch, Q
+from django.db.models.functions import Length, Trim
+from django.utils import timezone
 
 from cheatgame.digital_products.models import (
     DigitalGameUpcomingStatus,
@@ -19,6 +21,7 @@ from cheatgame.digital_products.services.upcoming_games import (
 )
 from cheatgame.product.models import (
     AttachmentType,
+    DeliveredVersion,
     Product,
     ProductCommerceAuthority,
     ProductStatus,
@@ -257,20 +260,118 @@ def filter_admin_catalog_games(queryset, values):
         )
     if values.get("readiness"):
         expected = values["readiness"] == "ready"
-        queryset = [
-            product
-            for product in queryset
-            if (
-                evaluate_upcoming_readiness(product, use_prefetched=True)["ready"]
-                if _is_upcoming_product(product)
-                else evaluate_product_readiness(
-                    product,
-                    use_prefetched=True,
-                    validate_offer_models=False,
-                )["ready"]
+        current_offers = DigitalOffer.objects.filter(
+            delivered_version__product_id=OuterRef("pk"),
+        ).exclude(sale_state=DigitalOfferSaleState.ARCHIVED)
+        invalid_offers = current_offers.filter(
+            Q(delivered_version__is_active=False)
+            | Q(inventory_pool__status=InventoryPoolStatus.ARCHIVED)
+            | (
+                Q(
+                sale_state=DigitalOfferSaleState.ACTIVE,
+                delivered_version__product__commerce_authority__isnull=False,
+                )
+                & ~Q(
+                    delivered_version__product__commerce_authority=(
+                        ProductCommerceAuthority.DIGITAL_PRODUCTS
+                    )
+                )
             )
-            is expected
-        ]
+            | (
+                Q(
+                    sale_state=DigitalOfferSaleState.ACTIVE,
+                    delivered_version__product__digital_release_metadata__isnull=False,
+                )
+                & ~Q(
+                    delivered_version__product__digital_release_metadata__upcoming_status__in=(
+                        DigitalGameUpcomingStatus.PREORDER_OPEN,
+                        DigitalGameUpcomingStatus.RELEASED,
+                    )
+                )
+            )
+        )
+        incompatible_pool_peers = (
+            DigitalOffer.objects.filter(
+                inventory_pool_id=OuterRef("inventory_pool_id"),
+            )
+            .exclude(sale_state=DigitalOfferSaleState.ARCHIVED)
+            .filter(
+                ~Q(delivered_version_id=OuterRef("delivered_version_id"))
+                | ~Q(capacity=OuterRef("capacity"))
+            )
+        )
+        incompatible_offers = current_offers.annotate(
+            _has_incompatible_peer=Exists(incompatible_pool_peers),
+        ).filter(
+            _has_incompatible_peer=True,
+        )
+        upcoming_states = (
+            DigitalGameUpcomingStatus.ANNOUNCED,
+            DigitalGameUpcomingStatus.COMING_SOON,
+            DigitalGameUpcomingStatus.DELAYED,
+        )
+        queryset = queryset.annotate(
+            _has_active_version=Exists(
+                DeliveredVersion.objects.filter(
+                    product_id=OuterRef("pk"),
+                    is_active=True,
+                )
+            ),
+            _has_current_offer=Exists(current_offers),
+            _has_invalid_offer=Exists(invalid_offers),
+            _has_incompatible_offer=Exists(incompatible_offers),
+            _title_length=Length(Trim("title")),
+            _slug_length=Length(Trim("slug")),
+        )
+        upcoming_ready = (
+            Q(
+                digital_release_metadata__upcoming_status__in=upcoming_states,
+                commerce_authority=ProductCommerceAuthority.DIGITAL_PRODUCTS,
+                status=ProductStatus.PUBLISHED,
+                _has_active_version=True,
+                _title_length__gt=0,
+                _slug_length__gt=0,
+            )
+            & ~Q(main_image="")
+            & (
+                Q(
+                    digital_release_metadata__upcoming_status=(
+                        DigitalGameUpcomingStatus.ANNOUNCED
+                    )
+                )
+                | Q(
+                    digital_release_metadata__upcoming_status=(
+                        DigitalGameUpcomingStatus.DELAYED
+                    )
+                )
+                | Q(
+                    digital_release_metadata__upcoming_status=(
+                        DigitalGameUpcomingStatus.COMING_SOON
+                    ),
+                    digital_release_metadata__release_date__isnull=False,
+                )
+            )
+            & (
+                Q(digital_release_metadata__release_date__isnull=True)
+                | Q(digital_release_metadata__release_date__gte=timezone.localdate())
+            )
+        )
+        ordinary_ready = Q(
+            _has_active_version=True,
+            _has_current_offer=True,
+            _has_invalid_offer=False,
+            _has_incompatible_offer=False,
+        )
+        upcoming_product = Q(
+            digital_release_metadata__upcoming_status__in=upcoming_states
+        )
+        ordinary_product = (
+            Q(digital_release_metadata__isnull=True) | ~upcoming_product
+        )
+        ready = (upcoming_product & upcoming_ready) | (
+            ordinary_product & ordinary_ready
+        )
+        queryset = queryset.filter(ready if expected else ~ready)
     return queryset
 
 

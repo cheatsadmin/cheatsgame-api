@@ -285,7 +285,7 @@ def place_order_and_create_payment_obligation(
         ):
             raise PlacementNotEligible("Checkout commerce authority is unsupported.")
         for line in preview_lines:
-            line.full_clean()
+            line.full_clean(validate_constraints=False)
 
         items_original = sum((line.line_original_total for line in preview_lines), Decimal("0"))
         items_payable = sum((line.line_payable_total for line in preview_lines), Decimal("0"))

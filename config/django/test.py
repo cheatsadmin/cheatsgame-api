@@ -15,9 +15,14 @@ CACHES = {
     }
 }
 
-DATABASES = {
+TEST_DATABASE_URL = env("DATABASE_URL", default="")
+if TEST_DATABASE_URL:
+    DATABASES = {"default": env.db_url_config(TEST_DATABASE_URL)}
+else:
+    DATABASES = {
         "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": "db.sqlite3",
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": "db.sqlite3",
         }
     }
+DATABASES["default"]["ATOMIC_REQUESTS"] = True
