@@ -1,10 +1,12 @@
 from datetime import timedelta
 import importlib
+from io import BytesIO
 
 from django.apps import apps
 from django.test import TestCase, override_settings
 from django.utils import timezone
 from django.core.files.uploadedfile import SimpleUploadedFile
+from PIL import Image
 from rest_framework import status
 from rest_framework.test import APIClient
 
@@ -61,6 +63,12 @@ class IssueSearchTests(TestCase):
 
 @override_settings(ALLOWED_HOSTS=["testserver", "127.0.0.1", "localhost"])
 class IssueCatalogMetadataTests(TestCase):
+    @staticmethod
+    def valid_png_upload():
+        payload = BytesIO()
+        Image.new("RGB", (2, 2), color="white").save(payload, format="PNG")
+        return SimpleUploadedFile("issue.png", payload.getvalue(), content_type="image/png")
+
     def setUp(self):
         self.client = APIClient()
         self.manager = BaseUser.objects.create_user(
@@ -125,7 +133,7 @@ class IssueCatalogMetadataTests(TestCase):
             "/api/issue/issue-create/",
             {
                 "title": "Owner managed issue",
-                "picture": SimpleUploadedFile("issue.png", b"image-content", content_type="image/png"),
+                "picture": self.valid_png_upload(),
                 "description": SimpleUploadedFile("issue.html", b"<p>description</p>", content_type="text/html"),
                 "min_price": "100000",
                 "max_price": "300000",

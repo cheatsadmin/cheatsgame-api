@@ -34,7 +34,6 @@ class BlogFilter(FilterSet):
 
 
     def filter_created_at__range(self, queryset, name, value):
-        print("create_at")
         limit = 2
         created_at__in = value.split(",")
         if len(created_at__in) > limit:

@@ -24,6 +24,7 @@ from cheatgame.utils.notification.sms import SmsSendError, send_sms
 from ..api.mixins import ApiAuthMixin
 from ..api.pagination import PaginatedSerializer, get_paginated_response, LimitOffsetPagination
 from ..common.utils import reformat_url
+from ..common.upload_fields import SecureImageUploadField
 from ..general.models import ContactForm
 from ..product.models import Product
 from ..product.permissions import CustomerPermission, AddressIsOwnerCustomer, FavoriteProductIsOwnerCustomer, \
@@ -71,7 +72,7 @@ class UserApi(APIView, ApiAuthMixin):
         lastname = serializers.CharField(max_length=100, required=True)
         email = serializers.EmailField(required=False)
         birthdate = serializers.DateField(required=False)
-        profile_image = serializers.FileField(required=False)
+        profile_image = SecureImageUploadField(required=False)
 
     @extend_schema(request=UserInputSerializer, responses=UserOutPutSerializer)
     def put(self, request):
@@ -84,7 +85,7 @@ class UserApi(APIView, ApiAuthMixin):
             email_status = request.user.email_verified
 
         try:
-            profile_image = request.FILES.get('profile_image', None)
+            profile_image = serializer.validated_data.get('profile_image')
             user = update_user(user=request.user, firstname=serializer.validated_data.get('firstname'),
                                lastname=serializer.validated_data.get('lastname'),
                                birthdate=serializer.validated_data.get('birthdate'),

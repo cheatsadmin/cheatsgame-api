@@ -1,15 +1,23 @@
 import shutil
 import tempfile
 from datetime import timedelta
+from io import BytesIO
 
 from django.conf import settings
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.cache import cache
 from django.test import TestCase, override_settings
 from django.utils import timezone
+from PIL import Image
 from rest_framework import status
 from rest_framework.test import APIClient
 from rest_framework.throttling import ScopedRateThrottle
+
+
+def valid_jpeg_upload(name="main.jpg"):
+    payload = BytesIO()
+    Image.new("RGB", (2, 2), color="white").save(payload, format="JPEG")
+    return SimpleUploadedFile(name, payload.getvalue(), content_type="image/jpeg")
 
 from cheatgame.product.models import (
     Category,
@@ -300,7 +308,7 @@ class ProductFoundationApiTests(TestCase):
             "status": ProductStatus.PUBLISHED,
             "seo_title": "",
             "meta_description": "Created meta",
-            "main_image": SimpleUploadedFile("main.jpg", b"image", content_type="image/jpeg"),
+            "main_image": valid_jpeg_upload(),
             "price": "120000",
             "off_price": "110000",
             "quantity": "4",

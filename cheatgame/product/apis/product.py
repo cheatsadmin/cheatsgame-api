@@ -10,6 +10,7 @@ from cheatgame.api.mixins import ApiAuthMixin
 from cheatgame.api.pagination import LimitOffsetPagination, get_paginated_response, PaginatedSerializer
 from cheatgame.api.utils import inline_serializer
 from cheatgame.common.utils import reformat_url
+from cheatgame.common.upload_fields import SecureHtmlUploadField, SecureImageUploadField
 from cheatgame.product.models import ProductType, Product, ProductOrderBy, ProductStatus, Image, Category, CategoryType, Feature, ValuesList, \
     Attachment, Question, Label, ProductNote, Reviews, ReviewStatus
 from cheatgame.product.permissions import AdminOrManagerPermission
@@ -95,12 +96,12 @@ class ProductAdminApi(ApiAuthMixin, APIView):
         status = serializers.ChoiceField(choices=ProductStatus.choices, required=False, default=ProductStatus.PUBLISHED)
         seo_title = serializers.CharField(max_length=120, required=False, allow_blank=True)
         meta_description = serializers.CharField(max_length=300, required=False, allow_blank=True)
-        main_image = serializers.FileField(required=True)
+        main_image = SecureImageUploadField(required=True)
         price = serializers.DecimalField(max_digits=15, decimal_places=0)
         off_price = serializers.DecimalField(max_digits=15, decimal_places=0)
         quantity = serializers.IntegerField(required=True)
         discount_end_time = serializers.DateTimeField(required=False)
-        description = serializers.FileField()
+        description = SecureHtmlUploadField()
         order_limit = serializers.IntegerField(required=False)
         device_model = serializers.CharField(max_length=100, required=False, allow_blank=True)
         categories = serializers.PrimaryKeyRelatedField(
@@ -162,7 +163,7 @@ class ProductAdminApi(ApiAuthMixin, APIView):
                 status=serializer.validated_data.get("status", ProductStatus.PUBLISHED),
                 seo_title=serializer.validated_data.get("seo_title", ""),
                 meta_description=serializer.validated_data.get("meta_description", ""),
-                main_image=request.FILES.get("main_image"),
+                main_image=serializer.validated_data.get("main_image"),
                 price=serializer.validated_data.get("price"),
                 off_price=serializer.validated_data.get("off_price"),
                 quantity=serializer.validated_data.get("quantity"),
@@ -189,12 +190,12 @@ class ProductDetailAdminApi(ApiAuthMixin, APIView):
         status = serializers.ChoiceField(choices=ProductStatus.choices, required=False)
         seo_title = serializers.CharField(max_length=120, required=False, allow_blank=True)
         meta_description = serializers.CharField(max_length=300, required=False, allow_blank=True)
-        main_image = serializers.FileField(required=False)
+        main_image = SecureImageUploadField(required=False)
         price = serializers.DecimalField(max_digits=15, decimal_places=0)
         off_price = serializers.DecimalField(max_digits=15, decimal_places=0)
         quantity = serializers.IntegerField(required=True)
         discount_end_time = serializers.DateTimeField(required=False)
-        description = serializers.FileField(required=False)
+        description = SecureHtmlUploadField(required=False)
         order_limit = serializers.IntegerField(required=False)
         device_model = serializers.CharField(max_length=100, required=False, allow_blank=True)
         categories = serializers.PrimaryKeyRelatedField(
@@ -245,8 +246,8 @@ class ProductDetailAdminApi(ApiAuthMixin, APIView):
         if not check_product_exists(product_id=id):
             return Response({"error": "محصول موجود نیست"}, status=status.HTTP_400_BAD_REQUEST)
         current_product = Product.objects.get(id=id)
-        main_image = request.FILES.get("main_image", None)
-        description = request.FILES.get("description", None)
+        main_image = serializer.validated_data.get("main_image")
+        description = serializer.validated_data.get("description")
         product = update_product(
             product_id=id,
             product_type=serializer.validated_data.get("product_type"),
@@ -482,7 +483,6 @@ class ProductDetailApi(APIView):
             representation = super().to_representation(instance)
             images_data = representation["images"]
             included_products_data = representation["included_products"]
-            print(f"{images_data=}")
             for image_data in images_data:
                 image_data["file"] = reformat_url(url =image_data["file"])
 

@@ -5,6 +5,7 @@ from rest_framework.views import APIView
 from rest_framework import serializers, status
 from cheatgame.api.mixins import ApiAuthMixin
 from cheatgame.common.utils import reformat_url
+from cheatgame.common.upload_fields import SecureImageUploadField
 from cheatgame.product.models import Image, Product
 from cheatgame.product.services.image import create_image, update_image, delete_image
 
@@ -14,7 +15,7 @@ class ImageAdminApi(ApiAuthMixin, APIView):
 
     class ImageInPutSerializer(serializers.Serializer):
         product = serializers.PrimaryKeyRelatedField(required=True, queryset=Product.objects.all())
-        image = serializers.FileField(required=True)
+        image = SecureImageUploadField(required=True)
 
     class ImageOutPutSerializer(serializers.ModelSerializer):
         file = serializers.SerializerMethodField()
@@ -30,9 +31,8 @@ class ImageAdminApi(ApiAuthMixin, APIView):
         serializer = self.ImageInPutSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
-            print(serializer.validated_data.get("product"))
             product = create_image(proudct=serializer.validated_data.get("product"),
-                                   image=request.FILES.get("image"))
+                                   image=serializer.validated_data.get("image"))
             return Response(self.ImageOutPutSerializer(product).data, status=status.HTTP_201_CREATED)
         except Exception as ex:
             return Response({"error": "مشکلی رخ داده است."}, status=status.HTTP_400_BAD_REQUEST)
@@ -61,7 +61,7 @@ class ImageDetailAdminApi(ApiAuthMixin, APIView):
         try:
             image = update_image(
                 image_id=id,
-                image=request.FILES.get("image" , None),
+                image=serializer.validated_data.get("image"),
                 product=serializer.validated_data.get("product")
             )
             return Response(self.ImageDetailOutPutSerializer(image).data, status=status.HTTP_200_OK)

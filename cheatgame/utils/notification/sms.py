@@ -126,27 +126,11 @@ def _response_payload(response: requests.Response) -> Any:
 
 
 def _log_provider_failure(*, provider: str, pattern: str, recipient: str, http_status: int, payload: Any) -> None:
+    del recipient
     logger.warning(
-        "sms_provider_failure provider=%s http_status=%s pattern=%s recipient_suffix=%s payload=%s",
+        "sms_provider_failure provider=%s http_status=%s pattern=%s response_type=%s",
         provider,
         http_status,
         pattern,
-        recipient[-4:] if recipient else "",
-        _redact_payload(payload),
+        type(payload).__name__,
     )
-
-
-def _redact_payload(payload: Any) -> Any:
-    if isinstance(payload, dict):
-        return {
-            key: "***" if _is_secret_key(key) else _redact_payload(value)
-            for key, value in payload.items()
-        }
-    if isinstance(payload, list):
-        return [_redact_payload(item) for item in payload]
-    return payload
-
-
-def _is_secret_key(key: str) -> bool:
-    lowered = str(key).lower()
-    return "key" in lowered or "password" in lowered or "token" in lowered

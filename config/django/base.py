@@ -1,5 +1,6 @@
 import os
 from config.env import env, BASE_DIR
+from django.core.exceptions import ImproperlyConfigured
 
 env.read_env(os.path.join(BASE_DIR, ".env"))
 IS_SEND_SMS = env.bool("IS_SEND_SMS", default=False)
@@ -126,15 +127,23 @@ BLOG_AI_API_KEY = env("BLOG_AI_API_KEY", default="")
 BLOG_AI_API_URL = env("BLOG_AI_API_URL", default="https://api.openai.com/v1/chat/completions")
 BLOG_AI_MOCK_ENABLED = env.bool("BLOG_AI_MOCK_ENABLED", default=False)
 BLOG_AI_TIMEOUT_SECONDS = env.int("BLOG_AI_TIMEOUT_SECONDS", default=30)
-# SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = '=ug_ucl@yi6^mrcjyz%(u0%&g2adt#bz3@yos%#@*t#t!ypx=a'
+SECRET_KEY = env("SECRET_KEY", default="")
+if not SECRET_KEY:
+    if CHEATSGAME_RUNTIME_ENVIRONMENT not in {"development", "test"}:
+        raise ImproperlyConfigured("SECRET_KEY is required outside development/test.")
+    SECRET_KEY = "django-insecure-development-only-not-for-deployment"
 
-# SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = env.bool(
+    "DEBUG",
+    default=CHEATSGAME_RUNTIME_ENVIRONMENT == "development",
+)
 
-ALLOWED_HOSTS = env.list('ALLOWED_HOSTS', default=['*'])
+ALLOWED_HOSTS = env.list(
+    "ALLOWED_HOSTS",
+    default=["127.0.0.1", "localhost", "[::1]"],
+)
 
-CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOW_ALL_ORIGINS = CHEATSGAME_RUNTIME_ENVIRONMENT == "development"
 CORS_ALLOW_CREDENTIALS = True
 
 # Application definition
@@ -210,9 +219,21 @@ WSGI_APPLICATION = 'config.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/3.0/ref/settings/#databases
 
-DATABASES = {
-    'default': env.db('DATABASE_URL', default='psql://postgres:hamid14529@127.0.0.1:5432/cheatgame'),
-}
+DATABASE_URL = env("DATABASE_URL", default="")
+if DATABASE_URL:
+    DATABASES = {"default": env.db_url_config(DATABASE_URL)}
+elif CHEATSGAME_RUNTIME_ENVIRONMENT in {"development", "test"}:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            # Django 5.2 treats the configured SQLite name as a string while
+            # checking for URI-memory databases.  django-environ's legacy
+            # Path wrapper is not string-compatible with that check.
+            "NAME": str(BASE_DIR.path("db.sqlite3")),
+        }
+    }
+else:
+    raise ImproperlyConfigured("DATABASE_URL is required outside development/test.")
 DATABASES['default']['ATOMIC_REQUESTS'] = True
 
 if os.environ.get('GITHUB_WORKFLOW'):
@@ -255,8 +276,6 @@ TIME_ZONE = 'UTC'
 
 USE_I18N = True
 
-USE_L10N = True
-
 USE_TZ = True
 
 # Static files (CSS, JavaScript, Images)
@@ -264,7 +283,14 @@ USE_TZ = True
 
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 STATIC_URL = '/static/'
-STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
+STORAGES = {
+    "default": {
+        "BACKEND": "django.core.files.storage.FileSystemStorage",
+    },
+    "staticfiles": {
+        "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
+    },
+}
 
 REST_FRAMEWORK = {
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
@@ -297,8 +323,11 @@ REST_FRAMEWORK = {
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-DEFAULT_FILE_STORAGE = 'django.core.files.storage.FileSystemStorage'
-# DEFAULT_FILE_STORAGE = 'storages.backends.3sbot3.3SBoto3Storage'
+# Multipart requests are bounded independently of per-field validation so an
+# oversized body is rejected before it can consume unbounded process memory.
+DATA_UPLOAD_MAX_MEMORY_SIZE = 12 * 1024 * 1024
+FILE_UPLOAD_MAX_MEMORY_SIZE = 8 * 1024 * 1024
+
 # from config.settings.cors import *  # noqa
 from config.settings.jwt import *  # noqa
 # from config.settings.sessions import *  # noqa

@@ -17,4 +17,3 @@ def update_image(*, image_id: int, product: Product, image=None) -> Image:
 
 def delete_image(*, image_id: int) -> None:
     Image.objects.get(id=image_id).delete()
-    print("error")

@@ -249,7 +249,10 @@ class DeliveredVersion(BaseModel):
             raise ValidationError({"product": "Delivered versions require a GAME product."})
 
     def save(self, *args, **kwargs):
-        self.full_clean()
+        # Django 4.1+ validates Meta constraints from full_clean(). This model's
+        # established contract leaves the conditional uniqueness race-safe at
+        # PostgreSQL while full_clean handles the cross-model GAME rule.
+        self.full_clean(validate_constraints=False)
         return super().save(*args, **kwargs)
 
     def __str__(self):

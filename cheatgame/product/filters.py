@@ -72,7 +72,6 @@ class ProductFilter(FilterSet):
         return queryset.filter(off_price__range=(off_price_0, off_price_1))
 
     def filter_created_at__range(self, queryset, name, value):
-        print("create_at")
         limit = 2
         created_at__in = value.split(",")
         if len(created_at__in) > limit:
@@ -118,7 +117,6 @@ class ProductFilter(FilterSet):
     def filter_order_by(self, queryset, name, value):
         value = int(value)
         if value == ProductOrderBy.EXPENSIVE:
-            print('hello-price')
             return queryset.order_by("-off_price")
         elif value == ProductOrderBy.INEXPENSIVE:
             return queryset.order_by("off_price")

@@ -1,7 +1,6 @@
 from django.utils import timezone
 from typing import List
 
-from billiard.five import values
 from django.db.models import QuerySet, Sum
 from rest_framework.exceptions import APIException
 

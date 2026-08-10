@@ -9,6 +9,7 @@ from cheatgame.api.mixins import ApiAuthMixin
 from cheatgame.api.pagination import LimitOffsetPagination, get_paginated_response, PaginatedSerializer
 from cheatgame.api.utils import inline_serializer
 from cheatgame.common.utils import reformat_url, safe_file_url
+from cheatgame.common.upload_fields import SecureHtmlUploadField, SecureImageUploadField
 from django.utils.text import slugify
 
 from cheatgame.general.blog_ai import BlogAiConfigurationError, BlogAiError, BlogAiValidationError, generate_blog_ai_draft
@@ -57,9 +58,9 @@ class StoryAdminApi(ApiAuthMixin, APIView):
 
     class StoryInPutSerializer(serializers.Serializer):
         title = serializers.CharField(max_length=50)
-        picture = serializers.FileField()
+        picture = SecureImageUploadField()
         link = serializers.URLField()
-        content_picture = serializers.FileField()
+        content_picture = SecureImageUploadField()
         is_active = serializers.BooleanField(required=False, default=True)
         sort_order = serializers.IntegerField(required=False, min_value=0, default=0)
         alt_text = serializers.CharField(max_length=200, required=False, allow_blank=True, default="")
@@ -86,8 +87,8 @@ class StoryAdminApi(ApiAuthMixin, APIView):
             story = create_story(
                 title=serializer.validated_data.get("title"),
                 link=serializer.validated_data.get("link"),
-                picture=request.FILES.get("picture"),
-                content_picture=request.FILES.get("content_picture"),
+                picture=serializer.validated_data.get("picture"),
+                content_picture=serializer.validated_data.get("content_picture"),
                 is_active=serializer.validated_data.get("is_active", True),
                 sort_order=serializer.validated_data.get("sort_order", 0),
                 alt_text=serializer.validated_data.get("alt_text", ""),
@@ -125,9 +126,9 @@ class StoryDetailApi(ApiAuthMixin, APIView):
 
     class StoryDetailInPutSerializer(serializers.Serializer):
         title = serializers.CharField(max_length=50)
-        picture = serializers.FileField(required=False)
+        picture = SecureImageUploadField(required=False)
         link = serializers.URLField()
-        content_picture = serializers.FileField(required=False)
+        content_picture = SecureImageUploadField(required=False)
         is_active = serializers.BooleanField(required=False, default=True)
         sort_order = serializers.IntegerField(required=False, min_value=0, default=0)
         alt_text = serializers.CharField(max_length=200, required=False, allow_blank=True, default="")
@@ -154,8 +155,8 @@ class StoryDetailApi(ApiAuthMixin, APIView):
                 story_id=id,
                 title=serializer.validated_data.get("title"),
                 link=serializer.validated_data.get("link"),
-                picture=request.FILES.get("picture", None),
-                content_picture=request.FILES.get("content_picture", None),
+                picture=serializer.validated_data.get("picture"),
+                content_picture=serializer.validated_data.get("content_picture"),
                 is_active=serializer.validated_data.get("is_active", True),
                 sort_order=serializer.validated_data.get("sort_order", 0),
                 alt_text=serializer.validated_data.get("alt_text", ""),
@@ -177,9 +178,9 @@ class SliderAdminApi(ApiAuthMixin, APIView):
     permission_classes = (AdminOrManagerPermission,)
 
     class SliderInPutSerializer(serializers.Serializer):
-        laptop_picture = serializers.FileField(required=False, allow_null=True)
-        middle_picture = serializers.FileField(required=False)
-        mobile_picture = serializers.FileField(required=False)
+        laptop_picture = SecureImageUploadField(required=False, allow_null=True)
+        middle_picture = SecureImageUploadField(required=False)
+        mobile_picture = SecureImageUploadField(required=False)
         link = serializers.CharField(max_length=300, required=False, allow_blank=True, default="")
         is_active = serializers.BooleanField(required=False, default=True)
         sort_order = serializers.IntegerField(required=False, min_value=0, default=0)
@@ -192,7 +193,7 @@ class SliderAdminApi(ApiAuthMixin, APIView):
         hero_primary_link = serializers.CharField(max_length=300, required=False, allow_blank=True, allow_null=True)
         hero_secondary_label = serializers.CharField(max_length=120, required=False, allow_blank=True, allow_null=True)
         hero_secondary_link = serializers.CharField(max_length=300, required=False, allow_blank=True, allow_null=True)
-        hero_artwork_image = serializers.FileField(required=False, allow_null=True)
+        hero_artwork_image = SecureImageUploadField(required=False, allow_null=True)
 
     class SliderOutPutSerializer(serializers.ModelSerializer):
         laptop_picture = serializers.SerializerMethodField()
@@ -227,9 +228,9 @@ class SliderAdminApi(ApiAuthMixin, APIView):
         try:
             slider = create_slider(
                 link=serializer.validated_data.get("link"),
-                laptop_picture=request.FILES.get("laptop_picture"),
-                middle_picture=request.FILES.get("middle_picture"),
-                mobile_picture=request.FILES.get("mobile_picture"),
+                laptop_picture=serializer.validated_data.get("laptop_picture"),
+                middle_picture=serializer.validated_data.get("middle_picture"),
+                mobile_picture=serializer.validated_data.get("mobile_picture"),
                 is_active=serializer.validated_data.get("is_active", True),
                 sort_order=serializer.validated_data.get("sort_order", 0),
                 alt_text=serializer.validated_data.get("alt_text", ""),
@@ -241,7 +242,7 @@ class SliderAdminApi(ApiAuthMixin, APIView):
                 hero_primary_link=serializer.validated_data.get("hero_primary_link"),
                 hero_secondary_label=serializer.validated_data.get("hero_secondary_label"),
                 hero_secondary_link=serializer.validated_data.get("hero_secondary_link"),
-                hero_artwork_image=request.FILES.get("hero_artwork_image"),
+                hero_artwork_image=serializer.validated_data.get("hero_artwork_image"),
             )
             return Response(self.SliderOutPutSerializer(slider).data, status=status.HTTP_201_CREATED)
         except Exception as error:
@@ -290,9 +291,9 @@ class SliderDetailApi(ApiAuthMixin, APIView):
     permission_classes = (AdminOrManagerPermission,)
 
     class SliderDetailInPutSerializer(serializers.Serializer):
-        laptop_picture = serializers.FileField(required=False)
-        middle_picture = serializers.FileField(required=False)
-        mobile_picture = serializers.FileField(required=False)
+        laptop_picture = SecureImageUploadField(required=False)
+        middle_picture = SecureImageUploadField(required=False)
+        mobile_picture = SecureImageUploadField(required=False)
         link = serializers.CharField(max_length=300, required=False, allow_blank=True, default="")
         is_active = serializers.BooleanField(required=False, default=True)
         sort_order = serializers.IntegerField(required=False, min_value=0, default=0)
@@ -305,7 +306,7 @@ class SliderDetailApi(ApiAuthMixin, APIView):
         hero_primary_link = serializers.CharField(max_length=300, required=False, allow_blank=True, allow_null=True)
         hero_secondary_label = serializers.CharField(max_length=120, required=False, allow_blank=True, allow_null=True)
         hero_secondary_link = serializers.CharField(max_length=300, required=False, allow_blank=True, allow_null=True)
-        hero_artwork_image = serializers.FileField(required=False, allow_null=True)
+        hero_artwork_image = SecureImageUploadField(required=False, allow_null=True)
 
     class SliderDetailOutPutSerializer(serializers.ModelSerializer):
         laptop_picture = serializers.SerializerMethodField()
@@ -355,7 +356,7 @@ class SliderDetailApi(ApiAuthMixin, APIView):
                 hero_primary_link=serializer.validated_data.get("hero_primary_link"),
                 hero_secondary_label=serializer.validated_data.get("hero_secondary_label"),
                 hero_secondary_link=serializer.validated_data.get("hero_secondary_link"),
-                hero_artwork_image=request.FILES.get("hero_artwork_image"),
+                hero_artwork_image=serializer.validated_data.get("hero_artwork_image"),
             )
             return Response(self.SliderDetailOutPutSerializer(slider).data, status=status.HTTP_200_OK)
         except Exception as error:
@@ -374,7 +375,7 @@ class BannerAdminApi(ApiAuthMixin, APIView):
     permission_classes = (AdminOrManagerPermission,)
 
     class BannerInPutSerializer(serializers.Serializer):
-        picture = serializers.FileField()
+        picture = SecureImageUploadField()
         link = serializers.URLField()
         location = serializers.ChoiceField(choices=BannerLocations.choices())
         is_active = serializers.BooleanField(required=False, default=True)
@@ -397,7 +398,7 @@ class BannerAdminApi(ApiAuthMixin, APIView):
         try:
             banner = create_banner(
                 link=serializer.validated_data.get("link"),
-                picture=request.FILES.get("picture"),
+                picture=serializer.validated_data.get("picture"),
                 location=serializer.validated_data.get("location"),
                 is_active=serializer.validated_data.get("is_active", True),
                 sort_order=serializer.validated_data.get("sort_order", 0),
@@ -431,7 +432,7 @@ class BannerApi(ApiAuthMixin, APIView):
     permission_classes = (AdminOrManagerPermission,)
 
     class BannerChangeInPutSerializer(serializers.Serializer):
-        picture = serializers.FileField(required=False)
+        picture = SecureImageUploadField(required=False)
         link = serializers.URLField()
         location = serializers.ChoiceField(choices=BannerLocations.choices())
         is_active = serializers.BooleanField(required=False, default=True)
@@ -455,7 +456,7 @@ class BannerApi(ApiAuthMixin, APIView):
             banner = update_banner(
                 banner_id=id,
                 link=serializer.validated_data.get("link"),
-                picture=request.FILES.get("picture", None),
+                picture=serializer.validated_data.get("picture"),
                 location=serializer.validated_data.get("location"),
                 is_active=serializer.validated_data.get("is_active", True),
                 sort_order=serializer.validated_data.get("sort_order", 0),
@@ -479,8 +480,8 @@ class BlogAdminApi(ApiAuthMixin, APIView):
     parser_classes = (MultiPartParser, FormParser)
 
     class BlogInPutSerializer(serializers.Serializer):
-        picture = serializers.FileField()
-        content = serializers.FileField()
+        picture = SecureImageUploadField()
+        content = SecureHtmlUploadField()
         title = serializers.CharField(max_length=200)
         slug = serializers.CharField(max_length=300, required=False, allow_blank=True)
         status = serializers.ChoiceField(choices=BlogStatus.choices, required=False, default=BlogStatus.DRAFT)
@@ -518,8 +519,8 @@ class BlogAdminApi(ApiAuthMixin, APIView):
         serializer.is_valid(raise_exception=True)
         try:
             blog = create_blog(
-                picture=request.FILES.get("picture"),
-                content=request.FILES.get("content"),
+                picture=serializer.validated_data.get("picture"),
+                content=serializer.validated_data.get("content"),
                 title=serializer.validated_data.get("title"),
                 slug=serializer.validated_data.get("slug", ""),
                 status=serializer.validated_data.get("status", BlogStatus.DRAFT),
@@ -527,8 +528,7 @@ class BlogAdminApi(ApiAuthMixin, APIView):
                 meta_description=serializer.validated_data.get("meta_description", ""),
             )
             return Response(self.BlogOutPutSerializer(blog).data, status=status.HTTP_201_CREATED)
-        except Exception as error:
-            print(error)
+        except Exception:
             return Response({"error": "ساخت بلاگ با مشکل مواجه شد."}, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -647,8 +647,8 @@ class BlogDetailApi(ApiAuthMixin, APIView):
     parser_classes = (MultiPartParser, FormParser)
 
     class BlogDetailInPutSerializer(serializers.Serializer):
-        picture = serializers.FileField(required=False)
-        content = serializers.FileField(required=False)
+        picture = SecureImageUploadField(required=False)
+        content = SecureHtmlUploadField(required=False)
         title = serializers.CharField(max_length=200)
         slug = serializers.CharField(max_length=300, required=False, allow_blank=True)
         status = serializers.ChoiceField(choices=BlogStatus.choices, required=False)
@@ -905,14 +905,14 @@ class UploadFileS3ApiView(ApiAuthMixin, APIView):
     parser_classes = (MultiPartParser, FormParser)
 
     class UploadFileInPutSerializer(serializers.Serializer):
-        file = serializers.FileField()
+        file = SecureImageUploadField()
 
     @extend_schema(request=UploadFileInPutSerializer, responses={status.HTTP_200_OK: dict})
     def post(self, request):
         serializer = self.UploadFileInPutSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
-            file = self.request.FILES.get("file")
+            file = serializer.validated_data.get("file")
             file_path = default_storage.save(file.name, file)
             file_url = default_storage.url(file_path)
             file_url = reformat_url(url = file_url)

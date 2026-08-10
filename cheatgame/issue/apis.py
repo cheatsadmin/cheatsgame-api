@@ -10,6 +10,7 @@ from cheatgame.api.mixins import ApiAuthMixin
 from cheatgame.api.pagination import LimitOffsetPagination, get_paginated_response, PaginatedSerializer
 from cheatgame.api.utils import inline_serializer
 from cheatgame.common.utils import reformat_url, safe_file_url
+from cheatgame.common.upload_fields import SecureHtmlUploadField, SecureImageUploadField
 from cheatgame.general.services import update_issue, check_issue_exists, delete_issue
 from cheatgame.issue.filter import IssueReportFilter
 from cheatgame.issue.models import (
@@ -619,9 +620,9 @@ class IssueCreateApi(ApiAuthMixin, APIView):
     permission_classes = (AdminOrManagerPermission,)
 
     class IssueCreateInPutSerializer(serializers.Serializer):
-        picture = serializers.FileField()
+        picture = SecureImageUploadField()
         title = serializers.CharField(max_length=100)
-        description = serializers.FileField()
+        description = SecureHtmlUploadField()
         min_price = serializers.DecimalField(max_digits=15 , decimal_places=0)
         max_price = serializers.DecimalField(max_digits=15 , decimal_places=0)
         is_active = serializers.BooleanField(required=False, default=True)
@@ -639,8 +640,8 @@ class IssueCreateApi(ApiAuthMixin, APIView):
         serializer = self.IssueCreateInPutSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
-            picture = request.FILES.get("picture")
-            description = request.FILES.get("description")
+            picture = serializer.validated_data.get("picture")
+            description = serializer.validated_data.get("description")
             issue = create_issue(
                 title=serializer.validated_data.get("title"),
                 picture=picture,
@@ -740,9 +741,9 @@ class IssueDetailApi(ApiAuthMixin, APIView):
     permission_classes = (AdminOrManagerPermission,)
 
     class IssueDetailInPutSerializer(serializers.Serializer):
-        picture = serializers.FileField(required=False)
+        picture = SecureImageUploadField(required=False)
         title = serializers.CharField(max_length=150)
-        description = serializers.FileField(required=False)
+        description = SecureHtmlUploadField(required=False)
         min_price = serializers.DecimalField(max_digits=15 , decimal_places=0)
         max_price = serializers.DecimalField(max_digits=15 , decimal_places=0)
         is_active = serializers.BooleanField(required=False, default=True)
