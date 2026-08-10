@@ -32,6 +32,7 @@ from cheatgame.financial_core.services.adapters import (
     ADAPTER_CONTRACT_VERSION,
     ImmutableProviderRequestEnvelope,
     ProviderAdapterRegistry,
+    PRODUCTION_ADAPTER_REGISTRY,
     VerificationEnvelope,
     build_production_adapter_registry,
 )
@@ -304,6 +305,22 @@ class ZarinpalAdapterTests(SimpleTestCase):
     def test_registry_activation_is_explicit(self):
         registry = build_production_adapter_registry()
         resolved = registry.resolve(
+            adapter_key=ZARINPAL_ADAPTER_KEY,
+            contract_version=ADAPTER_CONTRACT_VERSION,
+        )
+        self.assertIsInstance(resolved, ZarinpalAdapter)
+
+    @override_settings(
+        FINANCIAL_ZARINPAL_ENABLED=True,
+        ZARINPAL_MERCHANT_ID=MERCHANT,
+        ZARINPAL_SANDBOX=True,
+        ZARINPAL_REQUEST_URL="https://sandbox.zarinpal.com/pg/v4/payment/request.json",
+        ZARINPAL_VERIFY_URL="https://sandbox.zarinpal.com/pg/v4/payment/verify.json",
+        ZARINPAL_STARTPAY_URL="https://sandbox.zarinpal.com/pg/StartPay/{authority}",
+        FINANCIAL_PROVIDER_CALLBACK_BASE_URL="https://backend.example",
+    )
+    def test_production_registry_resolves_after_adapter_contract_import(self):
+        resolved = PRODUCTION_ADAPTER_REGISTRY.resolve(
             adapter_key=ZARINPAL_ADAPTER_KEY,
             contract_version=ADAPTER_CONTRACT_VERSION,
         )

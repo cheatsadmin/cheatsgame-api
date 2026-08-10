@@ -309,4 +309,14 @@ def build_production_adapter_registry():
     return ProviderAdapterRegistry(adapters)
 
 
-PRODUCTION_ADAPTER_REGISTRY = build_production_adapter_registry()
+class LazyProductionAdapterRegistry:
+    """Resolve configured adapters after all adapter contracts are imported."""
+
+    def resolve(self, *, adapter_key, contract_version):
+        return build_production_adapter_registry().resolve(
+            adapter_key=adapter_key,
+            contract_version=contract_version,
+        )
+
+
+PRODUCTION_ADAPTER_REGISTRY = LazyProductionAdapterRegistry()
