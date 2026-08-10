@@ -1,5 +1,6 @@
 from threading import Barrier, Thread
 from datetime import timedelta
+from unittest import skipUnless
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -13,10 +14,13 @@ from cheatgame.digital_products.models import (
     DigitalCheckoutLineSnapshot,
     DigitalFulfillmentItem,
     DigitalInventoryReservation,
+    DigitalOffer,
     Entitlement,
     InventoryPool,
     InventoryPoolStatus,
+    PoolStockAdjustmentReason,
 )
+from cheatgame.digital_products.services.inventory import adjust_pool_stock
 from cheatgame.financial_core.models import (
     CommercialAccountingPolicyVersion,
     CommercialFinalization,
@@ -42,6 +46,7 @@ from cheatgame.financial_core.services.commercial_finalization import (
 from cheatgame.financial_core.services.idempotency import IdempotencyConflict
 from cheatgame.financial_core.test_commercial_finalizer_phase1 import CommercialFinalizerFixture
 from cheatgame.shop.models import CartState, CheckoutStatus, OrderStatus, StockReservationState
+from cheatgame.users.models import UserTypes
 
 
 class CommercialFinalizerApi08Tests(CommercialFinalizerFixture, TransactionTestCase):
@@ -119,6 +124,41 @@ class CommercialFinalizerApi08Tests(CommercialFinalizerFixture, TransactionTestC
         self.assertEqual(outbox.safe_payload["commerce_authority"], "digital_products")
         self.assertFalse(DigitalFulfillmentItem.objects.exists())
         self.assertFalse(Entitlement.objects.exists())
+
+    @skipUnless(connection.vendor == "postgresql", "PostgreSQL trigger guards require PostgreSQL.")
+    def test_restocked_pool_can_finalize_the_same_quantity_delta_again(self):
+        first, pool = self.ready_digital()
+        offer = DigitalOffer.objects.get(inventory_pool=pool)
+        self.run_work(first)
+        pool.refresh_from_db()
+        self.assertEqual(pool.sellable_quantity, 1)
+
+        admin = self.make_user()
+        admin.user_type = UserTypes.ADMIN
+        admin.save(update_fields=("user_type", "updated_at"))
+        adjust_pool_stock(
+            pool_id=pool.pk,
+            delta=1,
+            reason=PoolStockAdjustmentReason.INVENTORY_RECEIVED,
+            actor=admin,
+            idempotency_key=uuid4(),
+        )
+
+        commercial_policy = CommercialAccountingPolicyVersion.objects.get(
+            commerce_authority="digital_products",
+            active_for_new_finalizations=True,
+        )
+        second, _ = self.ready_digital(
+            offer=offer,
+            receipt_liability=commercial_policy.customer_unapplied_funds_account,
+        )
+        self.run_work(second)
+        pool.refresh_from_db()
+        self.assertEqual(pool.sellable_quantity, 1)
+        self.assertEqual(
+            DigitalInventoryCommitment.objects.filter(inventory_pool=pool).count(),
+            2,
+        )
 
     def test_nominal_expiry_success_renews_original_digital_hold_and_finalizes(self):
         placement, _ = self.ready_digital(expire_before_funds=True)

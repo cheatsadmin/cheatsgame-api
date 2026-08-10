@@ -21,6 +21,7 @@ from cheatgame.financial_core.models import (
     PaymentTenderType,
     PaymentTransactionOperation,
     ProviderRequestOutcome,
+    ReceiptAccountingPolicyVersion,
     StandardFulfillmentObligation,
 )
 from cheatgame.digital_products.models import (
@@ -82,26 +83,36 @@ class CommercialFinalizerFixture(ProviderExecutionPhase1Fixture):
         )
         return placement, policy
 
-    def ready_digital(self, *, expire_before_funds=False, preorder=False):
+    def ready_digital(
+        self,
+        *,
+        expire_before_funds=False,
+        preorder=False,
+        offer=None,
+        receipt_liability=None,
+    ):
         user = self.make_user()
-        product = self.make_product(authority=ProductCommerceAuthority.DIGITAL_PRODUCTS, price=9000)
-        if preorder:
-            DigitalGameReleaseMetadata.objects.create(
-                product=product,
-                release_date=date.today() + timedelta(days=30),
-                upcoming_status=DigitalGameUpcomingStatus.PREORDER_OPEN,
-                preorder_enabled=True,
+        if offer is None:
+            product = self.make_product(authority=ProductCommerceAuthority.DIGITAL_PRODUCTS, price=9000)
+            if preorder:
+                DigitalGameReleaseMetadata.objects.create(
+                    product=product,
+                    release_date=date.today() + timedelta(days=30),
+                    upcoming_status=DigitalGameUpcomingStatus.PREORDER_OPEN,
+                    preorder_enabled=True,
+                )
+            version = DeliveredVersion.objects.create(product=product, native_console=NativeConsole.PS4)
+            pool = InventoryPool.objects.create(sellable_quantity=2, status=InventoryPoolStatus.ENABLED)
+            offer = DigitalOffer.objects.create(
+                delivered_version=version,
+                customer_console=NativeConsole.PS4,
+                capacity=DigitalOfferCapacity.CAPACITY_1,
+                price=9000,
+                inventory_pool=pool,
+                sale_state=DigitalOfferSaleState.ACTIVE,
             )
-        version = DeliveredVersion.objects.create(product=product, native_console=NativeConsole.PS4)
-        pool = InventoryPool.objects.create(sellable_quantity=2, status=InventoryPoolStatus.ENABLED)
-        offer = DigitalOffer.objects.create(
-            delivered_version=version,
-            customer_console=NativeConsole.PS4,
-            capacity=DigitalOfferCapacity.CAPACITY_1,
-            price=9000,
-            inventory_pool=pool,
-            sale_state=DigitalOfferSaleState.ACTIVE,
-        )
+        else:
+            pool = offer.inventory_pool
         cart = Cart.objects.create(user=user)
         add_digital_offer_to_cart(
             cart=cart,
@@ -148,7 +159,24 @@ class CommercialFinalizerFixture(ProviderExecutionPhase1Fixture):
             result_idempotency_key=uuid4(),
             trigger_source=VerificationTriggerSource.CALLBACK,
         )
-        _, _, liability = self.accounting_policy(account)
+        if receipt_liability is None:
+            _, _, liability = self.accounting_policy(account)
+        else:
+            clearing = FinancialAccount.objects.create(
+                key=f"provider-clearing:{uuid4()}",
+                name="Synthetic provider clearing",
+                account_type=FinancialAccountType.ASSET,
+                currency=MoneyUnit.IRR,
+            )
+            ReceiptAccountingPolicyVersion.objects.create(
+                merchant_account_version=account,
+                policy_key="provider-receipt-v1",
+                version=1,
+                provider_clearing_account=clearing,
+                customer_unapplied_funds_account=receipt_liability,
+                active_for_new_applications=True,
+            )
+            liability = receipt_liability
         placement.payment.refresh_from_db()
         if expire_before_funds:
             expired_at = timezone.now() - timedelta(microseconds=1)
@@ -170,15 +198,18 @@ class CommercialFinalizerFixture(ProviderExecutionPhase1Fixture):
         shipping = FinancialAccount.objects.create(
             key=f"digital-shipping:{uuid4()}", name="Unused digital shipping", account_type=FinancialAccountType.REVENUE
         )
-        CommercialAccountingPolicyVersion.objects.create(
-            policy_key="commercial-digital-v1",
-            version=1,
-            commerce_authority="digital_products",
-            customer_unapplied_funds_account=liability,
-            merchandise_revenue_account=merchandise,
-            shipping_revenue_account=shipping,
-            active_for_new_finalizations=True,
-        )
+        if not CommercialAccountingPolicyVersion.objects.filter(
+            commerce_authority="digital_products", active_for_new_finalizations=True
+        ).exists():
+            CommercialAccountingPolicyVersion.objects.create(
+                policy_key="commercial-digital-v1",
+                version=1,
+                commerce_authority="digital_products",
+                customer_unapplied_funds_account=liability,
+                merchandise_revenue_account=merchandise,
+                shipping_revenue_account=shipping,
+                active_for_new_finalizations=True,
+            )
         return placement, pool
 
     def finalize(self, placement, *, key=None, expected_version=None):
