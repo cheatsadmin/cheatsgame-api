@@ -12,13 +12,13 @@ from cheatgame.financial_core.models import (
     ProviderVerificationSemantics,
 )
 from cheatgame.financial_core.services.adapters import ADAPTER_CONTRACT_VERSION
-from cheatgame.financial_core.services.zarinpal import (
+from cheatgame.financial_core.services.provider_constants import (
     ZARINPAL_ADAPTER_KEY,
     ZARINPAL_CONVERSION_POLICY_VERSION,
     ZARINPAL_CREDENTIAL_REFERENCE,
     ZARINPAL_PROVIDER_KEY,
-    ZarinpalAdapter,
 )
+from cheatgame.financial_core.services.zarinpal import ZarinpalAdapter
 
 
 class Command(BaseCommand):

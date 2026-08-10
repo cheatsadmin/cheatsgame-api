@@ -30,13 +30,15 @@ from cheatgame.financial_core.services.adapters import (
     NormalizedProviderResult,
     NormalizedVerificationResult,
 )
+from cheatgame.financial_core.services.provider_constants import (
+    ZARINPAL_ADAPTER_KEY,
+    ZARINPAL_CONVERSION_POLICY_VERSION,
+    ZARINPAL_CREDENTIAL_REFERENCE,
+    ZARINPAL_PROVIDER_KEY,
+)
 
 
-ZARINPAL_PROVIDER_KEY = "zarinpal"
-ZARINPAL_ADAPTER_KEY = "zarinpal-v4"
-ZARINPAL_CREDENTIAL_REFERENCE = "env://ZARINPAL_MERCHANT_ID"
 ZARINPAL_PROVIDER_UNIT = MoneyUnit.IRR
-ZARINPAL_CONVERSION_POLICY_VERSION = "irr-exact-v1"
 ZARINPAL_REQUEST_ACCEPTED = 100
 ZARINPAL_VERIFY_SUCCESS = frozenset((100, 101))
 ZARINPAL_AUTHORITY = re.compile(r"^[AS][A-Za-z0-9]{35}$")

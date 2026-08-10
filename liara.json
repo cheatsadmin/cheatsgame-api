@@ -6,6 +6,9 @@
     "location": "germany"
   },
   "django": {
-    "pythonVersion": "3.9"
-  }
+    "pythonVersion": "3.13"
+  },
+  "cron": [
+    "* * * * * cd $ROOT && timeout 50s python manage.py commerce_runtime_tick --apply --timeout-seconds 45"
+  ]
 }
