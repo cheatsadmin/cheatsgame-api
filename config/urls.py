@@ -8,8 +8,10 @@ from drf_spectacular.views import (
     SpectacularSwaggerView,
 )
 from cheatgame.core.health import liveness, readiness
+from cheatgame.core.crawler import robots_txt
 
 urlpatterns = [
+    path("robots.txt", robots_txt, name="robots-txt"),
     path("health/live/", liveness, name="health-live"),
     path("health/ready/", readiness, name="health-ready"),
     path("schema/", SpectacularAPIView.as_view(api_version="v1"), name="schema"),
