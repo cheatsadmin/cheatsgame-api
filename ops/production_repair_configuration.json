@@ -1,0 +1,26 @@
+{
+  "schema": "cheatsg.repair-configuration-promotion.v1",
+  "source": "owner-reviewed staging configuration",
+  "issues": [
+    {"classification":"OWNER_REVIEW","reason":"description uses seed marker","title":"دریفت آنالوگ (حرکت خود به خودی)","picture_storage_key":"IMG_1732_snbCLE7.PNG","description_storage_key":"seed/descriptions/repair-controller.html","min_price":"450000","max_price":"950000","is_active":true,"sort_order":1,"tags":[{"title":"آنالوگ و دکمه","issue_type":2}]},
+    {"classification":"OWNER_REVIEW","reason":"description uses seed marker","title":"باتری","picture_storage_key":"ED17D2A6-390E-4ABB-A066-A652CDCC94A9.PNG","description_storage_key":"seed/descriptions/repair-controller.html","min_price":"350000","max_price":"750000","is_active":true,"sort_order":0,"tags":[{"title":"آنالوگ و دکمه","issue_type":2}]},
+    {"classification":"EXCLUDE_STAGING_TEST","reason":"inactive English seed record","title":"HDMI port and overheating diagnosis"},
+    {"classification":"EXCLUDE_STAGING_TEST","reason":"staging-seed marker","title":"Staging HDMI Port Repair"},
+    {"classification":"EXCLUDE_STAGING_TEST","reason":"staging-seed marker","title":"Staging Controller Drift Repair"},
+    {"classification":"EXCLUDE_STAGING_TEST","reason":"description points to unrelated staging-seed content","title":"عملکرد دکمه"},
+    {"classification":"PRODUCTION_READY","title":"اسپیکر، میکروفون، سوکت شارژ","picture_storage_key":"AC244924-79C4-436D-B54D-367780682625.PNG","description_storage_key":"_2fc45fa7-b9d1-476d-999e-01aa586f9ebe.jpg","min_price":"0","max_price":"0","is_active":true,"sort_order":0,"tags":[{"title":"Controller","issue_type":2}]},
+    {"classification":"PRODUCTION_READY","title":"سایر مشکلات","picture_storage_key":"8783A61E-3E91-45B7-B66B-34434AAA625D.jpg","description_storage_key":"_31e1990a-8f42-4992-80f4-1bb8d1e79a3a.jpg","min_price":"0","max_price":"0","is_active":true,"sort_order":5,"tags":[{"title":"Controller","issue_type":2}]},
+    {"classification":"PRODUCTION_READY","title":"ارور دما","picture_storage_key":"C2D571C5-C06B-4E5F-8002-02BAD59884C1_3zSAFML.PNG","description_storage_key":"1635B97A-1AFA-4D3F-90A0-1C3C706AB7D6_C2fb0D7.PNG","min_price":"0","max_price":"0","is_active":true,"sort_order":0,"tags":[{"title":"Console","issue_type":1}]},
+    {"classification":"PRODUCTION_READY","title":"خرابی پورت، سوکت یا سایر اتصالات","picture_storage_key":"322B8BF8-4AF4-44D1-AFF5-FD6F573A2AF4.jpg","description_storage_key":"322B8BF8-4AF4-44D1-AFF5-FD6F573A2AF4_kAKr0No.jpg","min_price":"0","max_price":"0","is_active":true,"sort_order":0,"tags":[{"title":"Console","issue_type":1}]},
+    {"classification":"PRODUCTION_READY","title":"مشکلات تصویر","picture_storage_key":"F34439FF-AF44-4E6E-B8D2-64BD55CBE5B8.jpg","description_storage_key":"F34439FF-AF44-4E6E-B8D2-64BD55CBE5B8_COxmmq3.jpg","min_price":"0","max_price":"0","is_active":true,"sort_order":0,"tags":[{"title":"Console","issue_type":1}]},
+    {"classification":"PRODUCTION_READY","title":"مشکلات درایو","picture_storage_key":"AA2B6D23-8864-4231-A6B0-9E8D0D47C5EE.PNG","description_storage_key":"_31e1990a-8f42-4992-80f4-1bb8d1e79a3a_3y7mZBU.jpg","min_price":"0","max_price":"0","is_active":true,"sort_order":0,"tags":[{"title":"Console","issue_type":1}]},
+    {"classification":"PRODUCTION_READY","title":"سایر مشکلات","picture_storage_key":"CE6B88C8-2E15-48CE-BA2F-6DBAFCE10C4F.PNG","description_storage_key":"CE6B88C8-2E15-48CE-BA2F-6DBAFCE10C4F_t0ajCg7.PNG","min_price":"0","max_price":"0","is_active":true,"sort_order":6,"tags":[{"title":"Console","issue_type":1}]}
+  ],
+  "delivery_types": [
+    {"classification":"PRODUCTION_READY","name":"تحویل حضوری","delivery_type":1,"side":1},
+    {"classification":"PRODUCTION_READY","name":"ارسال با پیک","delivery_type":3,"side":1},
+    {"classification":"PRODUCTION_READY","name":"ارسال با تیپاکس","delivery_type":2,"side":1},
+    {"classification":"PRODUCTION_READY","name":"ارسال با پست/تیپاکس","delivery_type":2,"side":2},
+    {"classification":"PRODUCTION_READY","name":"ارسال با پیک","delivery_type":3,"side":2}
+  ]
+}
