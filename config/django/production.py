@@ -269,6 +269,12 @@ AWS_S3_REGION_NAME = env('AWS_S3_REGION_NAME')
 AWS_S3_CUSTOM_DOMAIN = env('AWS_S3_CUSTOM_DOMAIN', default=None)
 AWS_STORAGE_ENVIRONMENT = env("AWS_STORAGE_ENVIRONMENT")
 AWS_S3_FILE_OVERWRITE = False
+AWS_S3_OBJECT_PARAMETERS = {
+    "CacheControl": env(
+        "AWS_S3_MEDIA_CACHE_CONTROL",
+        default="public, max-age=31536000, immutable",
+    )
+}
 STORAGES = {
     "default": {
         "BACKEND": "storages.backends.s3.S3Storage",
