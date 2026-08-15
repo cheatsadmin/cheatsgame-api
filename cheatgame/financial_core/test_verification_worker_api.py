@@ -16,13 +16,17 @@ from django.utils.dateparse import parse_datetime
 from cheatgame.financial_core.models import (
     CallbackAuthenticationStrength,
     CommercialFinalization,
+    FinancialAccount,
+    FinancialAccountType,
     FinancialAllocation,
     JournalEntry,
     MerchantAccountVersion,
+    PaymentTransaction,
     PaymentTransactionOperation,
     ProviderCapabilityVersion,
     ProviderDefinition,
     ProviderReferenceAllocation,
+    ReceiptAccountingPolicyVersion,
     Verification,
     VerificationApplicationState,
     VerificationClaim,
@@ -42,6 +46,7 @@ from cheatgame.financial_core.services.adapters import (
     ProviderAdapterRegistry,
 )
 from cheatgame.financial_core.services.verification import enqueue_verification_work
+from cheatgame.financial_core.services.funds_application import recognize_verified_funds
 from cheatgame.financial_core.services.verification import (
     VerificationClaimConflict,
     claim_verification_work,
@@ -429,6 +434,74 @@ class FinancialTruthVerificationWorkerTests(C2B1Fixture, TransactionTestCase):
         self.assertEqual(interpretation.state, VerificationInterpretationState.BLOCKED_REVIEW)
         self.assertEqual(interpretation.controlling_verification.pk, second.pk)
         self.assertLessEqual(len(interpretation_queries), 4)
+
+    def test_authoritative_success_supersedes_only_exact_local_money_parse_failure(self):
+        PaymentTransaction.objects.filter(pk=self.transaction_obj.pk).update(
+            provider_authority="authority-1",
+            provider_reference="provider-reference-1",
+        )
+        self.transaction_obj.refresh_from_db()
+        self.adapter.overrides = {
+            "observed_provider_amount": str(self.transaction_obj.provider_amount),
+        }
+        malformed = self.run_work(self.callback_work()).verification
+        self.assertEqual(malformed.normalized_outcome, VerificationOutcome.PROTOCOL_FAILURE)
+        self.assertEqual(malformed.error_classification, "malformed_observed_provider_money")
+
+        followup, _ = enqueue_verification_work(
+            transaction_obj=self.transaction_obj,
+            work_type=VerificationWorkType.VERIFY_UNKNOWN_OUTCOME,
+            deterministic_identity=f"money-parse-reconciliation:{self.transaction_obj.public_id}",
+            correlation_id=self.transaction_obj.correlation_id,
+        )
+        self.adapter.overrides = {
+            "provider_authority": malformed.provider_authority,
+            "provider_reference": malformed.provider_reference,
+        }
+        success = self.run_work(
+            followup,
+            trigger=VerificationTriggerSource.UNKNOWN_OUTCOME,
+        ).verification
+
+        interpretation = derive_current_verification_interpretation(
+            transaction_id=self.transaction_obj.pk
+        )
+        self.assertEqual(interpretation.state, VerificationInterpretationState.ELIGIBLE_FINAL_PAID)
+        self.assertEqual(interpretation.controlling_verification.pk, success.pk)
+
+        clearing = FinancialAccount.objects.create(
+            key=f"provider-clearing:{uuid4()}",
+            name="Provider clearing",
+            account_type=FinancialAccountType.ASSET,
+            currency="IRR",
+        )
+        liability = FinancialAccount.objects.create(
+            key=f"customer-unapplied:{uuid4()}",
+            name="Customer unapplied funds",
+            account_type=FinancialAccountType.LIABILITY,
+            currency="IRR",
+        )
+        ReceiptAccountingPolicyVersion.objects.create(
+            merchant_account_version=self.account,
+            policy_key="provider-receipt-v1",
+            version=1,
+            provider_clearing_account=clearing,
+            customer_unapplied_funds_account=liability,
+            active_for_new_applications=True,
+        )
+        self.placement.payment.refresh_from_db()
+        self.transaction_obj.refresh_from_db()
+        self.assertEqual(success.provider_authority, self.transaction_obj.provider_authority)
+        self.assertEqual(success.provider_reference, self.transaction_obj.provider_reference)
+        self.assertEqual(success.merchant_reference, self.transaction_obj.merchant_reference)
+        self.assertEqual(success.observed_provider_amount, self.transaction_obj.provider_amount)
+        recognition = recognize_verified_funds(
+            verification_id=success.pk,
+            idempotency_key=uuid4(),
+            expected_payment_version=self.placement.payment.version,
+            correlation_id=self.transaction_obj.correlation_id,
+        )
+        self.assertEqual(recognition.allocation.verification_id, success.pk)
 
     def test_duplicate_callback_and_worker_replay_are_idempotent(self):
         first = self.callback(self.transaction_obj, self.account, event_id="duplicate-event")

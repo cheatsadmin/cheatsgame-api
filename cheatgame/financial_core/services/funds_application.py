@@ -64,6 +64,7 @@ from cheatgame.financial_core.services.state_machines import (
 )
 from cheatgame.financial_core.services.verification_worker import (
     VerificationInterpretationState,
+    blocking_review_observations,
     derive_current_verification_interpretation,
 )
 from cheatgame.shop.models import Cart, Checkout, Order
@@ -233,9 +234,9 @@ def _validate_exact_success(*, payment, attempt, transaction_obj, verification, 
             "Provider-reference ownership is missing or conflicting.",
             review_reason=ReviewCaseReason.DUPLICATE_FINANCIAL_ALLOCATION,
         )
-    contradiction = Verification.objects.filter(
-        transaction__attempt__payment=payment,
-        application_state=VerificationApplicationState.REVIEW_REQUIRED,
+    contradiction = blocking_review_observations(
+        transaction_id=transaction_obj.pk,
+        controlling_success=verification,
     ).exclude(pk=verification.pk).exists()
     if contradiction:
         raise FundsApplicationBlocked(

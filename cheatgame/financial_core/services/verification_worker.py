@@ -70,14 +70,45 @@ class VerificationInterpretation:
     controlling_verification: Verification = None
 
 
+SUPERSEDED_LOCAL_PROTOCOL_ERRORS = frozenset({"malformed_observed_provider_money"})
+
+
+def blocking_review_observations(*, transaction_id, controlling_success=None):
+    """Return immutable review evidence that still blocks financial recognition.
+
+    A later authoritative success may supersede only an earlier local normalization
+    failure for the exact same immutable provider operation. Provider contradictions
+    and every other review classification remain blocking.
+    """
+    reviews = Verification.objects.filter(
+        transaction_id=transaction_id,
+        application_state=VerificationApplicationState.REVIEW_REQUIRED,
+    )
+    if controlling_success is None:
+        return reviews
+    superseded = reviews.filter(
+        sequence__lt=controlling_success.sequence,
+        normalized_outcome=VerificationOutcome.PROTOCOL_FAILURE,
+        normalized_financial_effect=VerificationFinancialEffect.PAID,
+        error_classification__in=SUPERSEDED_LOCAL_PROTOCOL_ERRORS,
+        provider_id=controlling_success.provider_id,
+        capability_version_id=controlling_success.capability_version_id,
+        merchant_account_version_id=controlling_success.merchant_account_version_id,
+        merchant_reference=controlling_success.merchant_reference,
+        provider_authority=controlling_success.provider_authority,
+        provider_reference=controlling_success.provider_reference,
+        operation_type=controlling_success.operation_type,
+        requested_provider_amount=controlling_success.requested_provider_amount,
+        requested_provider_unit=controlling_success.requested_provider_unit,
+        canonical_allocation_amount=controlling_success.canonical_allocation_amount,
+        canonical_currency=controlling_success.canonical_currency,
+    ).values_list("pk", flat=True)
+    return reviews.exclude(pk__in=superseded)
+
+
 def derive_current_verification_interpretation(*, transaction_id):
     """Derive policy interpretation from immutable history; never use last-write-wins."""
     observations = Verification.objects.filter(transaction_id=transaction_id)
-    review = observations.filter(
-        application_state=VerificationApplicationState.REVIEW_REQUIRED
-    ).order_by("-sequence", "-pk").first()
-    if review is not None:
-        return VerificationInterpretation(VerificationInterpretationState.BLOCKED_REVIEW, review)
     success = observations.filter(
         application_state=VerificationApplicationState.APPLIED_BLOCKING_SUCCESS,
         normalized_outcome=VerificationOutcome.CONFIRMED_SUCCESS,
@@ -91,6 +122,12 @@ def derive_current_verification_interpretation(*, transaction_id):
     ).exclude(provider_reference="").filter(
         provider_reference_allocations__transaction_id=transaction_id,
     ).order_by("-sequence", "-pk").first()
+    review = blocking_review_observations(
+        transaction_id=transaction_id,
+        controlling_success=success,
+    ).order_by("-sequence", "-pk").first()
+    if review is not None:
+        return VerificationInterpretation(VerificationInterpretationState.BLOCKED_REVIEW, review)
     if success is not None:
         return VerificationInterpretation(
             VerificationInterpretationState.ELIGIBLE_FINAL_PAID,
