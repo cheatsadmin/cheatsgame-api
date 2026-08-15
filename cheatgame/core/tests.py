@@ -4,8 +4,10 @@ import sys
 from unittest.mock import patch
 
 from config.django import base as base_settings
+from corsheaders.middleware import CorsMiddleware
 from django.core.exceptions import ImproperlyConfigured
-from django.test import SimpleTestCase, override_settings
+from django.http import HttpResponse
+from django.test import RequestFactory, SimpleTestCase, override_settings
 
 
 PRODUCTION_ENV = {
@@ -65,6 +67,7 @@ class ProductionSettingsTests(SimpleTestCase):
 
         self.assertFalse(module.DEBUG)
         self.assertFalse(module.CORS_ALLOW_ALL_ORIGINS)
+        self.assertIn("idempotency-key", module.CORS_ALLOW_HEADERS)
         self.assertEqual(module.ALLOWED_HOSTS, ["api.cheatsg.ir"])
         self.assertEqual(
             module.CORS_ALLOWED_ORIGINS,
@@ -99,6 +102,28 @@ class ProductionSettingsTests(SimpleTestCase):
         self.assertFalse(module.PAYMENT_FAKE_PROVIDER_ENABLED)
         self.assertTrue(module.FINANCIAL_ZARINPAL_ENABLED)
         self.assertEqual(module.SIMPLE_JWT["SIGNING_KEY"], PRODUCTION_ENV["JWT_SIGNING_KEY"])
+
+    def test_production_cors_preflight_allows_payment_idempotency_header(self):
+        module = self.import_production_settings(PRODUCTION_ENV)
+        request = RequestFactory().options(
+            "/api/digital-products/customer/checkout/example/payment/request/",
+            HTTP_ORIGIN="https://cheatsg.ir",
+            HTTP_ACCESS_CONTROL_REQUEST_METHOD="POST",
+            HTTP_ACCESS_CONTROL_REQUEST_HEADERS=(
+                "authorization,content-type,idempotency-key"
+            ),
+        )
+        with self.settings(
+            CORS_ALLOWED_ORIGINS=module.CORS_ALLOWED_ORIGINS,
+            CORS_ALLOW_HEADERS=module.CORS_ALLOW_HEADERS,
+        ):
+            response = CorsMiddleware(lambda _request: HttpResponse())(request)
+
+        allowed_headers = {
+            value.strip().lower()
+            for value in response["access-control-allow-headers"].split(",")
+        }
+        self.assertIn("idempotency-key", allowed_headers)
 
     def test_production_settings_reject_fake_payment_provider(self):
         env = {**PRODUCTION_ENV, "PAYMENT_GATEWAY_PROVIDER": "fake"}

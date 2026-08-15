@@ -1,5 +1,6 @@
 from .base import *  # noqa
 from config.env import env
+from corsheaders.defaults import default_headers
 from django.core.exceptions import ImproperlyConfigured
 from urllib.parse import urlparse
 
@@ -190,6 +191,7 @@ if FINANCIAL_CERTIFICATION_PROVIDER_ENABLED:
         )
 
 CORS_ALLOW_ALL_ORIGINS = False
+CORS_ALLOW_HEADERS = (*default_headers, "idempotency-key")
 CORS_ALLOWED_ORIGINS = _validated_https_origins(
     "CORS_ALLOWED_ORIGINS",
     env.list(
