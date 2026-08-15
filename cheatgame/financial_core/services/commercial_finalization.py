@@ -67,6 +67,7 @@ from cheatgame.financial_core.services.state_machines import assert_payment_tran
 from cheatgame.product.models import Product, ProductCommerceAuthority
 from cheatgame.shop.models import (
     Cart,
+    CartItem,
     CartState,
     Checkout,
     CheckoutLine,
@@ -93,6 +94,15 @@ COMMERCIAL_JOURNAL_SOURCE = "commercial_reclassification"
 RECEIPT_JOURNAL_SOURCE = "provider_receipt"
 FULFILLMENT_OUTBOX_TOPIC = "commercial.fulfillment.requested"
 FINALIZATION_NAMESPACE = UUID("5c71ef26-9ace-4b8e-81fd-25e01a285cf9")
+
+
+def _clear_finalized_checkout_cart_items(*, cart, checkout):
+    source_ids = tuple(
+        CheckoutLine.objects.filter(checkout=checkout, source_cart_item_id__isnull=False)
+        .values_list("source_cart_item_id", flat=True)
+    )
+    if source_ids:
+        CartItem.objects.filter(cart=cart, pk__in=source_ids).delete()
 CLAIM_LEASE = timedelta(minutes=5)
 PREORDER_PURCHASE_KIND = "preorder"
 
@@ -401,11 +411,13 @@ def finalize_paid_commerce(
         if existing_key:
             if existing_key.application_fingerprint != fingerprint or existing_key.payment_id != payment.pk:
                 raise IdempotencyConflict("Commercial-finalization idempotency key conflicts.")
+            _clear_finalized_checkout_cart_items(cart=cart, checkout=checkout)
             return CommercialFinalizationResult(existing_key, True)
         existing = CommercialFinalization.objects.filter(payment=payment).first()
         if existing:
             if existing.application_fingerprint != fingerprint:
                 raise IdempotencyConflict("Payment was finalized by different command evidence.")
+            _clear_finalized_checkout_cart_items(cart=cart, checkout=checkout)
             return CommercialFinalizationResult(existing, True)
 
         if cart.state != CartState.LOCKED or cart.active_checkout_id != checkout.pk:
@@ -849,6 +861,7 @@ def finalize_paid_commerce(
         checkout.paid_at = timezone.now()
         checkout.version += 1
         checkout.save(update_fields=("status", "paid_at", "version", "updated_at"))
+        _clear_finalized_checkout_cart_items(cart=cart, checkout=checkout)
         cart.state = CartState.OPEN
         cart.lock_reason = None
         cart.active_checkout = None

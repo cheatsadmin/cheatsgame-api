@@ -45,7 +45,7 @@ from cheatgame.financial_core.services.commercial_finalization import (
 )
 from cheatgame.financial_core.services.idempotency import IdempotencyConflict
 from cheatgame.financial_core.test_commercial_finalizer_phase1 import CommercialFinalizerFixture
-from cheatgame.shop.models import CartState, CheckoutStatus, OrderStatus, StockReservationState
+from cheatgame.shop.models import CartItem, CartState, CheckoutStatus, OrderStatus, StockReservationState
 from cheatgame.users.models import UserTypes
 
 
@@ -111,6 +111,7 @@ class CommercialFinalizerApi08Tests(CommercialFinalizerFixture, TransactionTestC
 
     def test_digital_work_creates_commitment_obligation_and_dormant_handoff_only(self):
         placement, pool = self.ready_digital()
+        source_item_id = placement.order.checkout.lines.get().source_cart_item_id
         result = self.run_work(placement)
         pool.refresh_from_db()
         commitment = DigitalInventoryCommitment.objects.get(finalization=result.finalization)
@@ -124,6 +125,7 @@ class CommercialFinalizerApi08Tests(CommercialFinalizerFixture, TransactionTestC
         self.assertEqual(outbox.safe_payload["commerce_authority"], "digital_products")
         self.assertFalse(DigitalFulfillmentItem.objects.exists())
         self.assertFalse(Entitlement.objects.exists())
+        self.assertFalse(CartItem.objects.filter(pk=source_item_id).exists())
 
     @skipUnless(connection.vendor == "postgresql", "PostgreSQL trigger guards require PostgreSQL.")
     def test_restocked_pool_can_finalize_the_same_quantity_delta_again(self):
