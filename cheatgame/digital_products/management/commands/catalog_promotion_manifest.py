@@ -36,15 +36,37 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         del args
         products = Product.objects.prefetch_related(
+            "categories__category",
             "delivered_versions__digital_offers__inventory_pool",
         ).order_by("pk")
         records = []
+        production_categories = {}
+        production_category_links = []
         for product in products:
             classification, reasons = _classification(product)
+            product_categories = list(product.categories.all())
+            category_slugs = sorted(
+                product_category.category.slug for product_category in product_categories
+            )
+            if classification == "PRODUCTION_READY":
+                if category_slugs:
+                    production_category_links.append(
+                        {
+                            "product_slug": product.slug,
+                            "category_slugs": category_slugs,
+                        }
+                    )
+                for product_category in product_categories:
+                    for category in product_category.category.get_ancestors(
+                        include_self=True
+                    ):
+                        production_categories[category.pk] = category
             versions = []
             for version in product.delivered_versions.order_by("pk"):
                 offers = []
-                for offer in version.digital_offers.select_related("inventory_pool").order_by("pk"):
+                for offer in version.digital_offers.select_related(
+                    "inventory_pool"
+                ).order_by("pk"):
                     offers.append(
                         {
                             "source_offer_id": offer.pk,
@@ -55,7 +77,9 @@ class Command(BaseCommand):
                             "inventory": {
                                 "source_pool_id": offer.inventory_pool_id,
                                 "status": offer.inventory_pool.status,
-                                "initial_quantity": offer.inventory_pool.sellable_quantity,
+                                "initial_quantity": (
+                                    offer.inventory_pool.sellable_quantity
+                                ),
                             },
                         }
                     )
@@ -93,10 +117,22 @@ class Command(BaseCommand):
                     "release": (
                         {
                             "state": release.upcoming_status,
-                            "release_date": release.release_date.isoformat() if release.release_date else None,
+                            "release_date": (
+                                release.release_date.isoformat()
+                                if release.release_date
+                                else None
+                            ),
                             "preorder_enabled": release.preorder_enabled,
-                            "preorder_open_at": release.preorder_open_at.isoformat() if release.preorder_open_at else None,
-                            "preorder_close_at": release.preorder_close_at.isoformat() if release.preorder_close_at else None,
+                            "preorder_open_at": (
+                                release.preorder_open_at.isoformat()
+                                if release.preorder_open_at
+                                else None
+                            ),
+                            "preorder_close_at": (
+                                release.preorder_close_at.isoformat()
+                                if release.preorder_close_at
+                                else None
+                            ),
                         }
                         if release
                         else None
@@ -107,6 +143,19 @@ class Command(BaseCommand):
         payload = {
             "schema": "cheatsg.catalog-promotion.v1",
             "policy": "Only PRODUCTION_READY records may be imported without owner reclassification.",
+            "categories": [
+                {
+                    "name": category.name,
+                    "slug": category.slug,
+                    "category_type": category.category_type,
+                    "parent_slug": category.parent.slug if category.parent_id else None,
+                }
+                for category in sorted(
+                    production_categories.values(),
+                    key=lambda item: (item.tree_id, item.lft),
+                )
+            ],
+            "product_category_links": production_category_links,
             "counts": {
                 key: sum(record["classification"] == key for record in records)
                 for key in ("PRODUCTION_READY", "OWNER_REVIEW", "EXCLUDE_STAGING_TEST")
