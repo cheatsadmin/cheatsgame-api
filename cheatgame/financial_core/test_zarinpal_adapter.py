@@ -259,7 +259,7 @@ class ZarinpalAdapterTests(SimpleTestCase):
             result = instance.verify_operation(verification_envelope())
             self.assertEqual(result.outcome, VerificationOutcome.CONFIRMED_SUCCESS)
             self.assertEqual(result.provider_reference, "123456")
-            self.assertEqual(result.observed_provider_amount, "510000")
+            self.assertEqual(result.observed_provider_amount, Decimal("510000"))
             self.assertEqual(result.observed_provider_unit, MoneyUnit.IRR)
             self.assertEqual(result.evidence_basis, VerificationEvidenceBasis.SERVER_TO_SERVER)
             self.assertEqual(result.already_verified_fresh_query, code == 101)
@@ -389,7 +389,7 @@ class ZarinpalFinancialBoundaryTests(C2B1Fixture, TransactionTestCase):
         self.assertEqual(transaction_obj.provider_authority, SANDBOX_AUTHORITY)
 
     @override_settings(
-        DIGITAL_PAYMENT_CUSTOMER_RETURN_BASE_URL="https://storefront.example/Profile/DigitalPayment"
+        DIGITAL_PAYMENT_CUSTOMER_RETURN_BASE_URL="https://storefront.example"
     )
     def test_unsigned_get_callback_binds_exact_authority_and_only_enqueues_verification(self):
         _, account, _, transaction_obj = self.make_pending_graph()
@@ -409,7 +409,11 @@ class ZarinpalFinancialBoundaryTests(C2B1Fixture, TransactionTestCase):
             )
         self.assertEqual(response.status_code, 303)
         self.assertIn(
-            str(transaction_obj.attempt.payment.order.checkout.public_id),
+            (
+                "/Profile/DigitalCheckout/"
+                f"{transaction_obj.attempt.payment.order.checkout.public_id}"
+                "?provider_return=1"
+            ),
             response["Location"],
         )
         event = ProviderEvent.objects.get()

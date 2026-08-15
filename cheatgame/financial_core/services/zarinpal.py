@@ -404,7 +404,7 @@ class ZarinpalAdapter:
             provider_reference=provider_reference,
             operation_type=envelope.operation_type,
             observed_provider_amount=(
-                envelope.requested_provider_amount
+                Decimal(str(envelope.requested_provider_amount))
                 if outcome == VerificationOutcome.CONFIRMED_SUCCESS
                 else None
             ),

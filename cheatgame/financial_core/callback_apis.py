@@ -185,7 +185,10 @@ class ProviderCallbackIngestionApi(APIView):
         ):
             return fallback
         checkout_id = transaction_obj.attempt.payment.order.checkout.public_id
-        target = urljoin(base.rstrip("/") + "/", f"{checkout_id}/")
+        target = urljoin(
+            base.rstrip("/") + "/",
+            f"Profile/DigitalCheckout/{checkout_id}",
+        )
         redirect = HttpResponseRedirect(f"{target}?provider_return=1")
         redirect.status_code = status.HTTP_303_SEE_OTHER
         return redirect
