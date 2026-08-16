@@ -4,7 +4,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from django.core.management.base import BaseCommand, CommandError
-from django.db import transaction
+from django.db import models, transaction
 
 from cheatgame.digital_products.models import (
     DigitalGameReleaseMetadata,
@@ -212,9 +212,11 @@ class Command(BaseCommand):
             "order_limit": generic.get("order_limit"),
             "device_model": generic.get("device_model"),
         }
-        product, _ = Product.objects.get_or_create(
-            slug=record["slug"], defaults=expected
-        )
+        product = self._resolve_product(record)
+        if product is None:
+            product = Product.objects.create(slug=record["slug"], **expected)
+        elif product.slug != record["slug"]:
+            self._migrate_product_slug(product, record["slug"])
         self._ensure_exact(product, expected, label=f"Product {record['slug']}")
         for legacy_slug in record.get("legacy_slugs") or []:
             active_owner = Product.objects.filter(slug=legacy_slug).first()
@@ -274,6 +276,66 @@ class Command(BaseCommand):
                     },
                 )
                 self._ensure_exact(offer, offer_expected, label="Digital Offer")
+
+    @staticmethod
+    def _resolve_product(record):
+        """Resolve one Product by active or declared historical identity.
+
+        A slug change must update the existing target row; creating a second
+        Product and then attaching the former slug would be both unsafe and
+        incompatible with the permanent redirect contract.
+        """
+        identity_slugs = {record["slug"], *(record.get("legacy_slugs") or [])}
+        # Serialize the small catalog identity namespace. PostgreSQL does not
+        # permit SELECT FOR UPDATE over the DISTINCT join needed below, and
+        # locking both authorities first also closes active/history races.
+        list(
+            Product.objects.select_for_update()
+            .order_by("pk")
+            .values_list("pk", flat=True)
+        )
+        list(
+            ProductSlugHistory.objects.select_for_update()
+            .order_by("pk")
+            .values_list("pk", flat=True)
+        )
+        candidate_ids = Product.objects.filter(
+            models.Q(slug__in=identity_slugs)
+            | models.Q(slug_history__slug__in=identity_slugs)
+        ).values_list("pk", flat=True).distinct()
+        candidates = {
+            product.pk: product
+            for product in Product.objects.filter(pk__in=candidate_ids)
+        }
+        if len(candidates) > 1:
+            raise CommandError(
+                f"Product {record['slug']} promotion identity matches multiple Products."
+            )
+        return next(iter(candidates.values()), None)
+
+    @staticmethod
+    def _migrate_product_slug(product, target_slug):
+        if Product.objects.exclude(pk=product.pk).filter(slug=target_slug).exists():
+            raise CommandError(f"Target Product slug {target_slug} is already active.")
+        conflicting_history = ProductSlugHistory.objects.filter(slug=target_slug).exclude(
+            product_id=product.pk
+        )
+        if conflicting_history.exists():
+            raise CommandError(f"Target Product slug {target_slug} belongs to another Product.")
+        previous_slug = product.slug
+        ProductSlugHistory.objects.filter(
+            product_id=product.pk, slug=target_slug
+        ).delete()
+        product.slug = target_slug
+        product.save(update_fields=["slug", "updated_at"])
+        history, _ = ProductSlugHistory.objects.get_or_create(
+            slug=previous_slug,
+            defaults={"product": product},
+        )
+        if history.product_id != product.pk:
+            raise CommandError(
+                f"Historical Product slug {previous_slug} belongs to another Product."
+            )
 
     def _import_categories(self, records):
         pending = {record["slug"]: record for record in records}
