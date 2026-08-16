@@ -81,6 +81,12 @@ def terminate_locked_definitive_unpaid_digital_graph(
     reason_code,
     idempotency_identity,
     locked_reservations=None,
+    expected_reservation_state=DigitalInventoryReservationState.PAYMENT_HOLD,
+    allowed_cart_lock_reasons=(
+        CartLockReason.CHECKOUT_IN_PROGRESS,
+        CartLockReason.PAYMENT_IN_PROGRESS,
+    ),
+    reservation_resolution_reason="definitive_unpaid_failure",
 ):
     """
     Terminate one already-locked Digital commercial attempt.
@@ -148,14 +154,14 @@ def terminate_locked_definitive_unpaid_digital_graph(
     if (
         cart.state != CartState.LOCKED
         or cart.active_checkout_id != checkout.pk
-        or cart.lock_reason not in (CartLockReason.CHECKOUT_IN_PROGRESS, CartLockReason.PAYMENT_IN_PROGRESS)
+        or cart.lock_reason not in tuple(allowed_cart_lock_reasons)
     ):
         raise DefinitiveDigitalPaymentFailureConflict("Cart is not owned by the failed Checkout.")
     if set(lineage.current_by_line) != line_ids or any(
-        reservation.state != DigitalInventoryReservationState.PAYMENT_HOLD for reservation in current
+        reservation.state != expected_reservation_state for reservation in current
     ):
         raise DefinitiveDigitalPaymentFailureConflict(
-            "Every Checkout line requires one authoritative PAYMENT_HOLD."
+            "Every Checkout line requires the expected authoritative reservation state."
         )
 
     now = timezone.now()
@@ -163,7 +169,7 @@ def terminate_locked_definitive_unpaid_digital_graph(
     for reservation in current:
         reservation.state = DigitalInventoryReservationState.RELEASED
         reservation.state_changed_at = now
-        reservation.resolution_reason = "definitive_unpaid_failure"
+        reservation.resolution_reason = str(reservation_resolution_reason)[:64]
         reservation.save(
             update_fields=("state", "state_changed_at", "resolution_reason", "updated_at")
         )

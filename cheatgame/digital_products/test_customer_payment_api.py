@@ -56,11 +56,16 @@ from cheatgame.financial_core.models import (
     ProviderRequestResult,
     ReviewCase,
     ReviewCaseReason,
+    ReviewCaseStatus,
+    ReviewAction,
 )
 from cheatgame.financial_core.services.adapters import (
     ADAPTER_CONTRACT_VERSION,
     NormalizedProviderResult,
     ProviderAdapterRegistry,
+)
+from cheatgame.financial_core.services.provider_request_reconciliation import (
+    reconcile_no_authority_created,
 )
 from cheatgame.product.models import (
     DeliveredVersion,
@@ -782,6 +787,106 @@ class CustomerDigitalPaymentApiTests(TransactionTestCase):
         self.assertEqual(self.cart.lock_reason, CartLockReason.MANUAL_REVIEW)
         self.assertGreater(reservation.expires_at, timezone.now())
         self.assertEqual(reservation.expires_at, self.checkout.expires_at)
+
+    def test_authoritative_no_authority_evidence_closes_unknown_request_once(self):
+        second_product = Product.objects.create(
+            product_type=ProductType.GAME,
+            commerce_authority=ProductCommerceAuthority.DIGITAL_PRODUCTS,
+            status=ProductStatus.PUBLISHED,
+            title="Second Payment Adapter Game",
+            slug="second-payment-adapter-game",
+            main_image="tests/payment-2.png",
+            description="tests/payment-2.html",
+            price=Decimal("999999"),
+            off_price=Decimal("999999"),
+            quantity=999,
+            order_limit=5,
+        )
+        second_version = DeliveredVersion.objects.create(
+            product=second_product,
+            native_console=NativeConsole.PS5,
+        )
+        second_offer = DigitalOffer.objects.create(
+            delivered_version=second_version,
+            customer_console=NativeConsole.PS5,
+            capacity=DigitalOfferCapacity.CAPACITY_2,
+            price=Decimal("560000"),
+            inventory_pool=InventoryPool.objects.create(
+                sellable_quantity=3,
+                status=InventoryPoolStatus.ENABLED,
+            ),
+            sale_state=DigitalOfferSaleState.ACTIVE,
+        )
+        customer = self.make_user("09127770008")
+        cart = Cart.objects.create(user=customer)
+        for offer in (self.offer, second_offer):
+            add_digital_offer_to_cart(
+                cart=cart,
+                offer=offer,
+                fulfillment_method=DigitalCartFulfillmentMethod.REMOTE,
+                actor=customer,
+            )
+        checkout = prepare_digital_checkout(actor=customer, client_checkout_uuid=uuid4())[0]
+        self.adapter.error = TimeoutError("sensitive upstream detail")
+        response = self.request_for(customer=customer, checkout=checkout, key=uuid4())
+        self.assertEqual(response.status_code, 201)
+        transaction_obj = PaymentTransaction.objects.get()
+        review = ReviewCase.objects.get(reason=ReviewCaseReason.PROVIDER_STATE_UNCLEAR)
+        actor = self.make_user("09127770009", user_type=UserTypes.ADMIN)
+        evidence_observed_at = timezone.now()
+        PaymentTransaction.objects.filter(pk=transaction_obj.pk).update(
+            created_at=evidence_observed_at - timedelta(minutes=31)
+        )
+        transaction_obj.refresh_from_db()
+        key = uuid4()
+
+        first = reconcile_no_authority_created(
+            transaction_public_id=transaction_obj.public_id,
+            actor=actor,
+            evidence_sha256="9" * 64,
+            observed_at=evidence_observed_at,
+            idempotency_key=key,
+        )
+        replay = reconcile_no_authority_created(
+            transaction_public_id=transaction_obj.public_id,
+            actor=actor,
+            evidence_sha256="9" * 64,
+            observed_at=evidence_observed_at,
+            idempotency_key=key,
+        )
+
+        transaction_obj.refresh_from_db()
+        attempt = PaymentAttempt.objects.get()
+        payment = Payment.objects.get()
+        reservations = tuple(DigitalInventoryReservation.objects.filter(order=payment.order))
+        review.refresh_from_db()
+        checkout.refresh_from_db()
+        cart.refresh_from_db()
+        self.assertFalse(first.replayed)
+        self.assertTrue(replay.replayed)
+        self.assertEqual(transaction_obj.status, PaymentTransactionStatus.EXPIRED)
+        self.assertEqual(attempt.status, PaymentAttemptStatus.DEFINITIVE_FAILED)
+        self.assertEqual(payment.collection_status, "open")
+        self.assertEqual(review.status, ReviewCaseStatus.RESOLVED)
+        self.assertEqual(review.resolution_code, "provider_no_authority")
+        self.assertEqual(len(reservations), 2)
+        self.assertTrue(
+            all(item.state == DigitalInventoryReservationState.RELEASED for item in reservations)
+        )
+        self.assertTrue(all(item.resolution_reason == "provider_no_authority" for item in reservations))
+        self.assertEqual(checkout.status, CheckoutStatus.CANCELED)
+        self.assertEqual(cart.state, CartState.OPEN)
+        self.assertIsNone(cart.active_checkout_id)
+        self.assertEqual(
+            ReviewAction.objects.filter(
+                review_case=review,
+                action_type="transition:resolved",
+            ).count(),
+            1,
+        )
+        self.assertEqual(FinancialAllocation.objects.count(), 0)
+        self.assertEqual(CommercialFinalization.objects.count(), 0)
+        self.assertEqual(DigitalFulfillmentObligation.objects.count(), 0)
 
     @override_settings(DIGITAL_PAYMENT_PROVIDER_PENDING_HOLD_SECONDS=900)
     def test_provider_pending_renews_one_authoritative_hold_without_unlocking(self):
