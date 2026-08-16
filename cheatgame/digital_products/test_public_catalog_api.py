@@ -28,6 +28,7 @@ from cheatgame.product.models import (
     NativeConsole,
     Product,
     ProductCommerceAuthority,
+    ProductSlugHistory,
     ProductStatus,
     ProductType,
 )
@@ -221,6 +222,21 @@ class PublicDigitalCatalogApiTests(TestCase):
             [value["code"] for value in by_capacity["capacity_2"]["allowed_fulfillment_methods"]],
             ["in_store", "remote"],
         )
+
+    def test_legacy_digital_slug_returns_current_canonical_identity(self):
+        product = self.product("First Light")
+        self.offer(product)
+        ProductSlugHistory.objects.create(
+            product=product,
+            slug="اکانت-بازی-first-light-007",
+        )
+
+        response = self.client.get(
+            f"{self.list_url}اکانت-بازی-first-light-007/"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["slug"], product.slug)
 
     def test_effective_reservations_and_shared_pool_drive_availability(self):
         product = self.product("Reserved Digital")

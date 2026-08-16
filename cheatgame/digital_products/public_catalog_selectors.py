@@ -29,6 +29,7 @@ from cheatgame.product.models import (
     NativeConsole,
     Product,
     ProductCommerceAuthority,
+    ProductSlugHistory,
     ProductStatus,
     ProductType,
 )
@@ -237,7 +238,15 @@ def public_digital_games(
 
 
 def public_digital_game_detail(*, slug):
-    return public_digital_games().filter(slug=slug).first()
+    product = public_digital_games().filter(slug=slug).first()
+    if product is not None:
+        return product
+    product_id = ProductSlugHistory.objects.filter(slug=slug).values_list(
+        "product_id", flat=True
+    ).first()
+    if product_id is None:
+        return None
+    return public_digital_games().filter(pk=product_id).first()
 
 
 def prefetched_public_offers(product):

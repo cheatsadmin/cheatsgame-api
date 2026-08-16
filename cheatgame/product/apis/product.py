@@ -462,6 +462,7 @@ class ProductDetailApi(APIView):
             "title": serializers.CharField(max_length=100),
         })
         product_type = serializers.IntegerField()
+        commerce_authority = serializers.CharField()
         title = serializers.CharField()
         slug = serializers.SlugField()
         status = serializers.CharField()

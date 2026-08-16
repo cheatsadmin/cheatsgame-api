@@ -17,6 +17,7 @@ from cheatgame.product.models import (
     DeliveredVersion,
     Product,
     ProductCategory,
+    ProductSlugHistory,
 )
 
 
@@ -72,6 +73,7 @@ class Command(BaseCommand):
     @staticmethod
     def _validate_records(records):
         slugs = set()
+        historical_slugs = set()
         for record in records:
             slug = str(record.get("slug") or "")
             if not slug or slug in slugs:
@@ -79,6 +81,25 @@ class Command(BaseCommand):
                     "Production-ready Product slugs must be non-empty and unique."
                 )
             slugs.add(slug)
+            aliases = record.get("legacy_slugs") or []
+            if (
+                not isinstance(aliases, list)
+                or any(not isinstance(alias, str) or not alias for alias in aliases)
+                or len(aliases) != len(set(aliases))
+            ):
+                raise CommandError(
+                    f"Production-ready Product {slug} has invalid legacy slugs."
+                )
+            if slug in aliases:
+                raise CommandError(
+                    f"Production-ready Product {slug} cannot alias its active slug."
+                )
+            duplicate_aliases = historical_slugs.intersection(aliases)
+            if duplicate_aliases:
+                raise CommandError(
+                    "Historical Product slugs must be globally unique."
+                )
+            historical_slugs.update(aliases)
             for field in (
                 "title",
                 "seo_title",
@@ -90,6 +111,11 @@ class Command(BaseCommand):
                     raise CommandError(
                         f"Production-ready Product {slug} is missing {field}."
                     )
+        collisions = slugs.intersection(historical_slugs)
+        if collisions:
+            raise CommandError(
+                "An active Product slug cannot also be a historical slug."
+            )
 
     @staticmethod
     def _validate_categories(categories):
@@ -190,6 +216,20 @@ class Command(BaseCommand):
             slug=record["slug"], defaults=expected
         )
         self._ensure_exact(product, expected, label=f"Product {record['slug']}")
+        for legacy_slug in record.get("legacy_slugs") or []:
+            active_owner = Product.objects.filter(slug=legacy_slug).first()
+            if active_owner is not None and active_owner.pk != product.pk:
+                raise CommandError(
+                    f"Historical slug {legacy_slug} conflicts with an active Product."
+                )
+            history, _ = ProductSlugHistory.objects.get_or_create(
+                slug=legacy_slug,
+                defaults={"product": product},
+            )
+            if history.product_id != product.pk:
+                raise CommandError(
+                    f"Historical slug {legacy_slug} belongs to another Product."
+                )
         self._import_release(product, record.get("release"))
 
         pools = {}

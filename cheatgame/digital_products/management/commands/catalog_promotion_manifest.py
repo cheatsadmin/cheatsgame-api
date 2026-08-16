@@ -37,6 +37,7 @@ class Command(BaseCommand):
         del args
         products = Product.objects.prefetch_related(
             "categories__category",
+            "slug_history",
             "delivered_versions__digital_offers__inventory_pool",
         ).order_by("pk")
         records = []
@@ -99,6 +100,11 @@ class Command(BaseCommand):
                     "source_product_id": product.pk,
                     "title": product.title,
                     "slug": product.slug,
+                    "legacy_slugs": list(
+                        product.slug_history.order_by("pk").values_list(
+                            "slug", flat=True
+                        )
+                    ),
                     "product_type": product.product_type,
                     "publication_state": product.status,
                     "seo_title": product.seo_title,

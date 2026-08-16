@@ -7,7 +7,12 @@ from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import TestCase
 
-from cheatgame.product.models import Category, Product, ProductCategory
+from cheatgame.product.models import (
+    Category,
+    Product,
+    ProductCategory,
+    ProductSlugHistory,
+)
 
 
 class ProductionCatalogCommandTests(TestCase):
@@ -23,6 +28,7 @@ class ProductionCatalogCommandTests(TestCase):
             "classification": "PRODUCTION_READY",
             "title": "Approved Game",
             "slug": "approved-game",
+            "legacy_slugs": ["بازی-approved-game"],
             "product_type": 2,
             "publication_state": "published",
             "seo_title": "Approved SEO",
@@ -50,6 +56,9 @@ class ProductionCatalogCommandTests(TestCase):
         call_command("import_production_catalog", str(path), apply=True)
         call_command("import_production_catalog", str(path), apply=True)
         self.assertEqual(list(Product.objects.values_list("slug", flat=True)), ["approved-game"])
+        history = ProductSlugHistory.objects.get()
+        self.assertEqual(history.slug, "بازی-approved-game")
+        self.assertEqual(history.product.slug, "approved-game")
 
     def test_production_ready_record_cannot_omit_owner_review_fields(self):
         path = self._manifest_path({

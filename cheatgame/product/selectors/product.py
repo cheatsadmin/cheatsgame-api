@@ -1,7 +1,7 @@
 from django.db.models import QuerySet, Prefetch
 
 from cheatgame.product.filters import ProductFilter
-from cheatgame.product.models import Product, ProductStatus, Question, Reviews, Label, LabelType, SuggestionProduct, ReviewStatus
+from cheatgame.product.models import Product, ProductSlugHistory, ProductStatus, Question, Reviews, Label, LabelType, SuggestionProduct, ReviewStatus
 
 
 def product_list(*, filters=None, include_unpublished: bool = False) -> QuerySet[Product]:
@@ -23,7 +23,7 @@ def product_detail(*, slug: str, include_unpublished: bool = False) -> Product:
     qs = Product.objects.filter(slug=slug)
     if not include_unpublished:
         qs = qs.filter(status=ProductStatus.PUBLISHED)
-    return qs.prefetch_related(
+    product = qs.prefetch_related(
         "images",
         "categories__category",
         "valueslist",
@@ -33,6 +33,26 @@ def product_detail(*, slug: str, include_unpublished: bool = False) -> Product:
         Prefetch("reviews", queryset=Reviews.objects.filter(status=ReviewStatus.APPROVED, accepted=True)),
         Prefetch("questions", queryset=Question.objects.filter(accepted=True)),
         "notes"
+    ).first()
+    if product is not None:
+        return product
+
+    history = ProductSlugHistory.objects.select_related("product").filter(slug=slug).first()
+    if history is None:
+        return None
+    alias_qs = Product.objects.filter(pk=history.product_id)
+    if not include_unpublished:
+        alias_qs = alias_qs.filter(status=ProductStatus.PUBLISHED)
+    return alias_qs.prefetch_related(
+        "images",
+        "categories__category",
+        "valueslist",
+        "attachments",
+        "suggestions",
+        "labels",
+        Prefetch("reviews", queryset=Reviews.objects.filter(status=ReviewStatus.APPROVED, accepted=True)),
+        Prefetch("questions", queryset=Question.objects.filter(accepted=True)),
+        "notes",
     ).first()
 
 

@@ -216,7 +216,46 @@ class Product(BaseModel):
     def save(self, *args, **kwargs):
         if not self.slug:
             self.slug = self.generate_unique_slug()
+        elif ProductSlugHistory.objects.filter(slug=self.slug).exclude(
+            product_id=self.pk
+        ).exists():
+            raise ValidationError(
+                {"slug": "این نشانی قبلاً برای محصول دیگری استفاده شده است."}
+            )
         super(Product, self).save(*args, **kwargs)
+
+
+class ProductSlugHistory(BaseModel):
+    """A permanent, non-authoritative alias for a Product's former public slug."""
+
+    product = models.ForeignKey(
+        Product,
+        on_delete=models.PROTECT,
+        related_name="slug_history",
+    )
+    slug = models.SlugField(
+        db_index=True,
+        unique=True,
+        allow_unicode=True,
+        max_length=120,
+    )
+
+    class Meta:
+        ordering = ("pk",)
+
+    def __str__(self):
+        return f"{self.slug} -> {self.product.slug}"
+
+    def save(self, *args, **kwargs):
+        normalized_slug = slugify(self.slug, allow_unicode=True)
+        if not normalized_slug:
+            raise ValidationError({"slug": "نشانی قبلی معتبر نیست."})
+        self.slug = normalized_slug
+        if Product.objects.filter(slug=self.slug).exists():
+            raise ValidationError(
+                {"slug": "نشانی قبلی نمی‌تواند نشانی فعال یک محصول باشد."}
+            )
+        super().save(*args, **kwargs)
 
 
 class DeliveredVersion(BaseModel):

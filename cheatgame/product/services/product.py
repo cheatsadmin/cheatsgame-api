@@ -1,9 +1,17 @@
 from django.db import transaction
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.db.models.deletion import ProtectedError
 from django.utils.text import slugify
 
-from cheatgame.product.models import Category, Product, ProductCategory, ProductNote, ProductStatus
+from cheatgame.product.models import (
+    Category,
+    Product,
+    ProductCategory,
+    ProductNote,
+    ProductSlugHistory,
+    ProductStatus,
+)
 
 
 class ProductDeleteProtectedError(ValueError):
@@ -52,7 +60,10 @@ def build_unique_product_slug(value: str, *, exclude_product_id: int = None) -> 
     if exclude_product_id:
         queryset = queryset.exclude(id=exclude_product_id)
 
-    while queryset.filter(slug=slug).exists():
+    while (
+        queryset.filter(slug=slug).exists()
+        or ProductSlugHistory.objects.filter(slug=slug).exists()
+    ):
         suffix = f"-{counter}"
         slug = f"{base_slug[:120 - len(suffix)]}{suffix}"
         counter += 1
@@ -109,14 +120,28 @@ def update_product(*, product_id: int, product_type: int, title: str, main_image
                    order_limit: int = None, device_model: str = None, slug: str = None,
                    status: str = ProductStatus.PUBLISHED, seo_title: str = "", meta_description: str = "",
                    categories: list[Category] = None) -> Product:
-    product = Product.objects.select_for_update().get(id=product_id)
+    # Serialize Product slug changes so a former slug cannot be claimed by a
+    # different Product between validation and history creation.
+    list(Product.objects.select_for_update().order_by("pk").values_list("pk", flat=True))
+    list(ProductSlugHistory.objects.select_for_update().order_by("pk").values_list("pk", flat=True))
+    product = Product.objects.get(id=product_id)
+    previous_slug = product.slug
     product.product_type = product_type
     product.title = title
     if slug is not None:
-        product.slug = slugify(slug, allow_unicode=True) or build_unique_product_slug(
+        requested_slug = slugify(slug, allow_unicode=True) or build_unique_product_slug(
             title,
             exclude_product_id=product_id,
         )
+        conflicting_history = ProductSlugHistory.objects.filter(slug=requested_slug).exclude(
+            product_id=product_id
+        )
+        if conflicting_history.exists():
+            raise ValidationError({"slug": "این نشانی قبلاً برای محصول دیگری استفاده شده است."})
+        if Product.objects.exclude(pk=product_id).filter(slug=requested_slug).exists():
+            raise ValidationError({"slug": "این نشانی برای محصول دیگری فعال است."})
+        ProductSlugHistory.objects.filter(product_id=product_id, slug=requested_slug).delete()
+        product.slug = requested_slug
     product.status = status
     product.seo_title = seo_title or ""
     product.meta_description = meta_description or ""
@@ -134,6 +159,13 @@ def update_product(*, product_id: int, product_type: int, title: str, main_image
         update_fields=["product_type", "title", "slug", "status", "seo_title", "meta_description",
                        "main_image", "price", "off_price", "quantity", "discount_end_time",
                        "description", "order_limit", "device_model" ,"updated_at"])
+    if previous_slug and previous_slug != product.slug:
+        history, created = ProductSlugHistory.objects.get_or_create(
+            slug=previous_slug,
+            defaults={"product": product},
+        )
+        if not created and history.product_id != product.pk:
+            raise ValidationError({"slug": "نشانی قبلی به محصول دیگری تعلق دارد."})
     if categories is not None:
         set_product_categories(product=product, categories=categories)
     return product
