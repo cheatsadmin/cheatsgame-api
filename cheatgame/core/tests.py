@@ -1,6 +1,10 @@
 import importlib
+import io
+import logging
+import logging.config
 import os
 import sys
+from copy import deepcopy
 from unittest.mock import patch
 
 from config.django import base as base_settings
@@ -102,6 +106,46 @@ class ProductionSettingsTests(SimpleTestCase):
         self.assertFalse(module.PAYMENT_FAKE_PROVIDER_ENABLED)
         self.assertTrue(module.FINANCIAL_ZARINPAL_ENABLED)
         self.assertEqual(module.SIMPLE_JWT["SIGNING_KEY"], PRODUCTION_ENV["JWT_SIGNING_KEY"])
+
+    def test_production_logging_emits_only_dedicated_provider_transport_info(self):
+        module = self.import_production_settings(PRODUCTION_ENV)
+        target_name = "cheatgame.financial_core.provider_transport"
+        noisy_name = "cheatgame.noisy"
+        target = logging.getLogger(target_name)
+        noisy = logging.getLogger(noisy_name)
+        root = logging.getLogger()
+        previous = {
+            logger: (logger.level, list(logger.handlers), logger.propagate, logger.disabled)
+            for logger in (target, noisy, root)
+        }
+        stream = io.StringIO()
+        config = deepcopy(module.LOGGING)
+        config["handlers"]["provider_transport_console"]["stream"] = stream
+
+        try:
+            logging.config.dictConfig(config)
+            target.info(
+                'zarinpal_transport {"event":"provider_transport_response",'
+                '"http_status":200,"response_shape":"object"}'
+            )
+            noisy.info("unrelated-noisy-info")
+
+            rendered = stream.getvalue()
+            self.assertIn("provider_transport_response", rendered)
+            self.assertIn('"http_status":200', rendered)
+            self.assertNotIn("unrelated-noisy-info", rendered)
+            self.assertEqual(target.getEffectiveLevel(), logging.INFO)
+            self.assertGreaterEqual(root.getEffectiveLevel(), logging.WARNING)
+            self.assertFalse(target.propagate)
+        finally:
+            for logger, (level, handlers, propagate, disabled) in previous.items():
+                for handler in logger.handlers:
+                    if handler not in handlers:
+                        handler.close()
+                logger.handlers = handlers
+                logger.setLevel(level)
+                logger.propagate = propagate
+                logger.disabled = disabled
 
     def test_production_cors_preflight_allows_payment_idempotency_header(self):
         module = self.import_production_settings(PRODUCTION_ENV)

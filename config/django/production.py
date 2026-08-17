@@ -5,6 +5,32 @@ from django.core.exceptions import ImproperlyConfigured
 from urllib.parse import urlparse
 
 
+PROVIDER_TRANSPORT_LOGGER = "cheatgame.financial_core.provider_transport"
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "provider_transport": {
+            "format": "%(levelname)s %(name)s %(message)s",
+        },
+    },
+    "handlers": {
+        "provider_transport_console": {
+            "class": "logging.StreamHandler",
+            "formatter": "provider_transport",
+            "level": "INFO",
+        },
+    },
+    "loggers": {
+        PROVIDER_TRANSPORT_LOGGER: {
+            "handlers": ["provider_transport_console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+    },
+}
+
+
 def _normalized_host(value):
     return str(value).strip().lower().rstrip(".")
 

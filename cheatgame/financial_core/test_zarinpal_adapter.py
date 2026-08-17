@@ -269,7 +269,8 @@ class ZarinpalAdapterTests(SimpleTestCase):
             ),
             sandbox=False,
         )
-        result = instance.execute_operation(request_envelope())
+        with self.assertLogs("cheatgame.financial_core.provider_transport", "INFO") as logs:
+            result = instance.execute_operation(request_envelope())
         self.assertEqual(result.outcome, ProviderRequestOutcome.CUSTOMER_ACTION_REQUIRED)
         self.assertEqual(
             instance.transport.calls[0][0],
@@ -279,6 +280,13 @@ class ZarinpalAdapterTests(SimpleTestCase):
             result.customer_action_url,
             f"https://payment.zarinpal.com/pg/StartPay/{PRODUCTION_AUTHORITY}",
         )
+        rendered = " ".join(logs.output)
+        self.assertIn("provider_transport_response", rendered)
+        self.assertIn('"http_status":200', rendered)
+        self.assertIn('"response_shape":"object"', rendered)
+        self.assertNotIn(PRODUCTION_AUTHORITY, rendered)
+        self.assertNotIn(MERCHANT, rendered)
+        self.assertNotIn("merchant_id", rendered)
 
     def test_callback_is_unsigned_hint_and_never_payment_truth(self):
         instance = adapter()
