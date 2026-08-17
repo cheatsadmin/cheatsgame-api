@@ -1,6 +1,8 @@
 import hashlib
 import json
+import logging
 import re
+import time
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from urllib.parse import parse_qs, urljoin, urlsplit
@@ -42,6 +44,7 @@ ZARINPAL_PROVIDER_UNIT = MoneyUnit.IRR
 ZARINPAL_REQUEST_ACCEPTED = 100
 ZARINPAL_VERIFY_SUCCESS = frozenset((100, 101))
 ZARINPAL_AUTHORITY = re.compile(r"^[AS][A-Za-z0-9]{35}$")
+logger = logging.getLogger("cheatgame.financial_core.provider_transport")
 
 
 class ZarinpalConfigurationError(ImproperlyConfigured):
@@ -50,6 +53,15 @@ class ZarinpalConfigurationError(ImproperlyConfigured):
 
 class ZarinpalProtocolError(ValidationError):
     pass
+
+
+class ZarinpalTransportError(ConnectionError):
+    """A safe, phase-classified transport failure with no provider payload."""
+
+    def __init__(self, *, reason_code, safe_metadata):
+        super().__init__("Zarinpal transport failed.")
+        self.safe_reason_code = reason_code
+        self.safe_metadata = safe_metadata
 
 
 @dataclass(frozen=True)
@@ -181,7 +193,57 @@ class ZarinpalAdapter:
             raise ZarinpalProtocolError("Zarinpal IRR amount must equal the canonical amount.")
         return provider
 
-    def _post_json(self, *, url, payload):
+    @staticmethod
+    def _transport_failure(exc):
+        chain = []
+        pending = [exc]
+        seen = set()
+        while pending and len(chain) < 8:
+            current = pending.pop(0)
+            if not isinstance(current, BaseException) or id(current) in seen:
+                continue
+            seen.add(id(current))
+            chain.append(type(current).__name__)
+            pending.extend(
+                candidate
+                for candidate in (current.__cause__, *current.args, current.__context__)
+                if isinstance(candidate, BaseException)
+            )
+        names = set(chain)
+        if isinstance(exc, requests.exceptions.ConnectTimeout) or names.intersection(
+            {"ConnectTimeout", "ConnectTimeoutError"}
+        ):
+            return "provider_connect_timeout", "connect", "not_sent"
+        if isinstance(exc, requests.exceptions.ReadTimeout) or names.intersection(
+            {"ReadTimeout", "ReadTimeoutError"}
+        ):
+            return "provider_read_timeout_before_response", "read", "sent_or_unknown"
+        if isinstance(exc, requests.exceptions.Timeout):
+            return "provider_timeout_unknown", "timeout", "sent_or_unknown"
+        if isinstance(exc, requests.exceptions.SSLError) or names.intersection(
+            {"SSLError", "CertificateError"}
+        ):
+            return "provider_tls_failure", "tls", "not_sent"
+        if isinstance(exc, requests.exceptions.ProxyError):
+            return "provider_proxy_failure", "proxy", "not_sent"
+        if names.intersection({"NameResolutionError", "gaierror"}):
+            return "provider_dns_failure", "dns", "not_sent"
+        if names.intersection({"ConnectionResetError", "RemoteDisconnected", "ProtocolError"}):
+            return "provider_connection_reset", "response", "sent_or_unknown"
+        if names.intersection({"NewConnectionError", "ConnectionRefusedError"}):
+            return "provider_connect_failure", "connect", "not_sent"
+        return "provider_transport_unknown_after_send", "unknown", "sent_or_unknown"
+
+    def _log_transport(self, *, level, facts):
+        logger.log(
+            level,
+            "zarinpal_transport %s",
+            json.dumps(facts, sort_keys=True, separators=(",", ":")),
+        )
+
+    def _post_json(self, *, url, payload, operation, transaction_id, correlation_id):
+        started = time.monotonic()
+        host = urlsplit(url).hostname or ""
         try:
             response = self.transport.post(
                 url,
@@ -189,16 +251,55 @@ class ZarinpalAdapter:
                 headers={"Accept": "application/json", "Content-Type": "application/json"},
                 timeout=(self.connect_timeout, self.read_timeout),
             )
-        except (requests.ConnectTimeout, requests.ReadTimeout, requests.Timeout) as exc:
-            raise TimeoutError("Zarinpal request timed out.") from exc
-        except requests.RequestException as exc:
-            raise ConnectionError("Zarinpal transport failed.") from exc
+        except requests.exceptions.RequestException as exc:
+            reason_code, phase, request_send_state = self._transport_failure(exc)
+            facts = {
+                "correlation_id": str(correlation_id),
+                "event": "provider_transport_failure",
+                "exception_class": type(exc).__name__,
+                "operation": operation,
+                "phase": phase,
+                "provider": ZARINPAL_PROVIDER_KEY,
+                "request_send_state": request_send_state,
+                "target_host": host,
+                "total_duration_ms": round((time.monotonic() - started) * 1000, 2),
+                "transaction_id": str(transaction_id),
+            }
+            self._log_transport(level=logging.WARNING, facts=facts)
+            raise ZarinpalTransportError(
+                reason_code=reason_code,
+                safe_metadata={
+                    "exception_class": facts["exception_class"],
+                    "request_send_state": request_send_state,
+                    "result_category": "transport_uncertain",
+                    "transport_phase": phase,
+                },
+            ) from exc
+        facts = {
+            "correlation_id": str(correlation_id),
+            "event": "provider_transport_response",
+            "http_status": int(response.status_code),
+            "operation": operation,
+            "provider": ZARINPAL_PROVIDER_KEY,
+            "response_elapsed_ms": round(response.elapsed.total_seconds() * 1000, 2)
+            if getattr(response, "elapsed", None) is not None
+            else None,
+            "target_host": host,
+            "total_duration_ms": round((time.monotonic() - started) * 1000, 2),
+            "transaction_id": str(transaction_id),
+        }
         try:
             decoded = response.json()
         except (TypeError, ValueError) as exc:
+            facts["response_shape"] = "malformed_json"
+            self._log_transport(level=logging.WARNING, facts=facts)
             raise ZarinpalProtocolError("Zarinpal returned malformed JSON.") from exc
         if not isinstance(decoded, dict):
+            facts["response_shape"] = type(decoded).__name__
+            self._log_transport(level=logging.WARNING, facts=facts)
             raise ZarinpalProtocolError("Zarinpal response must be a JSON object.")
+        facts["response_shape"] = "object"
+        self._log_transport(level=logging.INFO, facts=facts)
         return ZarinpalHttpResult(status_code=int(response.status_code), payload=decoded)
 
     @staticmethod
@@ -272,7 +373,13 @@ class ZarinpalAdapter:
             "metadata": {"order_id": envelope.merchant_reference},
         }
         try:
-            result = self._post_json(url=self.request_url, payload=payload)
+            result = self._post_json(
+                url=self.request_url,
+                payload=payload,
+                operation="payment_request",
+                transaction_id=envelope.transaction_public_id,
+                correlation_id=envelope.correlation_id,
+            )
             data, _, code = self._response_parts(result)
         except ZarinpalProtocolError:
             return self._request_result(
@@ -455,7 +562,13 @@ class ZarinpalAdapter:
             "authority": authority,
         }
         try:
-            result = self._post_json(url=self.verify_url, payload=payload)
+            result = self._post_json(
+                url=self.verify_url,
+                payload=payload,
+                operation="payment_verify",
+                transaction_id=envelope.transaction_public_id,
+                correlation_id=envelope.correlation_id,
+            )
             data, _, code = self._response_parts(result)
         except ZarinpalProtocolError:
             return self._verification_result(

@@ -200,7 +200,7 @@ def _validate_customer_action_url(*, provider, url):
     return url
 
 
-def _unknown_result(envelope, *, reason_code):
+def _unknown_result(envelope, *, reason_code, safe_metadata=None):
     evidence_hash = hashlib.sha256(
         f"{envelope.request_fingerprint}:{envelope.claim_token}:{reason_code}".encode("utf-8")
     ).hexdigest()
@@ -208,7 +208,7 @@ def _unknown_result(envelope, *, reason_code):
         outcome=ProviderRequestOutcome.OUTCOME_UNKNOWN,
         evidence_hash=evidence_hash,
         reason_code=reason_code,
-        safe_metadata={"result_category": "transport_uncertain"},
+        safe_metadata=safe_metadata or {"result_category": "transport_uncertain"},
     )
 
 
@@ -231,8 +231,25 @@ def _execute_provider(*, adapter, envelope):
         return _unknown_result(envelope, reason_code="provider_timeout")
     except ValidationError:
         return _protocol_result(envelope)
-    except Exception:
-        return _unknown_result(envelope, reason_code="provider_transport_failure")
+    except Exception as exc:
+        reason_code = getattr(exc, "safe_reason_code", "provider_transport_failure")
+        safe_metadata = getattr(exc, "safe_metadata", None)
+        if not isinstance(reason_code, str) or not reason_code.startswith("provider_"):
+            reason_code = "provider_transport_failure"
+        if not isinstance(safe_metadata, dict):
+            safe_metadata = {"result_category": "transport_uncertain"}
+        allowed = {
+            key: safe_metadata[key]
+            for key in (
+                "exception_class",
+                "request_send_state",
+                "result_category",
+                "transport_phase",
+            )
+            if key in safe_metadata and isinstance(safe_metadata[key], str)
+        }
+        allowed.setdefault("result_category", "transport_uncertain")
+        return _unknown_result(envelope, reason_code=reason_code, safe_metadata=allowed)
     if not isinstance(result, NormalizedProviderResult):
         return _protocol_result(envelope)
     if not result.evidence_hash or len(str(result.evidence_hash)) != 64:

@@ -618,7 +618,13 @@ def claim_provider_request(
 
 
 def _safe_result_metadata(metadata):
-    allowed = {"result_code", "result_category"}
+    allowed = {
+        "exception_class",
+        "request_send_state",
+        "result_code",
+        "result_category",
+        "transport_phase",
+    }
     clean = {}
     for key, value in (metadata or {}).items():
         if key in allowed and isinstance(value, (str, int, bool)):

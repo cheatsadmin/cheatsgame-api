@@ -45,6 +45,7 @@ from cheatgame.financial_core.services.zarinpal import (
     ZARINPAL_ADAPTER_KEY,
     ZARINPAL_CREDENTIAL_REFERENCE,
     ZarinpalAdapter,
+    ZarinpalTransportError,
 )
 from cheatgame.financial_core.test_c2b1 import C2B1Fixture
 
@@ -59,6 +60,7 @@ class FakeResponse:
         self.payload = payload
         self.status_code = status_code
         self.json_error = json_error
+        self.elapsed = None
 
     def json(self):
         if self.json_error:
@@ -199,8 +201,57 @@ class ZarinpalAdapterTests(SimpleTestCase):
         self.assertEqual(rejected.outcome, ProviderRequestOutcome.CONFIGURATION_FAILURE)
         malformed = adapter(FakeResponse({}, json_error=True)).execute_operation(request_envelope())
         self.assertEqual(malformed.outcome, ProviderRequestOutcome.PROTOCOL_FAILURE)
-        with self.assertRaises(TimeoutError):
-            adapter(requests.ReadTimeout("secret detail")).execute_operation(request_envelope())
+        with self.assertLogs("cheatgame.financial_core.provider_transport", "WARNING") as logs:
+            with self.assertRaises(ZarinpalTransportError) as caught:
+                adapter(requests.exceptions.ReadTimeout("secret detail")).execute_operation(
+                    request_envelope()
+                )
+        self.assertEqual(caught.exception.safe_reason_code, "provider_read_timeout_before_response")
+        self.assertEqual(caught.exception.safe_metadata["transport_phase"], "read")
+        self.assertEqual(caught.exception.safe_metadata["request_send_state"], "sent_or_unknown")
+        self.assertNotIn("secret detail", " ".join(logs.output))
+
+    def test_transport_taxonomy_distinguishes_safe_phases_without_payloads(self):
+        nested_read_timeout = requests.exceptions.ConnectionError(
+            requests.exceptions.ReadTimeout("nested merchant=secret")
+        )
+        cases = (
+            (
+                requests.exceptions.ConnectTimeout("merchant=secret"),
+                "provider_connect_timeout",
+                "connect",
+                "not_sent",
+            ),
+            (
+                nested_read_timeout,
+                "provider_read_timeout_before_response",
+                "read",
+                "sent_or_unknown",
+            ),
+            (
+                requests.exceptions.SSLError("merchant=secret"),
+                "provider_tls_failure",
+                "tls",
+                "not_sent",
+            ),
+            (
+                requests.exceptions.ConnectionError("merchant=secret"),
+                "provider_transport_unknown_after_send",
+                "unknown",
+                "sent_or_unknown",
+            ),
+        )
+        for failure, reason, phase, send_state in cases:
+            with self.subTest(reason=reason):
+                with self.assertLogs("cheatgame.financial_core.provider_transport", "WARNING") as logs:
+                    with self.assertRaises(ZarinpalTransportError) as caught:
+                        adapter(failure).execute_operation(request_envelope())
+                self.assertEqual(caught.exception.safe_reason_code, reason)
+                self.assertEqual(caught.exception.safe_metadata["transport_phase"], phase)
+                self.assertEqual(caught.exception.safe_metadata["request_send_state"], send_state)
+                rendered = " ".join(logs.output)
+                self.assertNotIn("merchant=secret", rendered)
+                self.assertNotIn(MERCHANT, rendered)
 
     def test_authority_mode_mismatch_fails_as_security_result(self):
         result = adapter(

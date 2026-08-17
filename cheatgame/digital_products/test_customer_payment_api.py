@@ -67,6 +67,7 @@ from cheatgame.financial_core.services.adapters import (
 from cheatgame.financial_core.services.provider_request_reconciliation import (
     reconcile_no_authority_created,
 )
+from cheatgame.financial_core.services.zarinpal import ZarinpalTransportError
 from cheatgame.product.models import (
     DeliveredVersion,
     NativeConsole,
@@ -787,6 +788,33 @@ class CustomerDigitalPaymentApiTests(TransactionTestCase):
         self.assertEqual(self.cart.lock_reason, CartLockReason.MANUAL_REVIEW)
         self.assertGreater(reservation.expires_at, timezone.now())
         self.assertEqual(reservation.expires_at, self.checkout.expires_at)
+
+    def test_phase_classified_transport_failure_is_persisted_and_still_fails_closed(self):
+        self.adapter.error = ZarinpalTransportError(
+            reason_code="provider_read_timeout_before_response",
+            safe_metadata={
+                "exception_class": "ConnectionError",
+                "request_send_state": "sent_or_unknown",
+                "result_category": "transport_uncertain",
+                "transport_phase": "read",
+                "unsafe": "must-not-persist",
+            },
+        )
+        response = self.request(uuid4())
+        self.assertEqual(response.status_code, 201)
+        self.assertTrue(response.data["do_not_pay_again"])
+        result = ProviderRequestResult.objects.get()
+        self.assertEqual(result.reason_code, "provider_read_timeout_before_response")
+        self.assertEqual(
+            result.safe_metadata,
+            {
+                "exception_class": "ConnectionError",
+                "request_send_state": "sent_or_unknown",
+                "result_category": "transport_uncertain",
+                "transport_phase": "read",
+            },
+        )
+        self.assertEqual(ReviewCase.objects.get().reason, ReviewCaseReason.PROVIDER_STATE_UNCLEAR)
 
     def test_authoritative_no_authority_evidence_closes_unknown_request_once(self):
         second_product = Product.objects.create(
