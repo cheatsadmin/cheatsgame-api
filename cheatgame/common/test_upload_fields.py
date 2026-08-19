@@ -58,6 +58,24 @@ class SecureUploadFieldTests(SimpleTestCase):
         sanitized = SecureHtmlUploadField().run_validation(upload).read().decode("utf-8")
         self.assertEqual(sanitized, "<p>safe</p>alert(1)")
 
+    def test_article_bidi_and_intrinsic_image_attributes_survive_sanitization(self):
+        upload = SimpleUploadedFile(
+            "article.html",
+            (
+                '<p>آنالوگ <bdi dir="ltr">GuliKit 720</bdi></p>'
+                '<img src="https://cdn.cheatsg.ir/article.webp" alt="تصویر تست" '
+                'width="1200" height="800" loading="lazy" decoding="async">'
+            ).encode("utf-8"),
+            content_type="text/html",
+        )
+
+        sanitized = SecureHtmlUploadField().run_validation(upload).read().decode("utf-8")
+
+        self.assertIn('<bdi dir="ltr">GuliKit 720</bdi>', sanitized)
+        self.assertIn('alt="تصویر تست"', sanitized)
+        self.assertIn('width="1200" height="800"', sanitized)
+        self.assertIn('loading="lazy" decoding="async"', sanitized)
+
     def test_non_html_content_upload_is_rejected(self):
         upload = SimpleUploadedFile(
             "description.txt", b"plain", content_type="text/plain"

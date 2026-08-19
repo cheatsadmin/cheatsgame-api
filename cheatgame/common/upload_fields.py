@@ -26,14 +26,14 @@ IMAGE_FORMAT_POLICY = {
 }
 
 ALLOWED_HTML_TAGS = {
-    "a", "blockquote", "br", "code", "div", "em", "figcaption", "figure",
+    "a", "bdi", "blockquote", "br", "code", "div", "em", "figcaption", "figure",
     "h1", "h2", "h3", "h4", "h5", "h6", "hr", "img", "li", "ol", "p",
     "pre", "span", "strong", "table", "tbody", "td", "th", "thead", "tr", "ul",
 }
 ALLOWED_HTML_ATTRIBUTES = {
     "*": ["class", "dir", "lang"],
     "a": ["href", "rel", "target", "title"],
-    "img": ["alt", "height", "loading", "src", "title", "width"],
+    "img": ["alt", "decoding", "height", "loading", "src", "title", "width"],
     "td": ["colspan", "rowspan"],
     "th": ["colspan", "rowspan", "scope"],
 }
