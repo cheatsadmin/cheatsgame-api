@@ -8,7 +8,7 @@ from rest_framework.views import APIView
 from cheatgame.api.mixins import ApiAuthMixin
 from cheatgame.api.pagination import LimitOffsetPagination, get_paginated_response, PaginatedSerializer
 from cheatgame.api.utils import inline_serializer
-from cheatgame.common.utils import reformat_url, safe_file_url
+from cheatgame.common.utils import reformat_url, safe_file_url, storage_origin_file_url
 from cheatgame.common.upload_fields import SecureHtmlUploadField, SecureImageUploadField
 from django.utils.text import slugify
 
@@ -498,10 +498,10 @@ class BlogAdminApi(ApiAuthMixin, APIView):
         seo_title = serializers.SerializerMethodField()
 
         def get_picture(self, obj):
-            return reformat_url(url=obj.picture.url)
+            return storage_origin_file_url(file=obj.picture)
 
         def get_content(self, obj):
-            return reformat_url(url=obj.content.url)
+            return storage_origin_file_url(file=obj.content)
 
         def get_seo_title(self, obj):
             return obj.seo_title or obj.title
@@ -665,10 +665,10 @@ class BlogDetailApi(ApiAuthMixin, APIView):
         seo_title = serializers.SerializerMethodField()
 
         def get_picture(self, obj):
-            return reformat_url(url=obj.picture.url)
+            return storage_origin_file_url(file=obj.picture)
 
         def get_content(self, obj):
-            return reformat_url(url=obj.content.url)
+            return storage_origin_file_url(file=obj.content)
 
         def get_seo_title(self, obj):
             return obj.seo_title or obj.title
@@ -716,7 +716,7 @@ class BlogListOutPutSerializer(serializers.ModelSerializer):
     seo_title = serializers.SerializerMethodField()
 
     def get_picture(self, obj):
-        return reformat_url(url=obj.picture.url)
+        return storage_origin_file_url(file=obj.picture)
 
     def get_category_list(self, obj):
         return BlogCategoryOutPutSerializer(obj.categories.all(), many=True).data
@@ -791,10 +791,10 @@ class BlogDetailUserApi(APIView):
         seo_title = serializers.SerializerMethodField()
 
         def get_picture(self, obj):
-            return reformat_url(url=obj.picture.url)
+            return storage_origin_file_url(file=obj.picture)
 
         def get_content(self, obj):
-            return reformat_url(url=obj.content.url)
+            return storage_origin_file_url(file=obj.content)
 
         def get_seo_title(self, obj):
             return obj.seo_title or obj.title
@@ -914,8 +914,7 @@ class UploadFileS3ApiView(ApiAuthMixin, APIView):
         try:
             file = serializer.validated_data.get("file")
             file_path = default_storage.save(file.name, file)
-            file_url = default_storage.url(file_path)
-            file_url = reformat_url(url = file_url)
+            file_url = storage_origin_file_url(file=file_path)
             return Response({"url": file_url}, status=status.HTTP_201_CREATED)
         except Exception as error:
             return Response({"error": "فایل آپلود نشد."}, status=status.HTTP_400_BAD_REQUEST)

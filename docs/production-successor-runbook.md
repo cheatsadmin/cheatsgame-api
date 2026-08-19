@@ -47,6 +47,8 @@ The catalog importer creates catalog identity, release metadata, delivered versi
 
 Use a dedicated Production bucket. Set `AWS_STORAGE_ENVIRONMENT=production`, an owner-approved bucket name without staging/test markers, and `AWS_S3_CUSTOM_DOMAIN=cdn.cheatsg.ir`. Staging keeps its current bucket. Copy reviewed catalog objects before import, verify object checksums and HTTPS reads, then make Production the sole writer to the Production bucket. Rollback keeps the bucket intact and switches application releases only; media objects are never deleted during rollback.
 
+After configuring Production storage delivery, run `python manage.py verify_public_media_delivery`. The check must retrieve both its temporary HTML and image probes from the application-generated public URLs before a release may accept new media writes.
+
 ## Runtime supervision
 
 Liara's Django cron contract runs one `commerce_runtime_tick` every minute. The command obtains a PostgreSQL advisory lock, executes one bounded Financial Runtime batch, then activates eligible Digital Fulfillment obligations. The manifest also imposes a 50-second OS timeout; the command has a 45-second internal deadline. Overlapping executions exit successfully as `skipped_overlap`. Unresolved financial or fulfillment work returns a non-zero exit and emits sanitized counts/codes only.

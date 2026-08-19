@@ -1,5 +1,5 @@
 import logging
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
@@ -67,6 +67,28 @@ def assert_settings(required_settings, error_message_prefix=""):
 def reformat_url(*, url:str) -> str:
     index = url.find("?")
     return url[:index] if index != -1 else url
+
+
+def storage_origin_file_url(*, file, fallback: str = "") -> str:
+    """Build a public URL against the configured bucket origin, not a CDN alias."""
+    if not file:
+        return fallback
+
+    name = str(getattr(file, "name", file) or "").lstrip("/")
+    endpoint_url = getattr(settings, "AWS_S3_ENDPOINT_URL", "") or ""
+    bucket_name = getattr(settings, "AWS_STORAGE_BUCKET_NAME", "") or ""
+    parsed_endpoint = urlsplit(endpoint_url)
+    if (
+        name
+        and bucket_name
+        and parsed_endpoint.scheme in ("http", "https")
+        and parsed_endpoint.netloc
+    ):
+        encoded_bucket = quote(bucket_name.strip("/"), safe="")
+        encoded_name = quote(name, safe="/")
+        return f"{endpoint_url.rstrip('/')}/{encoded_bucket}/{encoded_name}"
+
+    return safe_file_url(file=file, fallback=fallback)
 
 
 def safe_file_url(*, file, fallback: str = "") -> str:

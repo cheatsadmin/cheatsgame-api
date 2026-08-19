@@ -5,7 +5,7 @@ from django.test import TestCase, override_settings
 from rest_framework import status
 from rest_framework.test import APIClient, APIRequestFactory
 
-from cheatgame.common.utils import safe_file_url
+from cheatgame.common.utils import safe_file_url, storage_origin_file_url
 from cheatgame.general.filters import BlogFilter
 from cheatgame.general.apis import BannerListApi
 from cheatgame.general.models import Banner, Blog, BlogCategory, BlogStatus
@@ -35,6 +35,20 @@ class SafeFileUrlTests(TestCase):
     @override_settings(AWS_S3_ENDPOINT_URL="<invalid>", AWS_STORAGE_BUCKET_NAME="cheatsgame-storage")
     def test_safe_file_url_falls_back_to_file_name_for_invalid_endpoint(self):
         self.assertEqual(safe_file_url(file=self.BrokenFile()), "images/banner.png")
+
+    @override_settings(
+        AWS_S3_ENDPOINT_URL="https://storage.iran.liara.site",
+        AWS_STORAGE_BUCKET_NAME="cheatsgame-production-media-v1",
+        AWS_S3_CUSTOM_DOMAIN="cdn.cheatsg.ir",
+    )
+    def test_storage_origin_file_url_uses_the_writing_bucket_not_cdn_alias(self):
+        file = type("StoredFile", (), {"name": "blog/راهنمای TMR.html"})()
+
+        self.assertEqual(
+            storage_origin_file_url(file=file),
+            "https://storage.iran.liara.site/cheatsgame-production-media-v1/"
+            "blog/%D8%B1%D8%A7%D9%87%D9%86%D9%85%D8%A7%DB%8C%20TMR.html",
+        )
 
 
 class BannerListApiTests(TestCase):
