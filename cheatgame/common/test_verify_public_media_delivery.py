@@ -27,6 +27,7 @@ TEST_STORAGES = {
     STORAGES=TEST_STORAGES,
     AWS_S3_ENDPOINT_URL="https://storage.example.test",
     AWS_STORAGE_BUCKET_NAME="production-media",
+    BLOG_MEDIA_PUBLIC_DOMAIN="media.example.test",
 )
 class VerifyPublicMediaDeliveryTests(SimpleTestCase):
     def test_command_verifies_html_and_image_and_cleans_up(self):

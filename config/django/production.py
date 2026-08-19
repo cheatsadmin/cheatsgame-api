@@ -295,6 +295,7 @@ AWS_SECRET_ACCESS_KEY= env('AWS_SECRET_ACCESS_KEY')
 AWS_STORAGE_BUCKET_NAME = env('AWS_STORAGE_BUCKET_NAME')
 AWS_S3_REGION_NAME = env('AWS_S3_REGION_NAME')
 AWS_S3_CUSTOM_DOMAIN = env('AWS_S3_CUSTOM_DOMAIN', default=None)
+BLOG_MEDIA_PUBLIC_DOMAIN = env('BLOG_MEDIA_PUBLIC_DOMAIN', default=None)
 AWS_STORAGE_ENVIRONMENT = env("AWS_STORAGE_ENVIRONMENT")
 AWS_S3_FILE_OVERWRITE = False
 AWS_S3_OBJECT_PARAMETERS = {
@@ -322,6 +323,13 @@ if CHEATSGAME_RUNTIME_ENVIRONMENT == "production":
     if _normalized_host(AWS_S3_CUSTOM_DOMAIN) != "cdn.cheatsg.ir":
         raise ImproperlyConfigured(
             "Production AWS_S3_CUSTOM_DOMAIN must be cdn.cheatsg.ir."
+        )
+    if (
+        BLOG_MEDIA_PUBLIC_DOMAIN
+        and _normalized_host(BLOG_MEDIA_PUBLIC_DOMAIN) != "media.cheatsg.ir"
+    ):
+        raise ImproperlyConfigured(
+            "Production BLOG_MEDIA_PUBLIC_DOMAIN must be media.cheatsg.ir."
         )
 
 if CHEATSGAME_RUNTIME_ENVIRONMENT == "production":

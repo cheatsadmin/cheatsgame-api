@@ -47,7 +47,7 @@ The catalog importer creates catalog identity, release metadata, delivered versi
 
 Use a dedicated Production bucket. Set `AWS_STORAGE_ENVIRONMENT=production`, an owner-approved bucket name without staging/test markers, and `AWS_S3_CUSTOM_DOMAIN=cdn.cheatsg.ir`. Staging keeps its current bucket. Copy reviewed catalog objects before import, verify object checksums and HTTPS reads, then make Production the sole writer to the Production bucket. Rollback keeps the bucket intact and switches application releases only; media objects are never deleted during rollback.
 
-After configuring Production storage delivery, run `python manage.py verify_public_media_delivery`. The check must retrieve both its temporary HTML and image probes from the application-generated public URLs before a release may accept new media writes.
+Keep `cdn.cheatsg.ir` attached to the legacy bucket while retained customer evidence still references it. Attach `media.cheatsg.ir` to the dedicated Production bucket and set `BLOG_MEDIA_PUBLIC_DOMAIN=media.cheatsg.ir` for new Blog HTML and inline media. After configuring Production storage delivery, run `python manage.py verify_public_media_delivery`. The check must retrieve both its temporary HTML and image probes from the application-generated public URLs before a release may accept new media writes.
 
 ## Runtime supervision
 

@@ -40,13 +40,14 @@ class SafeFileUrlTests(TestCase):
         AWS_S3_ENDPOINT_URL="https://storage.iran.liara.site",
         AWS_STORAGE_BUCKET_NAME="cheatsgame-production-media-v1",
         AWS_S3_CUSTOM_DOMAIN="cdn.cheatsg.ir",
+        BLOG_MEDIA_PUBLIC_DOMAIN="media.cheatsg.ir",
     )
     def test_storage_origin_file_url_uses_the_writing_bucket_not_cdn_alias(self):
         file = type("StoredFile", (), {"name": "blog/راهنمای TMR.html"})()
 
         self.assertEqual(
             storage_origin_file_url(file=file),
-            "https://storage.iran.liara.site/cheatsgame-production-media-v1/"
+            "https://media.cheatsg.ir/"
             "blog/%D8%B1%D8%A7%D9%87%D9%86%D9%85%D8%A7%DB%8C%20TMR.html",
         )
 

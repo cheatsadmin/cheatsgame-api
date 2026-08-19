@@ -75,6 +75,21 @@ def storage_origin_file_url(*, file, fallback: str = "") -> str:
         return fallback
 
     name = str(getattr(file, "name", file) or "").lstrip("/")
+    public_domain = str(getattr(settings, "BLOG_MEDIA_PUBLIC_DOMAIN", "") or "").strip()
+    if public_domain:
+        public_base_url = (
+            public_domain
+            if "://" in public_domain
+            else f"https://{public_domain}"
+        ).rstrip("/")
+        parsed_public_base = urlsplit(public_base_url)
+        if (
+            name
+            and parsed_public_base.scheme in ("http", "https")
+            and parsed_public_base.netloc
+        ):
+            return f"{public_base_url}/{quote(name, safe='/')}"
+
     endpoint_url = getattr(settings, "AWS_S3_ENDPOINT_URL", "") or ""
     bucket_name = getattr(settings, "AWS_STORAGE_BUCKET_NAME", "") or ""
     parsed_endpoint = urlsplit(endpoint_url)
